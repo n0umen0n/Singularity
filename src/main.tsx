@@ -151,20 +151,38 @@ function GlowLine({
   geometry,
   color,
   opacity = 0.65,
+  introDelay = 0,
+  introDuration = 0.9,
 }: {
   geometry: THREE.BufferGeometry;
   color: string;
   opacity?: number;
+  introDelay?: number;
+  introDuration?: number;
 }) {
   const line = useMemo(() => {
     const material = new THREE.LineBasicMaterial({
       color,
       transparent: true,
-      opacity,
+      opacity: 0,
       blending: THREE.AdditiveBlending,
     });
-    return new THREE.Line(geometry, material);
+    const entry = new THREE.Line(geometry, material);
+    entry.scale.setScalar(0.001);
+    return entry;
   }, [color, geometry, opacity]);
+
+  useFrame(({ clock }) => {
+    const material = line.material;
+    if (Array.isArray(material)) return;
+
+    const reveal = smoothstep((clock.elapsedTime - introDelay) / introDuration);
+    const wave = Math.max(0, 1 - Math.abs(clock.elapsedTime - introDelay - introDuration * 0.42) / (introDuration * 0.42));
+    const scale = 0.001 + reveal * 0.999;
+
+    line.scale.setScalar(scale);
+    material.opacity = Math.min(opacity, opacity * reveal + wave * 0.18);
+  });
 
   useEffect(() => {
     return () => {
@@ -201,7 +219,10 @@ function Structure({ progress }: { progress: React.MutableRefObject<number> }) {
   useFrame(({ clock }) => {
     if (!group.current) return;
     const p = progress.current;
-    group.current.rotation.y = clock.elapsedTime * 0.045 + p * Math.PI * 0.42;
+    const intro = smoothstep(clock.elapsedTime / 1.9);
+
+    group.current.scale.setScalar(1);
+    group.current.rotation.y = (1 - intro) * -0.42 + clock.elapsedTime * 0.045 + p * Math.PI * 0.42;
     group.current.rotation.z = Math.sin(clock.elapsedTime * 0.22) * 0.025;
     group.current.position.y = THREE.MathUtils.lerp(-0.5, 0.7, p);
   });
@@ -211,7 +232,16 @@ function Structure({ progress }: { progress: React.MutableRefObject<number> }) {
       {ringGeometries.map(({ geometry, y }, index) => {
         const color = y < 0 ? "#766cff" : "#ff6a4a";
         const opacity = index === 5 ? 0.82 : 0.48 + Math.abs(y) * 0.045;
-        return <GlowLine key={`ring-${y}`} geometry={geometry} color={color} opacity={opacity} />;
+        return (
+          <GlowLine
+            key={`ring-${y}`}
+            geometry={geometry}
+            color={color}
+            opacity={opacity}
+            introDelay={Math.abs(y) * 0.095}
+            introDuration={0.64}
+          />
+        );
       })}
 
       {verticalGeometries.map((geometry, index) => (
@@ -220,6 +250,8 @@ function Structure({ progress }: { progress: React.MutableRefObject<number> }) {
           geometry={geometry}
           color={index % 2 === 0 ? "#ff6a4a" : "#8f7cff"}
           opacity={0.44}
+          introDelay={0.22 + (index % 6) * 0.025}
+          introDuration={1.08}
         />
       ))}
 
