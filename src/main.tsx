@@ -306,15 +306,16 @@ function ParticleField({ progress }: { progress: React.MutableRefObject<number> 
 
 function CameraRig({ progress }: { progress: React.MutableRefObject<number> }) {
   const { camera } = useThree();
+  const targetPosition = useMemo(() => new THREE.Vector3(), []);
 
   useFrame(() => {
     const p = progress.current;
     const y = THREE.MathUtils.lerp(-7.2, 4.9, p);
     const z = THREE.MathUtils.lerp(8.2, 2.25, p);
-    const x = Math.sin(p * Math.PI * 2.1) * 0.92;
 
-    camera.position.lerp(new THREE.Vector3(x, y, z), 0.075);
-    camera.lookAt(Math.sin(p * Math.PI) * 0.25, THREE.MathUtils.lerp(-1.1, 1.2, p), 0);
+    targetPosition.set(0, y, z);
+    camera.position.copy(targetPosition);
+    camera.lookAt(0, THREE.MathUtils.lerp(-1.1, 1.2, p), 0);
   });
 
   return null;

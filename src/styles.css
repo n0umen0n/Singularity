@@ -83,13 +83,12 @@ canvas {
   inset: 0;
   z-index: 1;
   opacity: 0;
-  transition: opacity 1600ms cubic-bezier(0.16, 1, 0.3, 1), transform 1800ms cubic-bezier(0.16, 1, 0.3, 1);
-  transform: scale(1.035);
+  transition: opacity 1000ms cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translateZ(0);
 }
 
 .page.loaded .webgl {
   opacity: 0.82;
-  transform: scale(1);
 }
 
 .vignette {
