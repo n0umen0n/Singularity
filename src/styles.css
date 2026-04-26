@@ -574,8 +574,12 @@ canvas {
 }
 
 @media (max-width: 920px) {
+  .page {
+    min-height: 500dvh;
+  }
+
   .hero {
-    height: 100svh;
+    height: 100dvh;
     min-height: 100svh;
   }
 
@@ -667,7 +671,12 @@ canvas {
     transform: scaleX(1);
   }
 
+  .chapters {
+    margin-top: -100dvh;
+  }
+
   .chapter-spacer {
+    height: 100dvh;
     min-height: 100svh;
   }
 
