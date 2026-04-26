@@ -575,6 +575,7 @@ canvas {
 
 @media (max-width: 920px) {
   .hero {
+    height: 100svh;
     min-height: 100svh;
   }
 
@@ -683,6 +684,25 @@ canvas {
 
   .chapter-card {
     width: min(100%, 35rem);
+    filter: none;
+    transform: translateY(-50%);
+    transition: opacity 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: opacity;
+    -webkit-font-smoothing: antialiased;
+    backface-visibility: hidden;
+  }
+
+  .page:not(.loaded) .chapter-card {
+    filter: none;
+    transform: translateY(-50%);
+  }
+
+  .chapter-card[aria-hidden="true"] {
+    opacity: 0;
+  }
+
+  .chapter-card:not([aria-hidden="true"]) {
+    opacity: 1;
   }
 
   .chapter-card h2 {

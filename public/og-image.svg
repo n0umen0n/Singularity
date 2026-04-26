@@ -46,7 +46,5 @@
     <text x="80" y="275" fill="#fff7ed" font-size="76" font-weight="820" letter-spacing="-3">Fundraising redefined</text>
     <text x="82" y="340" fill="#fff7ed" fill-opacity=".74" font-size="30" font-weight="440">Turn a mission into a token-backed funding system</text>
     <text x="82" y="382" fill="#fff7ed" fill-opacity=".74" font-size="30" font-weight="440">where builders and investors coordinate capital together.</text>
-    <rect x="82" y="466" width="214" height="54" rx="27" fill="none" stroke="url(#line-fade)" stroke-width="2"/>
-    <text x="112" y="501" fill="#fff7ed" font-size="18" font-weight="760" letter-spacing="3">REQUEST ACCESS</text>
   </g>
 </svg>

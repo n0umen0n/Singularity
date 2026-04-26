@@ -9,6 +9,45 @@
       content="Singularity turns a mission into a token-backed funding system where builders and investors coordinate capital together."
     />
     <meta name="theme-color" content="#020203" />
+    <style>
+      :root {
+        color-scheme: dark;
+        background: #020203;
+      }
+
+      html,
+      body,
+      #root {
+        min-height: 100vh;
+        margin: 0;
+        background:
+          radial-gradient(circle at 50% 48%, rgba(255, 106, 74, 0.11), transparent 18rem),
+          radial-gradient(circle at 50% 52%, rgba(118, 108, 255, 0.09), transparent 24rem),
+          #020203;
+      }
+
+      #root:empty::before {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        width: 2.75rem;
+        height: 2.75rem;
+        border-radius: 999px;
+        content: "";
+        background: conic-gradient(from 180deg, transparent 0 32%, #ff6a4a 48%, #766cff 78%, transparent 100%);
+        filter: drop-shadow(0 0 18px rgba(255, 106, 74, 0.46)) drop-shadow(0 0 24px rgba(118, 108, 255, 0.42));
+        -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+        mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+        transform: translate(-50%, -50%);
+        animation: initial-loader-spin 900ms linear infinite;
+      }
+
+      @keyframes initial-loader-spin {
+        to {
+          transform: translate(-50%, -50%) rotate(1turn);
+        }
+      }
+    </style>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta property="og:type" content="website" />
