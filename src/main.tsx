@@ -23,9 +23,9 @@ type Chapter = {
 const chapters: Chapter[] = [
   {
     eyebrow: "Singularity",
-    label: "Fundraising",
+    label: "Intro",
     title: "Fundraising redefined",
-    body: "Singularity is a platform that connects investors with builders to grow capital together.",
+    body: "Singularity connects investors with builders to grow capital together.",
     cta: {
       label: "Request access",
       href: "#chapter-2",
@@ -33,34 +33,60 @@ const chapters: Chapter[] = [
     metric: "00",
   },
   {
-    eyebrow: "Mission creation",
-    label: "Mission",
-    title: "Capital forms around a mission",
-    body: "Turn a clear goal into a shared surface where builders contribute, investors align, and capital starts moving toward the work.",
+    eyebrow: "The problem",
+    label: "Problem",
+    title: "Capital gets stuck in closed rounds",
+    body: "Fundraising is slow, private, and founder-controlled. Investors wait for access. Builders wait for funding.",
     metric: "01",
   },
   {
-    eyebrow: "Token launch",
-    label: "Token",
-    title: "Tokenomics for every mission",
-    body: "Every mission comes with a token. Incentives aligned from the start.",
-    lines: ["80% bonding curve / AMM", "20% missions treasury"],
+    eyebrow: "The solution",
+    label: "Solution",
+    title: "Capital forms around missions",
+    body: "A mission becomes the market. Investors back the upside. Builders earn for moving it forward.",
     metric: "02",
   },
   {
-    eyebrow: "Integrated fundraising",
-    label: "Investors",
-    title: "Investors bet on missions",
-    body: "Aligned investors can discover new missions, speculate on the upside, and back them directly inside the platform.",
+    eyebrow: "How it works / Create",
+    label: "Create",
+    title: "Launch a mission market",
+    body: "Define the goal, open the market, and earn trading fees as capital forms around it.",
     metric: "03",
   },
   {
-    eyebrow: "Dynamic treasury ownership",
-    label: "Treasury",
-    title: "Fund contributors together",
-    body: "Investors share a pool of capital they can allocate to contributors working toward the mission.",
-    lines: ["MSIG system", "Timelock protection"],
+    eyebrow: "How it works / Tokenize",
+    label: "Token",
+    title: "Tokenomics for every mission",
+    body: "Every mission launches with a token and treasury built in.",
+    lines: ["80% bonding curve / AMM", "20% mission treasury"],
     metric: "04",
+  },
+  {
+    eyebrow: "How it works / Invest",
+    label: "Invest",
+    title: "Investors bet on missions",
+    body: "Discover missions early, buy into the upside, and back the goals you believe in.",
+    metric: "05",
+  },
+  {
+    eyebrow: "How it works / Build",
+    label: "Build",
+    title: "Builders earn for progress",
+    body: "Find meaningful work and get funded for contributions that move the mission forward.",
+    lines: ["Product work", "Community growth", "Research", "Ecosystem tasks"],
+    metric: "06",
+  },
+  {
+    eyebrow: "How it works / Allocate",
+    label: "Allocate",
+    title: "Allocate capital together",
+    body: "Investors share a capital pool and allocate it to contributors doing the work.",
+    lines: ["MSIG system", "Timelock protection"],
+    cta: {
+      label: "Join early access",
+      href: "#chapter-1",
+    },
+    metric: "07",
   },
 ];
 
@@ -439,7 +465,7 @@ function App() {
         </header>
 
         <aside className="timeline" aria-label="Scroll chapters">
-          <span className="timeline-kicker">How it works</span>
+          <span className="timeline-kicker">Overview</span>
           {chapters.map((chapter, index) => (
             <a
               className={index === activeIndex ? "timeline-item active" : "timeline-item"}
