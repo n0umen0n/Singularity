@@ -30,6 +30,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       {children}
+      <nav className="mobile-nav" aria-label="Primary">
+        <Link href="/missions">Missions</Link>
+        <Link href="/missions/new">Create</Link>
+        <Link href="/profile">Profile</Link>
+      </nav>
     </main>
   );
 }
@@ -81,7 +86,7 @@ export function MissionsPage() {
         <PageHeader
           eyebrow="Singularity platform"
           title="Missions"
-          description="Discover mission markets, compare liquidity, and back the futures you want to exist."
+          description="Discover mission markets, compare liquidity, and back the futures you want to exist in"
         />
         <div className="search-row">
           <label>
@@ -260,14 +265,41 @@ function StatsGrid({ mission }: { mission: Mission }) {
 
 function PerformanceCard({ mission }: { mission: Mission }) {
   const [frame, setFrame] = useState<keyof Mission["performance"]>("1D");
+  const [investmentInput, setInvestmentInput] = useState("100");
   const point = mission.performance[frame];
-  const growthTone = point.change < 0 ? "drop" : point.change > 30 ? "surge" : "rise";
+  const investmentAmount = Math.max(Number(investmentInput) || 0, 0);
+  const returnMultiplier = point.value / 100;
+  const projectedValue = investmentAmount * returnMultiplier;
+  const investmentReturn = projectedValue - investmentAmount;
+  const growthTone = investmentReturn < 0 ? "drop" : returnMultiplier > 1.3 ? "surge" : "rise";
+  const isPositiveReturn = investmentReturn > 0;
+  const growthLabel = `${investmentReturn > 0 ? "+" : ""}${money(investmentReturn)}`;
   return (
     <GlassCard className="section-card chart-card">
       <div className="section-heading">
         <div>
-          <h2>If you invested $100 -&gt; {point.agoLabel}</h2>
-          <p>Your $100 would be worth <strong>{money(point.value)}</strong>.</p>
+          <h2 className="investment-title">
+            If you invested{" "}
+            <label className="investment-amount-control">
+              <span>$</span>
+              <input
+                aria-label="Investment amount"
+                inputMode="decimal"
+                style={{ width: `${Math.min(Math.max(investmentInput.length || 1, 3), 7)}ch` }}
+                type="text"
+                value={investmentInput}
+                onChange={(event) => {
+                  const nextValue = event.target.value.replace(/[^\d.]/g, "");
+                  const numericValue = Number(nextValue);
+                  if (/^\d*\.?\d{0,2}$/.test(nextValue) && (!numericValue || numericValue <= 1000000)) {
+                    setInvestmentInput(nextValue);
+                  }
+                }}
+              />
+            </label>{" "}
+            {point.agoLabel}
+          </h2>
+          <p>Your {money(investmentAmount)} would be worth <strong>{money(projectedValue)}</strong></p>
         </div>
         <div className="timeframe-row">
           {(Object.keys(mission.performance) as Array<keyof Mission["performance"]>).map((entry) => (
@@ -277,14 +309,10 @@ function PerformanceCard({ mission }: { mission: Mission }) {
           ))}
         </div>
       </div>
-      <div className={`growth-orb-stage growth-${growthTone}`} aria-hidden="true">
-        <div className="growth-orb">
-          <div className="growth-orb-core">{money(point.value)}</div>
-          <span className="growth-ring ring-one" />
-          <span className="growth-ring ring-two" />
-          <span className="growth-spark spark-one" />
-          <span className="growth-spark spark-two" />
-          <span className="growth-spark spark-three" />
+      <div className={`growth-arrow-stage growth-${growthTone}`} aria-label={`Investment growth: ${growthLabel}`}>
+        <div className="growth-value-badge">
+          <span>{growthLabel}</span>
+          <small>{isPositiveReturn ? "growth" : "change"}</small>
         </div>
       </div>
     </GlassCard>
@@ -492,52 +520,54 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
         <h3>Token holder distribution</h3>
         <p>(total supply)</p>
       </div>
-      <ResponsiveContainer width="100%" height={240}>
-        <PieChart>
-          <defs>
-            <linearGradient id="investorsGradient" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#6ee7f9" />
-              <stop offset="100%" stopColor="#38bdf8" />
-            </linearGradient>
-            <linearGradient id="marketGradient" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#9c8cff" />
-              <stop offset="100%" stopColor="#6258ff" />
-            </linearGradient>
-            <linearGradient id="treasuryGradient" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#ff876d" />
-              <stop offset="100%" stopColor="#ff5d3d" />
-            </linearGradient>
-          </defs>
-          <Pie
-            data={chartData}
-            dataKey="value"
-            nameKey="name"
-            cx="50%"
-            cy="50%"
-            innerRadius={64}
-            outerRadius={92}
-            paddingAngle={2}
-            cornerRadius={9}
-            stroke="rgba(255,247,237,0.16)"
-            strokeWidth={1}
-            isAnimationActive
-            animationDuration={700}
-            onMouseEnter={(_, index) => setActive(chartData[index]?.key ?? "treasury")}
-          >
-            {chartData.map((entry) => (
-              <Cell
-                className={cx("capitalization-slice", active === entry.key && "active")}
-                fill={entry.gradient}
-                key={entry.key}
-                opacity={active === entry.key ? 1 : 0.54}
-              />
-            ))}
-          </Pie>
-        </PieChart>
-      </ResponsiveContainer>
-      <div className="donut-center">
-        <span>{activeEntry.name}</span>
-        <strong>{number(activePercentage)}%</strong>
+      <div className="donut-visual">
+        <ResponsiveContainer width="100%" height={238}>
+          <PieChart>
+            <defs>
+              <linearGradient id="investorsGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#6ee7f9" />
+                <stop offset="100%" stopColor="#38bdf8" />
+              </linearGradient>
+              <linearGradient id="marketGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#9c8cff" />
+                <stop offset="100%" stopColor="#6258ff" />
+              </linearGradient>
+              <linearGradient id="treasuryGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#ff876d" />
+                <stop offset="100%" stopColor="#ff5d3d" />
+              </linearGradient>
+            </defs>
+            <Pie
+              data={chartData}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              innerRadius={64}
+              outerRadius={94}
+              paddingAngle={2}
+              cornerRadius={9}
+              stroke="rgba(255,247,237,0.16)"
+              strokeWidth={1}
+              isAnimationActive
+              animationDuration={700}
+              onMouseEnter={(_, index) => setActive(chartData[index]?.key ?? "treasury")}
+            >
+              {chartData.map((entry) => (
+                <Cell
+                  className={cx("capitalization-slice", active === entry.key && "active")}
+                  fill={entry.gradient}
+                  key={entry.key}
+                  opacity={active === entry.key ? 1 : 0.54}
+                />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="donut-center">
+          <span>{activeEntry.name}</span>
+          <strong>{number(activePercentage)}%</strong>
+        </div>
       </div>
       <div className="donut-legend">
         <button className={cx("legend-item", active === "investors" && "active")} onMouseEnter={() => setActive("investors")} onFocus={() => setActive("investors")}>

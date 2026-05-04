@@ -38,6 +38,12 @@ body {
   overflow-x: hidden;
 }
 
+img,
+svg,
+video {
+  max-width: 100%;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -47,6 +53,13 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+button,
+a,
+input,
+textarea {
+  -webkit-tap-highlight-color: transparent;
 }
 
 .app-shell {
@@ -85,10 +98,15 @@ textarea {
   backdrop-filter: blur(24px);
 }
 
+.top-nav > a {
+  min-width: 0;
+}
+
 .brand-wordmark {
   display: inline-flex;
   align-items: center;
   gap: 0.82rem;
+  min-width: 0;
   margin-right: 1rem;
   color: var(--text-primary);
   font-size: clamp(0.72rem, 1vw, 0.92rem);
@@ -139,6 +157,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 0.65rem;
+  min-width: 0;
   margin-left: auto;
 }
 
@@ -260,6 +279,7 @@ textarea {
   font-weight: 900;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+  white-space: nowrap;
   transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
 
@@ -312,6 +332,7 @@ textarea {
 .status-pill {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   width: fit-content;
   border: 1px solid rgba(255, 247, 237, 0.14);
   border-radius: 999px;
@@ -322,7 +343,7 @@ textarea {
   font-weight: 900;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  white-space: nowrap;
+  line-height: 1.25;
 }
 
 .status-active,
@@ -367,6 +388,7 @@ textarea {
   color: var(--text-primary);
   background: rgba(255, 247, 237, 0.055);
   outline: none;
+  font-size: 16px;
   transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
@@ -399,6 +421,12 @@ textarea {
   align-items: center;
   gap: 0.55rem;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+}
+
+.filter-pills::-webkit-scrollbar {
+  display: none;
 }
 
 .search-row .filter-pills {
@@ -437,6 +465,7 @@ textarea {
   display: flex;
   height: 100%;
   min-height: 390px;
+  min-width: 0;
   color: var(--text-primary);
 }
 
@@ -479,6 +508,7 @@ textarea {
 .mission-card {
   display: flex;
   min-height: 390px;
+  min-width: 0;
   overflow: hidden;
   color: var(--text-primary);
   flex-direction: column;
@@ -626,6 +656,13 @@ textarea {
   font-size: 0.82rem;
 }
 
+.card-footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.46fr);
@@ -717,6 +754,7 @@ textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: clamp(1.28rem, 2.3vw, 1.85rem);
   font-weight: 900;
+  overflow-wrap: anywhere;
 }
 
 .stat-note {
@@ -753,6 +791,41 @@ textarea {
 
 .chart-card {
   min-height: 340px;
+}
+
+.investment-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.investment-amount-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  border: 1px solid rgba(255, 247, 237, 0.14);
+  border-radius: 14px;
+  padding: 0.08rem 0.45rem;
+  background: rgba(255, 247, 237, 0.055);
+  box-shadow: 0 0 0 1px rgba(255, 247, 237, 0.025) inset;
+}
+
+.investment-amount-control span {
+  color: var(--text-muted);
+}
+
+.investment-amount-control input {
+  max-width: 7ch;
+  min-width: 3ch;
+  border: 0;
+  padding: 0;
+  color: var(--text-primary);
+  background: transparent;
+  outline: none;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
 }
 
 .timeframe-row,
@@ -792,133 +865,81 @@ textarea {
   background: linear-gradient(180deg, rgba(118, 108, 255, 0.2), transparent);
 }
 
-.growth-orb-stage {
+.growth-arrow-stage {
   position: relative;
   display: grid;
-  min-height: 190px;
+  min-height: 220px;
   margin-top: 1.2rem;
   overflow: hidden;
   border-radius: 22px;
   place-items: center;
   background:
-    radial-gradient(circle at 50% 50%, rgba(255, 247, 237, 0.055), transparent 18rem),
+    radial-gradient(circle at 50% 50%, rgba(85, 240, 168, 0.13), transparent 17rem),
     rgba(255, 247, 237, 0.025);
 }
 
-.growth-orb-stage::before {
+.growth-arrow-stage::before {
   position: absolute;
-  inset: auto 12% 18%;
-  height: 1px;
+  inset: 0;
   content: "";
-  background: linear-gradient(90deg, transparent, rgba(255, 247, 237, 0.35), transparent);
+  background:
+    radial-gradient(circle at 50% 50%, transparent 0 5.8rem, rgba(2, 2, 3, 0.24) 11rem),
+    linear-gradient(180deg, rgba(2, 2, 3, 0.28), transparent 42%, rgba(2, 2, 3, 0.36));
+  pointer-events: none;
 }
 
-.growth-orb {
+.growth-drop {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 95, 122, 0.14), transparent 17rem),
+    rgba(255, 247, 237, 0.025);
+}
+
+.growth-value-badge {
   position: relative;
-  display: grid;
-  width: 9.5rem;
-  height: 9.5rem;
-  border-radius: 999px;
-  place-items: center;
-}
-
-.growth-orb-core {
   z-index: 2;
   display: grid;
-  width: 6.4rem;
-  height: 6.4rem;
-  border: 1px solid rgba(255, 247, 237, 0.22);
-  border-radius: 999px;
+  min-width: clamp(13rem, 34vw, 20rem);
+  min-height: clamp(5.8rem, 12vw, 7.5rem);
+  border: 1px solid rgba(255, 247, 237, 0.28);
+  border-radius: 32px;
+  place-content: center;
   place-items: center;
   color: #03140d;
-  background: var(--success);
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(255, 255, 255, 0.24), transparent 42%),
+    rgba(85, 240, 168, 0.74);
   box-shadow:
-    0 0 34px rgba(85, 240, 168, 0.52),
-    0 0 90px rgba(85, 240, 168, 0.2);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 1.15rem;
-  font-weight: 950;
+    0 0 0 10px rgba(85, 240, 168, 0.08),
+    0 0 38px rgba(85, 240, 168, 0.62),
+    0 0 120px rgba(85, 240, 168, 0.34);
+  text-align: center;
   animation: growth-breathe 2200ms ease-in-out infinite;
 }
 
-.growth-drop .growth-orb-core {
+.growth-drop .growth-value-badge {
   color: #24050b;
-  background: var(--danger);
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(255, 255, 255, 0.18), transparent 42%),
+    rgba(255, 95, 122, 0.72);
   box-shadow:
-    0 0 34px rgba(255, 95, 122, 0.5),
-    0 0 90px rgba(255, 95, 122, 0.18);
+    0 0 0 10px rgba(255, 95, 122, 0.08),
+    0 0 38px rgba(255, 95, 122, 0.5),
+    0 0 110px rgba(255, 95, 122, 0.2);
 }
 
-.growth-rise .growth-orb-core {
-  width: 5.4rem;
-  height: 5.4rem;
-  font-size: 1rem;
+.growth-value-badge span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: clamp(1.35rem, 3vw, 2rem);
+  font-weight: 950;
+  letter-spacing: -0.06em;
 }
 
-.growth-surge .growth-orb-core {
-  width: 7.4rem;
-  height: 7.4rem;
-  font-size: 1.28rem;
-}
-
-.growth-ring {
-  position: absolute;
-  inset: 0;
-  border: 1px solid rgba(85, 240, 168, 0.38);
-  border-radius: 999px;
-  animation: growth-pulse 2100ms ease-out infinite;
-}
-
-.growth-drop .growth-ring {
-  border-color: rgba(255, 95, 122, 0.42);
-}
-
-.ring-two {
-  animation-delay: 600ms;
-}
-
-.growth-spark {
-  position: absolute;
-  width: 0.48rem;
-  height: 0.48rem;
-  border-radius: 999px;
-  background: var(--success);
-  box-shadow: 0 0 16px rgba(85, 240, 168, 0.8);
-  animation: spark-float 2400ms ease-in-out infinite;
-}
-
-.growth-drop .growth-spark {
-  background: var(--danger);
-  box-shadow: 0 0 16px rgba(255, 95, 122, 0.8);
-}
-
-.spark-one {
-  top: 18%;
-  left: 8%;
-}
-
-.spark-two {
-  right: 9%;
-  bottom: 22%;
-  animation-delay: 420ms;
-}
-
-.spark-three {
-  top: 12%;
-  right: 20%;
-  animation-delay: 820ms;
-}
-
-@keyframes growth-pulse {
-  from {
-    opacity: 0.82;
-    transform: scale(0.62);
-  }
-
-  to {
-    opacity: 0;
-    transform: scale(1.18);
-  }
+.growth-value-badge small {
+  margin-top: 0.15rem;
+  font-size: 0.58rem;
+  font-weight: 950;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 @keyframes growth-breathe {
@@ -928,18 +949,7 @@ textarea {
   }
 
   50% {
-    transform: scale(1.055);
-  }
-}
-
-@keyframes spark-float {
-  0%,
-  100% {
-    transform: translateY(0) scale(1);
-  }
-
-  50% {
-    transform: translateY(-0.8rem) scale(1.35);
+    transform: scale(1.045);
   }
 }
 
@@ -1262,22 +1272,21 @@ textarea {
 
 .treasury-donut-card {
   position: relative;
-  min-height: 330px;
+  display: grid;
+  min-height: 0;
   margin: 1rem 0;
   overflow: hidden;
   border: 1px solid rgba(255, 247, 237, 0.08);
   border-radius: 24px;
-  padding-top: 3.2rem;
+  padding: 1rem;
+  gap: 0.5rem;
   background:
     radial-gradient(circle at 50% 42%, rgba(255, 247, 237, 0.07), transparent 8rem),
     rgba(255, 247, 237, 0.025);
 }
 
 .donut-heading {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  left: 1rem;
+  position: relative;
   z-index: 1;
   text-align: center;
 }
@@ -1310,48 +1319,53 @@ textarea {
     drop-shadow(0 0 10px rgba(255, 247, 237, 0.18));
 }
 
+.donut-visual {
+  position: relative;
+  display: grid;
+  min-height: 238px;
+  place-items: center;
+}
+
 .donut-center {
   position: absolute;
-  top: 52%;
+  top: 50%;
   left: 50%;
   display: grid;
-  width: 8.1rem;
-  height: 8.1rem;
+  width: 7.45rem;
+  height: 7.45rem;
   border: 1px solid rgba(255, 247, 237, 0.08);
   border-radius: 999px;
   place-content: center;
   background:
-    radial-gradient(circle at 50% 20%, rgba(255, 247, 237, 0.12), transparent 4rem),
-    rgba(2, 2, 3, 0.56);
+    radial-gradient(circle at 50% 20%, rgba(255, 247, 237, 0.085), transparent 3.6rem),
+    rgba(2, 2, 3, 0.48);
   box-shadow:
-    0 18px 42px rgba(0, 0, 0, 0.28),
+    0 14px 30px rgba(0, 0, 0, 0.22),
     0 0 0 1px rgba(255, 247, 237, 0.035) inset;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(8px);
   text-align: center;
   transform: translate(-50%, -50%);
 }
 
 .donut-center span {
   color: var(--text-faint);
-  font-size: 0.64rem;
+  font-size: 0.58rem;
   font-weight: 900;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
 }
 
 .donut-center strong {
-  margin-top: 0.3rem;
+  margin-top: 0.22rem;
   color: var(--text-primary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 1.12rem;
+  font-size: 0.98rem;
 }
 
 .donut-legend {
-  position: absolute;
-  right: 0;
-  bottom: 0.7rem;
-  left: 0;
+  position: relative;
   display: flex;
+  flex-wrap: wrap;
   gap: 0.55rem;
   justify-content: center;
 }
@@ -1541,11 +1555,46 @@ textarea {
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .request-card-toggle {
+    grid-template-columns: minmax(0, 1fr) minmax(9rem, 0.55fr);
+  }
+
+  .request-votes {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 920px) {
+  .search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .search-row .filter-pills {
+    align-self: stretch;
+    min-height: auto;
+    padding-bottom: 0.15rem;
+  }
+
+  .section-heading,
+  .hero-topline {
+    flex-wrap: wrap;
+  }
+
+  .request-card-toggle {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .request-votes {
+    grid-column: auto;
+  }
 }
 
 @media (max-width: 760px) {
   .top-nav {
     min-height: 68px;
+    padding-inline: 1rem;
   }
 
   .brand-wordmark span {
@@ -1564,7 +1613,25 @@ textarea {
   .page-header {
     align-items: flex-start;
     flex-direction: column;
+    justify-content: flex-end;
     min-height: 140px;
+    gap: 1rem;
+  }
+
+  .page-header h1 {
+    font-size: clamp(2.05rem, 12vw, 3.15rem);
+  }
+
+  .page-header > .button,
+  .page-header > a {
+    width: 100%;
+  }
+
+  .watermark {
+    right: -2.4rem;
+    bottom: -2.4rem;
+    width: 12rem;
+    height: 12rem;
   }
 
   .search-row,
@@ -1582,8 +1649,36 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .section-heading {
+    flex-direction: column;
+  }
+
+  .section-heading > .button,
+  .section-heading > a {
+    width: 100%;
+  }
+
+  .mission-card,
+  .mission-card-link {
+    min-height: 0;
+  }
+
+  .profile-mission-card .mission-card-link {
+    height: auto;
+  }
+
+  .mission-card-media {
+    margin: 0.8rem 0.8rem 0;
+    border-radius: 18px;
+  }
+
+  .mission-card-body {
+    padding: 1rem;
+  }
+
   .mission-hero {
     min-height: 360px;
+    border-radius: 26px;
   }
 
   .hero-title-row {
@@ -1591,10 +1686,60 @@ textarea {
     flex-direction: column;
   }
 
+  .hero-content h1 {
+    max-width: 14ch;
+  }
+
+  .hero-content p {
+    font-size: 0.96rem;
+  }
+
+  .hero-title-row .token-avatar {
+    width: 56px !important;
+    height: 56px !important;
+  }
+
+  .growth-video-stage {
+    min-height: 190px;
+  }
+
+  .council-flip-card,
+  .council-flip-card .animate-ui-flip-card-inner,
+  .flip-profile-card {
+    min-height: 280px;
+  }
+
+  .request-card-toggle {
+    min-height: 0;
+  }
+
+  .request-summary,
+  .request-amount,
+  .request-votes {
+    align-items: flex-start;
+  }
+
+  .request-action-row {
+    justify-content: stretch;
+  }
+
+  .request-action-row .button {
+    flex: 1 1 12rem;
+  }
+
+  .profile-hero {
+    text-align: left;
+  }
+
+  .profile-hero .button,
+  .creator-fee-card .button {
+    width: 100%;
+  }
+
   .mobile-nav {
     position: fixed;
     right: 1rem;
-    bottom: 1rem;
+    bottom: max(1rem, env(safe-area-inset-bottom));
     left: 1rem;
     z-index: 30;
     display: grid;
@@ -1607,5 +1752,88 @@ textarea {
 
   .mobile-nav a {
     text-align: center;
+  }
+}
+
+@media (max-width: 520px) {
+  .top-nav {
+    gap: 0.65rem;
+    min-height: 64px;
+  }
+
+  .nav-actions .button {
+    width: auto;
+    min-height: 40px;
+    padding: 0.72rem 0.82rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+  }
+
+  .page-container {
+    padding-inline: 0.78rem;
+  }
+
+  .glass-card {
+    border-radius: 20px;
+  }
+
+  .page-header {
+    min-height: 116px;
+    margin-bottom: 1rem;
+  }
+
+  .lede {
+    font-size: 0.98rem;
+    line-height: 1.55;
+  }
+
+  .filter-pill {
+    padding: 0.72rem 0.82rem;
+    font-size: 0.66rem;
+  }
+
+  .button {
+    width: 100%;
+    min-height: 46px;
+  }
+
+  .stat-card {
+    min-height: 0;
+  }
+
+  .mission-hero {
+    min-height: 430px;
+  }
+
+  .hero-topline {
+    top: 1rem;
+    right: 1rem;
+    left: 1rem;
+  }
+
+  .hero-content {
+    padding: 1.1rem;
+  }
+
+  .media-pill {
+    max-width: calc(100% - 4.7rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .legend-item {
+    padding: 0.46rem 0.58rem;
+    font-size: 0.6rem;
+    letter-spacing: 0.08em;
+  }
+
+  .funding-rule-grid .stat-card {
+    min-height: 0;
+  }
+
+  .profile-avatar {
+    width: 76px;
+    height: 76px;
   }
 }
