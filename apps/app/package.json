@@ -1,0 +1,27 @@
+{
+  "name": "@singularity/app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "WATCHPACK_POLLING=true WATCHPACK_POLLING_INTERVAL=1000 next dev --hostname 127.0.0.1 --port 8094",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1 --port 8094",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@singularity/ui": "*",
+    "lucide-react": "latest",
+    "motion": "^12.38.0",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "recharts": "^3.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}

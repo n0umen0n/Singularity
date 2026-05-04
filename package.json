@@ -1,29 +1,23 @@
 {
-  "name": "singularity-scroll-webgl",
+  "name": "singularity",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
+  "packageManager": "npm@10.7.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "tsc && vite build",
-    "preview": "vite preview --host 127.0.0.1"
-  },
-  "dependencies": {
-    "@react-three/drei": "latest",
-    "@react-three/fiber": "latest",
-    "@react-three/postprocessing": "latest",
-    "@vitejs/plugin-react": "^4.3.4",
-    "gsap": "latest",
-    "postprocessing": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "three": "latest",
-    "vite": "^5.4.11"
+    "dev": "turbo dev",
+    "dev:app": "npm run dev --workspace @singularity/app",
+    "dev:landing": "npm run dev --workspace @singularity/landing",
+    "build": "turbo build",
+    "build:app": "npm run build --workspace @singularity/app",
+    "build:landing": "npm run build --workspace @singularity/landing",
+    "typecheck": "turbo typecheck"
   },
   "devDependencies": {
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "@types/three": "latest",
+    "turbo": "latest",
     "typescript": "latest"
   }
 }

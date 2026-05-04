@@ -1,8 +1,12 @@
-# Singularity Scroll WebGL Landing Page
+# Singularity Monorepo
 
-This folder contains a modern scroll-reactive landing page prototype inspired by the reference image and the provided video.
+This repository contains the Singularity landing page and a clickable mock platform app.
 
-The current version no longer relies on MP4 timeline scrubbing for the main effect. It renders the singularity/hourglass structure in real time with WebGL, then moves a camera through that structure based on scroll progress.
+## Apps
+
+- `apps/landing` - the existing cinematic WebGL landing page for `singularity.diy`.
+- `apps/app` - the mock platform app intended for `app.singularity.diy`.
+- `packages/ui` - shared brand primitives such as the Singularity logo, glass cards, and status pills.
 
 ## How To Run
 
@@ -12,10 +16,22 @@ Install dependencies:
 npm install
 ```
 
-Run the dev server:
+Run the platform app:
 
 ```bash
-npm run dev
+npm run dev:app
+```
+
+Then visit:
+
+```text
+http://127.0.0.1:8094
+```
+
+Run the landing page:
+
+```bash
+npm run dev:landing
 ```
 
 Then visit:
@@ -32,12 +48,10 @@ npm run build
 
 ## Stack
 
-- React + TypeScript + Vite
-- Three.js + React Three Fiber
-- Drei helpers for stars and adaptive DPR
-- Postprocessing bloom for the glow pass
-- GSAP utilities for damped scroll interpolation
-- CSS overlays for typography, chapters, and responsive layout
+- Monorepo workspaces + Turborepo
+- Landing: React + TypeScript + Vite + Three.js
+- Platform app: Next.js App Router + React + TypeScript
+- Shared local mock data for first-version product exploration
 
 ## Why This Version Is Smoother
 
@@ -82,15 +96,15 @@ If you later want a fully art-directed cinematic version, there are three strong
 
 The provided MP4 is still in the folder as a reference asset:
 
-`hf_20260424_205243_850495a8-16b4-4d8d-a28d-3526278d8385.mp4`
+`apps/landing/hf_20260424_205243_850495a8-16b4-4d8d-a28d-3526278d8385.mp4`
 
-The old `server.py` file remains available if you want to test MP4 byte-range scrubbing again, but the main experience now runs through Vite.
+The old `apps/landing/server.py` file remains available if you want to test MP4 byte-range scrubbing again, but the main landing experience now runs through Vite.
 
 ## Files
 
-- `src/main.tsx` - React app, WebGL scene, scroll camera, and chapter data.
-- `src/styles.css` - professional landing page styling and responsive overlays.
-- `index.html` - Vite entry point.
-- `package.json` - app scripts and dependencies.
-- `server.py` - legacy local server for MP4 byte-range experiments.
-- `hf_20260424_205243_850495a8-16b4-4d8d-a28d-3526278d8385.mp4` - provided reference video.
+- `apps/landing/src/main.tsx` - landing React app, WebGL scene, scroll camera, and chapter data.
+- `apps/landing/src/styles.css` - landing page styling and responsive overlays.
+- `apps/app/app` - Next.js App Router pages for the mock platform.
+- `apps/app/components/platform.tsx` - clickable mock product UI components.
+- `apps/app/lib/mock-data.ts` - local mock missions, investors, balances, and funding requests.
+- `UI_SPECIFICATION.md` - detailed product UI specification.
