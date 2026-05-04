@@ -621,8 +621,8 @@ function TradePanel({ mission }: { mission: Mission }) {
 }
 
 export function LaunchMissionPage() {
-  const [symbol, setSymbol] = useState("NOVA");
-  const [statement, setStatement] = useState("Coordinate the first open-source lunar robotics network.");
+  const [symbol, setSymbol] = useState("");
+  const [statement, setStatement] = useState("");
   return (
     <AppShell>
       <section className="page-container">
@@ -650,7 +650,7 @@ export function LaunchMissionPage() {
               mission={{
                 ...missions[0],
                 id: "preview",
-                statement,
+                statement: statement || "Coordinate the first open-source lunar robotics network.",
                 tokenSymbol: symbol || "NOVA",
                 description: "Live preview of how your mission will appear in discovery.",
               }}
@@ -660,21 +660,33 @@ export function LaunchMissionPage() {
             <div className="form-grid">
               <label>
                 <span className="form-label">Mission statement</span>
-                <input className="field" maxLength={96} value={statement} onChange={(event) => setStatement(event.target.value)} />
+                <input
+                  className="field"
+                  maxLength={96}
+                  placeholder="Coordinate the first open-source lunar robotics network."
+                  value={statement}
+                  onChange={(event) => setStatement(event.target.value)}
+                />
               </label>
               <UploadBox label="Mission image" note="16:10 PNG, JPG, WEBP, or SVG" />
               <label>
                 <span className="form-label">Mission description</span>
-                <textarea className="textarea" defaultValue="Explain what the mission is, why it matters, and what funded work should advance." />
+                <textarea className="textarea" placeholder="Explain what the mission is, why it matters, and what funded work should advance." />
               </label>
               <label>
                 <span className="form-label">Token symbol</span>
-                <input className="field" maxLength={8} value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} />
+                <input
+                  className="field"
+                  maxLength={8}
+                  placeholder="NOVA"
+                  value={symbol}
+                  onChange={(event) => setSymbol(event.target.value.toUpperCase())}
+                />
               </label>
               <UploadBox label="Token image" note="Square 1:1 image, shown as a circle" />
               <label>
                 <span className="form-label">Initial purchase in USDC</span>
-                <input className="field" defaultValue="1000" />
+                <input className="field" placeholder="1000" />
               </label>
               <StatusPill tone="warning">Minimum is 5 USDC</StatusPill>
               <button className="button button-primary">Launch mission</button>
@@ -711,7 +723,7 @@ function InfoCard({ title, body }: { title: string; body: string }) {
 
 export function RequestFundingPage({ missionId }: { missionId: string }) {
   const mission = getMission(missionId);
-  const [amount, setAmount] = useState("10000");
+  const [amount, setAmount] = useState("");
   const usd = Number(amount) || 0;
   const tokenAmount = usd / mission.tokenPrice;
   return (
@@ -725,6 +737,7 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
         <div className="form-two-col">
           <div>
             <GlassCard className="section-card">
+              <GlassCard className="conditions-card">Conditions</GlassCard>
               <div className="info-grid funding-rule-grid">
                 <InfoCard title="3 day voting period" body="Requests stay open for at least 3 days before council approval can finalize." />
                 <InfoCard title="Mission related work" body="Funding can support individuals or teams working directly toward the mission." />
@@ -739,15 +752,15 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
             <div className="form-grid">
               <label>
                 <span className="form-label">Request name</span>
-                <input className="field" defaultValue="Build the first community analytics dashboard" />
+                <input className="field" placeholder="Build the first community analytics dashboard" />
               </label>
               <label>
                 <span className="form-label">Request description</span>
-                <textarea className="textarea" defaultValue="Describe what will be delivered, who will do the work, why it advances the mission, and what success looks like." />
+                <textarea className="textarea" placeholder="Describe what will be delivered, who will do the work, why it advances the mission, and what success looks like." />
               </label>
               <label>
                 <span className="form-label">Request amount in USD</span>
-                <input className="field" value={amount} onChange={(event) => setAmount(event.target.value)} />
+                <input className="field" placeholder="10000" value={amount} onChange={(event) => setAmount(event.target.value)} />
               </label>
               <GlassCard className="stat-card">
                 <span className="stat-label">Conversion preview</span>
@@ -773,6 +786,25 @@ export function ProfilePage() {
   const userMissions = currentUser.tokenBalances.map((entry) => ({ ...entry, mission: getMission(entry.missionId) }));
   const createdMissions = currentUser.createdMissions.map((entry) => ({ ...entry, mission: getMission(entry.missionId) }));
   const featuredCreatorMissionId = currentUser.createdMissions[0]?.missionId;
+  const [requestFilter, setRequestFilter] = useState<"submitted" | "council">("submitted");
+  const submittedRequests = missions.flatMap((mission) =>
+    mission.requests.slice(0, 1).map((request) => ({
+      request: { ...request, requester: currentUser.name, requesterAvatar: currentUser.avatar },
+      symbol: mission.tokenSymbol,
+    })),
+  );
+  const councilMissionIds = new Set(currentUser.tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
+  const councilRequests = missions.flatMap((mission) =>
+    councilMissionIds.has(mission.id)
+      ? mission.requests
+          .filter((request) => request.status === "active")
+          .map((request) => ({
+            request,
+            symbol: mission.tokenSymbol,
+          }))
+      : [],
+  );
+  const visibleRequests = requestFilter === "submitted" ? submittedRequests : councilRequests;
   return (
     <AppShell>
       <section className="page-container">
@@ -784,10 +816,23 @@ export function ProfilePage() {
           <div>
             <h2 style={{ margin: 0 }}>{currentUser.name}</h2>
             <p className="stat-note">{currentUser.description}</p>
-            <p className="stat-note">{currentUser.socials.join(" · ")}</p>
-            <StatusPill>
+            <div className="profile-socials" aria-label="Social links">
+              <a className="profile-social-link" href="https://x.com/vlad" target="_blank" rel="noreferrer">
+                <XLogo />
+                <span>@vlad</span>
+              </a>
+              <a className="profile-social-link" href="https://discord.com" target="_blank" rel="noreferrer">
+                <DiscordLogo />
+                <span>vlad</span>
+              </a>
+              <a className="profile-social-link" href="https://github.com/vlad" target="_blank" rel="noreferrer">
+                <GithubLogo />
+                <span>vlad</span>
+              </a>
+            </div>
+            <span className="status-pill wallet-pill">
               {shortAddress(currentUser.address)} <Copy size={12} />
-            </StatusPill>
+            </span>
           </div>
           <button className="button">Edit profile</button>
         </GlassCard>
@@ -823,7 +868,6 @@ export function ProfilePage() {
                 <div>
                   <span className="stat-label">{entry.mission.tokenSymbol} creator fees</span>
                   <div className="stat-value">{money(entry.tradingFeesEarned)}</div>
-                  <div className="stat-note">{money(entry.claimableFees)} claimable now</div>
                 </div>
                 <button className="button button-primary">
                   <Zap size={16} />
@@ -845,10 +889,10 @@ export function ProfilePage() {
 
                 return (
                   <div className="profile-mission-card" key={entry.missionId}>
-                    <MissionCard mission={entry.mission} />
-                    <div style={{ marginTop: "0.65rem" }}>
+                    <div className="profile-mission-role">
                       <StatusPill tone={entry.council ? "council" : "info"}>{label}</StatusPill>
                     </div>
+                    <MissionCard mission={entry.mission} />
                   </div>
                 );
               })}
@@ -856,14 +900,51 @@ export function ProfilePage() {
         </GlassCard>
         <GlassCard className="section-card">
           <div className="section-heading">
-            <h2>My Funding Requests</h2>
+            <div>
+              <h2>Funding requests</h2>
+              <p>Track requests you submitted or need to vote on as a council member</p>
+            </div>
+            <div className="filter-pills">
+              <button className={cx("filter-pill", requestFilter === "submitted" && "active")} type="button" onClick={() => setRequestFilter("submitted")}>
+                Submitted by me
+              </button>
+              <button className={cx("filter-pill", requestFilter === "council" && "active")} type="button" onClick={() => setRequestFilter("council")}>
+                Submitted to me
+              </button>
+            </div>
           </div>
           <div className="request-list">
-            {missions.flatMap((mission) => mission.requests.slice(0, 1).map((request) => <FundingRequestCard key={request.id} request={request} symbol={mission.tokenSymbol} />))}
+            {visibleRequests.map(({ request, symbol }) => (
+              <FundingRequestCard key={`${requestFilter}-${request.id}`} request={request} symbol={symbol} />
+            ))}
           </div>
         </GlassCard>
       </section>
     </AppShell>
+  );
+}
+
+function XLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M13.9 10.5 21.3 2h-1.8l-6.4 7.4L8 2H2l7.8 11.4L2 22h1.8l6.8-7.8L16 22h6l-8.1-11.5Zm-2.4 2.7-.8-1.1L4.4 3.3h2.7l5 7.1.8 1.1 6.6 9.3h-2.7l-5.3-7.6Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function DiscordLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M19.8 5.4A16.2 16.2 0 0 0 15.7 4l-.2.4c1.5.4 2.2 1 2.2 1a13.8 13.8 0 0 0-11.4 0s.7-.6 2.3-1L8.3 4a16.2 16.2 0 0 0-4.1 1.4C1.6 9.3.9 13.1 1.3 16.9a16.4 16.4 0 0 0 5 2.5l.9-1.5a10.4 10.4 0 0 1-1.4-.7l.3-.2a11.6 11.6 0 0 0 11.8 0l.3.2c-.5.3-.9.5-1.4.7l.9 1.5a16.4 16.4 0 0 0 5-2.5c.5-4.4-.7-8.1-2.9-11.5ZM8.7 14.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function GithubLogo() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="M12 .7a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.3 11.3 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.2c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .7Z" fill="currentColor" />
+    </svg>
   );
 }
 

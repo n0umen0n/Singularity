@@ -245,7 +245,7 @@ textarea {
 }
 
 .lede {
-  max-width: 44rem;
+  max-width: 58rem;
   margin: 0.9rem 0 0;
   color: var(--text-secondary);
   font-size: clamp(1rem, 1.4vw, 1.18rem);
@@ -1438,6 +1438,27 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.conditions-card {
+  display: inline-flex;
+  align-items: center;
+  min-height: 0;
+  margin-bottom: 1rem;
+  border-color: rgba(85, 240, 168, 0.36);
+  padding: 0.52rem 0.78rem;
+  color: #d9ffec;
+  background:
+    radial-gradient(circle at 24% 0%, rgba(85, 240, 168, 0.28), transparent 68%),
+    rgba(85, 240, 168, 0.13);
+  box-shadow:
+    0 0 0 1px rgba(85, 240, 168, 0.12) inset,
+    0 16px 38px rgba(85, 240, 168, 0.08);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .funding-rule-grid .stat-card {
   min-height: 170px;
   padding: 1.35rem;
@@ -1480,6 +1501,52 @@ textarea {
 .profile-avatar {
   width: 96px;
   height: 96px;
+}
+
+.profile-socials {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.46rem;
+  margin-top: 0.58rem;
+  margin-bottom: 0.6rem;
+}
+
+.profile-social-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  border: 1px solid rgba(255, 247, 237, 0.12);
+  border-radius: 999px;
+  padding: 0.36rem 0.58rem;
+  color: var(--text-secondary);
+  background: rgba(255, 247, 237, 0.045);
+  font-size: 0.68rem;
+  font-weight: 850;
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease;
+}
+
+.profile-social-link:hover,
+.profile-social-link:focus-visible {
+  color: var(--text-primary);
+  border-color: rgba(255, 247, 237, 0.28);
+  background: rgba(255, 247, 237, 0.08);
+}
+
+.profile-social-link svg {
+  width: 0.88rem;
+  height: 0.88rem;
+  flex: none;
+}
+
+.wallet-pill {
+  gap: 0.38rem;
+}
+
+.wallet-pill svg {
+  flex: none;
 }
 
 .balance-grid,
@@ -1531,6 +1598,10 @@ textarea {
 .profile-mission-card {
   display: flex;
   flex-direction: column;
+}
+
+.profile-mission-role {
+  margin-bottom: 0.65rem;
 }
 
 .profile-mission-card .mission-card-link {
