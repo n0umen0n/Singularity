@@ -27,8 +27,8 @@ const chapters: Chapter[] = [
     title: "Fundraising redefined",
     body: "Singularity connects investors with builders to grow capital together.",
     cta: {
-      label: "Request access",
-      href: "#chapter-2",
+      label: "Launch app",
+      href: "https://app.singularity.diy",
     },
     metric: "00",
   },
@@ -83,8 +83,8 @@ const chapters: Chapter[] = [
     body: "Investors share a capital pool and allocate it to contributors doing the work.",
     lines: ["MSIG system", "Timelock protection"],
     cta: {
-      label: "Join early access",
-      href: "#chapter-1",
+      label: "Launch app",
+      href: "https://app.singularity.diy",
     },
     metric: "07",
   },
