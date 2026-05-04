@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, ChevronDown, Copy, Sparkles, Zap } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
@@ -65,7 +65,7 @@ export function PageHeader({
 
 export function MissionsPage() {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("All");
+  const [filter, setFilter] = useState("Highest liquidity");
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
     const source = [...missions].filter(
@@ -75,8 +75,7 @@ export function MissionsPage() {
         mission.tokenSymbol.toLowerCase().includes(q),
     );
     if (filter === "Highest liquidity") return source.sort((a, b) => b.liquidity - a.liquidity);
-    if (filter === "Treasury size") return source.sort((a, b) => b.treasuryUsdc - a.treasuryUsdc);
-    if (filter === "Council activity") return source.sort((a, b) => b.requests.length - a.requests.length);
+    if (filter === "Most holders") return source.sort((a, b) => b.holders - a.holders);
     return source;
   }, [filter, query]);
 
@@ -99,7 +98,7 @@ export function MissionsPage() {
             />
           </label>
           <div className="filter-pills" aria-label="Mission filters">
-            {["All", "Highest liquidity", "Newest", "Treasury size", "Council activity"].map((entry) => (
+            {["Highest liquidity", "Newest", "Most holders"].map((entry) => (
               <button className={cx("filter-pill", filter === entry && "active")} key={entry} onClick={() => setFilter(entry)}>
                 {entry}
               </button>
@@ -116,9 +115,10 @@ export function MissionsPage() {
   );
 }
 
-export function MissionCard({ mission }: { mission: Mission }) {
-  return (
-    <Link href={`/missions/${mission.id}`} className="glass-card interactive mission-card mission-card-link">
+export function MissionCard({ mission, preview = false }: { mission: Mission; preview?: boolean }) {
+  const className = cx("glass-card mission-card mission-card-link", !preview && "interactive", preview && "mission-preview-card");
+  const content = (
+    <>
       <div className="mission-card-media">
         <img src={mission.image} alt="" />
         <span className="token-avatar">
@@ -136,6 +136,20 @@ export function MissionCard({ mission }: { mission: Mission }) {
           <ArrowRight size={18} />
         </div>
       </div>
+    </>
+  );
+
+  if (preview) {
+    return (
+      <article className={className} aria-label="Mission discovery preview">
+        {content}
+      </article>
+    );
+  }
+
+  return (
+    <Link href={`/missions/${mission.id}`} className={className}>
+      {content}
     </Link>
   );
 }
@@ -623,6 +637,34 @@ function TradePanel({ mission }: { mission: Mission }) {
 export function LaunchMissionPage() {
   const [symbol, setSymbol] = useState("");
   const [statement, setStatement] = useState("");
+  const [description, setDescription] = useState("");
+  const [missionImage, setMissionImage] = useState(missions[0].image);
+  const [tokenImage, setTokenImage] = useState(missions[0].tokenImage);
+  const previewSymbol = symbol || "NOVA";
+  const previewMission: Mission = {
+    ...missions[0],
+    id: "preview",
+    statement: statement || "Coordinate the first open-source lunar robotics network.",
+    tokenSymbol: previewSymbol,
+    description: description || "Live preview of how your mission will appear in discovery.",
+    image: missionImage,
+    tokenImage,
+    liquidity: 1000000,
+    holders: 1800,
+  };
+
+  useEffect(() => {
+    return () => {
+      if (missionImage.startsWith("blob:")) URL.revokeObjectURL(missionImage);
+    };
+  }, [missionImage]);
+
+  useEffect(() => {
+    return () => {
+      if (tokenImage.startsWith("blob:")) URL.revokeObjectURL(tokenImage);
+    };
+  }, [tokenImage]);
+
   return (
     <AppShell>
       <section className="page-container">
@@ -646,15 +688,10 @@ export function LaunchMissionPage() {
                 <InfoCard title="20% Mission treasury" body="Reserved for funding mission-related work." />
               </div>
             </GlassCard>
-            <MissionCard
-              mission={{
-                ...missions[0],
-                id: "preview",
-                statement: statement || "Coordinate the first open-source lunar robotics network.",
-                tokenSymbol: symbol || "NOVA",
-                description: "Live preview of how your mission will appear in discovery.",
-              }}
-            />
+            <div className="live-preview-stack">
+              <span className="preview-label">Preview</span>
+              <MissionCard mission={previewMission} preview />
+            </div>
           </div>
           <GlassCard className="section-card">
             <div className="form-grid">
@@ -668,10 +705,21 @@ export function LaunchMissionPage() {
                   onChange={(event) => setStatement(event.target.value)}
                 />
               </label>
-              <UploadBox label="Mission image" note="16:10 PNG, JPG, WEBP, or SVG" />
+              <UploadBox
+                label="Mission image"
+                note="16:10 PNG, JPG, WEBP, or SVG"
+                previewSrc={missionImage}
+                onFileSelect={(url) => setMissionImage(url)}
+              />
               <label>
                 <span className="form-label">Mission description</span>
-                <textarea className="textarea" placeholder="Explain what the mission is, why it matters, and what funded work should advance." />
+                <textarea
+                  className="textarea"
+                  maxLength={1200}
+                  placeholder="Explain what the mission is, why it matters, and what funded work should advance."
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
               </label>
               <label>
                 <span className="form-label">Token symbol</span>
@@ -680,10 +728,15 @@ export function LaunchMissionPage() {
                   maxLength={8}
                   placeholder="NOVA"
                   value={symbol}
-                  onChange={(event) => setSymbol(event.target.value.toUpperCase())}
+                  onChange={(event) => setSymbol(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
                 />
               </label>
-              <UploadBox label="Token image" note="Square 1:1 image, shown as a circle" />
+              <UploadBox
+                label="Token image"
+                note="Square 1:1 image, shown as a circle"
+                previewSrc={tokenImage}
+                onFileSelect={(url) => setTokenImage(url)}
+              />
               <label>
                 <span className="form-label">Initial purchase in USDC</span>
                 <input className="field" placeholder="1000" />
@@ -698,16 +751,37 @@ export function LaunchMissionPage() {
   );
 }
 
-function UploadBox({ label, note }: { label: string; note: string }) {
+function UploadBox({
+  label,
+  note,
+  previewSrc,
+  onFileSelect,
+}: {
+  label: string;
+  note: string;
+  previewSrc?: string;
+  onFileSelect?: (url: string) => void;
+}) {
   return (
     <div>
       <span className="form-label">{label}</span>
-      <div className="upload-box">
+      <label className="upload-box">
+        <input
+          accept="image/*"
+          className="sr-only"
+          type="file"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file || !onFileSelect) return;
+            onFileSelect(URL.createObjectURL(file));
+          }}
+        />
+        {previewSrc ? <img className="upload-preview-image" src={previewSrc} alt="" /> : null}
         <div>
           <Sparkles size={22} />
           <p>{note}</p>
         </div>
-      </div>
+      </label>
     </div>
   );
 }
