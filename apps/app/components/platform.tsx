@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { createPortal } from "react-dom";
 import { ArrowRight, ChevronDown, Copy, Sparkles, Upload, Zap } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
@@ -12,6 +12,19 @@ import * as api from "@/lib/api";
 import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/mock-data";
 import { money, number, shortAddress } from "@/lib/format";
 import { useSingularityWallet } from "@/lib/wallet";
+
+type CropKind = "mission" | "token";
+
+type CropRequest = {
+  kind: CropKind;
+  label: string;
+  sourceUrl: string;
+  file: File;
+  aspectRatio: number;
+  outputWidth: number;
+  outputHeight: number;
+  shape: "rect" | "circle";
+};
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
@@ -72,28 +85,41 @@ export function PageHeader({
   );
 }
 
-export function MissionsPage() {
+function missionListKey(query: string, sort: string) {
+  return `${query.trim()}\u0000${sort}`;
+}
+
+export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("Highest liquidity");
-  const [missions, setMissions] = useState<Mission[]>([]);
+  const [missions, setMissions] = useState<Mission[]>(initialMissions ?? []);
   const [error, setError] = useState<string | null>(null);
   const sort = filter === "Newest" ? "newest" : filter === "Most holders" ? "most-holders" : "highest-liquidity";
+  const loadedKey = useRef<string | null>(initialMissions ? missionListKey("", sort) : null);
 
   useEffect(() => {
-    let alive = true;
-    api
-      .listMissions({ q: query, sort })
-      .then(({ missions }) => {
-        if (alive) {
-          setMissions(missions);
-          setError(null);
-        }
-      })
-      .catch((error: Error) => {
-        if (alive) setError(error.message);
-      });
+    const key = missionListKey(query, sort);
+    if (loadedKey.current === key) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      api
+        .listMissions({ q: query, sort }, { signal: controller.signal })
+        .then(({ missions }) => {
+          if (!controller.signal.aborted) {
+            setMissions(missions);
+            setError(null);
+            loadedKey.current = key;
+          }
+        })
+        .catch((error: Error) => {
+          if (error.name !== "AbortError") setError(error.message);
+        });
+    }, query.trim() ? 180 : 0);
+
     return () => {
-      alive = false;
+      window.clearTimeout(timer);
+      controller.abort();
     };
   }, [query, sort]);
 
@@ -125,8 +151,8 @@ export function MissionsPage() {
         </div>
         <div className="mission-grid">
           {error ? <GlassCard className="section-card">{error}</GlassCard> : null}
-          {missions.map((mission) => (
-            <MissionCard key={mission.id} mission={mission} />
+          {missions.map((mission, index) => (
+            <MissionCard key={mission.id} mission={mission} priority={index < 2} />
           ))}
         </div>
       </section>
@@ -134,14 +160,14 @@ export function MissionsPage() {
   );
 }
 
-export function MissionCard({ mission, preview = false }: { mission: Mission; preview?: boolean }) {
+export function MissionCard({ mission, preview = false, priority = false }: { mission: Mission; preview?: boolean; priority?: boolean }) {
   const className = cx("glass-card mission-card mission-card-link", !preview && "interactive", preview && "mission-preview-card");
   const content = (
     <>
       <div className="mission-card-media">
-        <img src={mission.image} alt="" />
+        <img src={mission.image} alt="" decoding="async" loading={priority ? "eager" : "lazy"} fetchPriority={priority ? "high" : "auto"} />
         <span className="token-avatar">
-          <img src={mission.tokenImage} alt="" />
+          <img src={mission.tokenImage} alt="" decoding="async" loading={priority ? "eager" : "lazy"} />
         </span>
         <span className="media-pill">{money(mission.liquidity, true)} liquidity</span>
       </div>
@@ -167,7 +193,7 @@ export function MissionCard({ mission, preview = false }: { mission: Mission; pr
   }
 
   return (
-    <Link href={`/missions/${mission.id}`} className={className}>
+    <Link href={`/missions/${mission.id}`} className={className} prefetch={false}>
       {content}
     </Link>
   );
@@ -190,6 +216,7 @@ function CouncilMemberFlipCard({
       ? "Your candidacy is registered. Your council position will update from checkpointed token balances."
       : councilMemberDescriptions[member.name] ??
         "Mission council member helping approve treasury funding for work that advances the mission.";
+  const profileHref = `/profile/${encodeURIComponent(member.address)}`;
 
   return (
     <FlipCard
@@ -198,7 +225,7 @@ function CouncilMemberFlipCard({
         <article className="glass-card flip-profile-card flip-profile-front">
           <StatusPill>#{index + 1}</StatusPill>
           <span className="flip-profile-avatar">
-            <img src={member.avatar} alt="" />
+            <img src={member.avatar} alt="" decoding="async" loading="lazy" />
           </span>
           <div>
             <h3>{member.name}</h3>
@@ -227,7 +254,9 @@ function CouncilMemberFlipCard({
               </a>
             </div>
           )}
-          <div className="button button-primary flip-profile-button">Open profile</div>
+          <Link className="button button-primary flip-profile-button" href={profileHref} prefetch={false}>
+            Open profile
+          </Link>
         </article>
       }
     />
@@ -266,25 +295,29 @@ const previewPerformance: Mission["performance"] = {
   "1M": { label: "1 month", agoLabel: "1 month ago", value: 100, change: 0 },
 };
 
-export function MissionDetailPage({ missionId }: { missionId: string }) {
-  const [mission, setMission] = useState<Mission | null>(null);
+export function MissionDetailPage({ missionId, initialMission }: { missionId: string; initialMission?: Mission | null }) {
+  const [mission, setMission] = useState<Mission | null>(initialMission ?? null);
   const [error, setError] = useState<string | null>(null);
+  const loadedMissionId = useRef(initialMission?.id ?? null);
 
   useEffect(() => {
-    let alive = true;
+    if (loadedMissionId.current === missionId) return;
+
+    const controller = new AbortController();
     api
-      .getMission(missionId)
+      .getMission(missionId, { signal: controller.signal })
       .then(({ mission }) => {
-        if (alive) {
+        if (!controller.signal.aborted) {
           setMission(mission);
           setError(null);
+          loadedMissionId.current = mission.id;
         }
       })
       .catch((error: Error) => {
-        if (alive) setError(error.message);
+        if (error.name !== "AbortError") setError(error.message);
       });
     return () => {
-      alive = false;
+      controller.abort();
     };
   }, [missionId]);
 
@@ -292,7 +325,7 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
     return (
       <AppShell>
         <section className="page-container">
-          <GlassCard className="section-card">{error || "Loading mission..."}</GlassCard>
+          {error ? <GlassCard className="section-card">{error}</GlassCard> : <PageLoader />}
         </section>
       </AppShell>
     );
@@ -320,7 +353,7 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
 function MissionHero({ mission }: { mission: Mission }) {
   return (
     <section className="glass-card mission-hero">
-      <img className="hero-image" src={mission.image} alt="" />
+      <img className="hero-image" src={mission.image} alt="" decoding="async" loading="eager" fetchPriority="high" />
       <div className="hero-topline">
         <StatusPill>Missions / {mission.tokenSymbol}</StatusPill>
         <StatusPill tone="info">{money(mission.liquidity, true)} liquidity</StatusPill>
@@ -332,7 +365,7 @@ function MissionHero({ mission }: { mission: Mission }) {
             <p>{mission.description}</p>
           </div>
           <span className="token-avatar" style={{ width: 72, height: 72 }}>
-            <img src={mission.tokenImage} alt="" />
+            <img src={mission.tokenImage} alt="" decoding="async" loading="eager" />
           </span>
         </div>
       </div>
@@ -417,22 +450,54 @@ function CouncilSection({ mission }: { mission: Mission }) {
   const wallet = useSingularityWallet();
   const [status, setStatus] = useState<string | null>(null);
   const [isRegistering, setIsRegistering] = useState(false);
+  const [registrationSucceeded, setRegistrationSucceeded] = useState(false);
   const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [registeredCandidateAddress, setRegisteredCandidateAddress] = useState<string | null>(null);
-  const userBalance = mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
+  const [walletTokenBalance, setWalletTokenBalance] = useState<number | null>(null);
+  const userBalance = walletTokenBalance ?? mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
   const trackedBalance = Math.max(0, Math.floor(userBalance));
-  const candidateRank = trackedBalance > 0 ? mission.council.filter((member) => member.tokens > trackedBalance).length + 1 : null;
+  const openCouncilSlots = Math.max(6 - mission.council.length, 0);
+  const candidateRank =
+    openCouncilSlots > 0
+      ? mission.council.length + 1
+      : mission.council.filter((member) => member.tokens > trackedBalance).length + 1;
+  const candidateRankLabel = mission.council.length === 0 ? "TOP 6" : `#${candidateRank}`;
   const candidateRankDetail =
-    candidateRank === null
-      ? `Register now to become eligible. Council rank is calculated from your ${mission.tokenSymbol} balance at the next checkpoint.`
-      : candidateRank <= 6
-        ? "You would be in the current top 6 council."
-        : "";
+    mission.council.length === 0
+      ? "You'd be ranked TOP 6 as the first registered candidate."
+      : openCouncilSlots > 0
+        ? `You'd be ranked #${candidateRank} because there ${openCouncilSlots === 1 ? "is" : "are"} still ${
+            openCouncilSlots
+          } free council ${openCouncilSlots === 1 ? "spot" : "spots"}.`
+        : candidateRank <= 6
+          ? "You would be in the current top 6 council."
+          : `Increase your ${mission.tokenSymbol} balance to reach the top 6.`;
   const [isCandidateModalOpen, setIsCandidateModalOpen] = useState(false);
 
   useEffect(() => {
     setModalRoot(document.body);
   }, []);
+
+  useEffect(() => {
+    if (!wallet.address) {
+      setWalletTokenBalance(null);
+      return;
+    }
+
+    let alive = true;
+    api
+      .getMissionBalances(mission.id, wallet.address)
+      .then((balances) => {
+        if (alive) setWalletTokenBalance(balances.missionToken);
+      })
+      .catch(() => {
+        if (alive) setWalletTokenBalance(null);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [mission.id, wallet.address]);
 
   const displayedCouncil = useMemo(() => {
     const members = mission.council.map((member) =>
@@ -496,12 +561,14 @@ function CouncilSection({ mission }: { mission: Mission }) {
     }
     setIsRegistering(true);
     try {
+      setStatus(null);
+      setRegistrationSucceeded(false);
       const result = await api.registerCouncilCandidate(mission.id);
       const signature = await wallet.sendPreparedTransaction(result.transaction);
       if (signature) {
         setRegisteredCandidateAddress(wallet.address);
-        const nextRank = displayedCouncil.length === 0 ? 1 : Math.min(displayedCouncil.length + 1, 6);
-        setStatus(`Registration confirmed on-chain: ${shortAddress(signature)}. You now appear in council slot #${nextRank}.`);
+        setRegistrationSucceeded(true);
+        window.setTimeout(() => setRegistrationSucceeded(false), 1600);
         setIsCandidateModalOpen(false);
       } else {
         if (result.transaction.status === "not_configured" && result.transaction.message.includes("already registered")) {
@@ -546,7 +613,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
           </div>
           <div className="candidate-metric-card">
             <span className="stat-label">Rank if you register</span>
-            <strong>{candidateRank === null ? "Checkpoint pending" : `#${candidateRank}`}</strong>
+            <strong>{candidateRankLabel}</strong>
             <small>{candidateRankDetail}</small>
           </div>
         </div>
@@ -590,7 +657,11 @@ function CouncilSection({ mission }: { mission: Mission }) {
           </button>
         </div>
       </div>
-      {status ? <p className="stat-note">{status}</p> : null}
+      {registrationSucceeded ? (
+        <p className="stat-note">Success <InlineSuccess /></p>
+      ) : status ? (
+        <p className="stat-note">{status}</p>
+      ) : null}
       <div className="council-grid">
         {councilSlots.map((member, index) => (
           member ? (
@@ -625,7 +696,7 @@ function FundingRequests({ mission, onMissionChange }: { mission: Mission; onMis
           <h2>Funding Requests</h2>
           <p>Builders can request treasury funds for work that advances the mission.</p>
         </div>
-        <Link className="button button-primary" href={`/missions/${mission.id}/request-funding`}>
+        <Link className="button button-primary" href={`/missions/${mission.id}/request-funding`} prefetch={false}>
           Create funding request
         </Link>
       </div>
@@ -676,7 +747,7 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
           <div className="request-title">{request.name}</div>
           <div className="request-meta">
             <span className="avatar" style={{ width: 26, height: 26 }}>
-              <img src={request.requesterAvatar} alt="" />
+              <img src={request.requesterAvatar} alt="" decoding="async" loading="lazy" />
             </span>
             {request.requester}
           </div>
@@ -740,13 +811,17 @@ function capitalizationBreakdown(mission: Mission) {
   const treasuryTokens = mission.treasuryTokens;
   const marketTokens = mission.marketTokens ?? Math.max(mission.totalSupply - treasuryTokens, 0);
   const investorTokens = mission.circulatingTokens ?? Math.max(mission.totalSupply - treasuryTokens - marketTokens, 0);
+  const treasuryValue =
+    Number.isFinite(mission.treasuryUsdc) && mission.treasuryUsdc > 0
+      ? mission.treasuryUsdc
+      : treasuryTokens * mission.tokenPrice;
 
   return {
     investorTokens,
     treasuryTokens,
     marketTokens,
     marketCapValue: mission.totalSupply * mission.tokenPrice,
-    treasuryValue: mission.treasuryUsdc,
+    treasuryValue,
     marketValue: marketTokens * mission.tokenPrice,
   };
 }
@@ -887,6 +962,19 @@ function InlineLoader() {
       <span />
       <span />
     </span>
+  );
+}
+
+function PageLoader() {
+  return (
+    <GlassCard className="section-card page-loader-card" aria-busy="true" aria-live="polite">
+      <div className="singularity-loader" aria-hidden="true">
+        <span className="loader-orbit loader-orbit-one" />
+        <span className="loader-orbit loader-orbit-two" />
+        <span className="loader-core" />
+      </div>
+      <strong>Loading</strong>
+    </GlassCard>
   );
 }
 
@@ -1058,6 +1146,8 @@ export function LaunchMissionPage() {
   const [tokenImage, setTokenImage] = useState(defaultTokenImage);
   const [missionImageFile, setMissionImageFile] = useState<File | null>(null);
   const [tokenImageFile, setTokenImageFile] = useState<File | null>(null);
+  const [cropRequest, setCropRequest] = useState<CropRequest | null>(null);
+  const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const previewSymbol = symbol || "NOVA";
   const previewMission: Mission = {
@@ -1077,6 +1167,28 @@ export function LaunchMissionPage() {
     performance: previewPerformance,
     council: [],
     requests: [],
+  };
+  const openCropper = (kind: CropKind, url: string, file: File) => {
+    setCropRequest({
+      kind,
+      label: kind === "mission" ? "Crop mission image" : "Crop token image",
+      sourceUrl: url,
+      file,
+      aspectRatio: kind === "mission" ? 16 / 10 : 1,
+      outputWidth: kind === "mission" ? 1600 : 800,
+      outputHeight: kind === "mission" ? 1000 : 800,
+      shape: kind === "mission" ? "rect" : "circle",
+    });
+  };
+  const applyCroppedImage = ({ url, file, kind }: { url: string; file: File; kind: CropKind }) => {
+    if (kind === "mission") {
+      setMissionImage(url);
+      setMissionImageFile(file);
+    } else {
+      setTokenImage(url);
+      setTokenImageFile(file);
+    }
+    setCropRequest(null);
   };
   const launch = async () => {
     if (!wallet.address) {
@@ -1117,6 +1229,10 @@ export function LaunchMissionPage() {
       setStatus(error instanceof Error ? error.message : "Mission launch failed.");
     }
   };
+
+  useEffect(() => {
+    setModalRoot(document.body);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1172,11 +1288,10 @@ export function LaunchMissionPage() {
               </label>
               <UploadBox
                 label="Mission image"
-                note="16:10 PNG, JPG, WEBP, or SVG"
+                note="Upload any image, then crop it to 16:10"
                 previewSrc={missionImage}
                 onFileSelect={(url, file) => {
-                  setMissionImage(url);
-                  setMissionImageFile(file);
+                  openCropper("mission", url, file);
                 }}
               />
               <label>
@@ -1201,11 +1316,11 @@ export function LaunchMissionPage() {
               </label>
               <UploadBox
                 label="Token image"
-                note="Square 1:1 image, shown as a circle"
+                note="Upload any image, then crop it round"
                 previewSrc={tokenImage}
+                shape="circle"
                 onFileSelect={(url, file) => {
-                  setTokenImage(url);
-                  setTokenImageFile(file);
+                  openCropper("token", url, file);
                 }}
               />
               <label>
@@ -1220,8 +1335,172 @@ export function LaunchMissionPage() {
             </div>
           </GlassCard>
         </div>
+        {modalRoot && cropRequest
+          ? createPortal(
+              <ImageCropper
+                request={cropRequest}
+                onCancel={() => {
+                  URL.revokeObjectURL(cropRequest.sourceUrl);
+                  setCropRequest(null);
+                }}
+                onCropped={applyCroppedImage}
+                onError={(message) => setStatus(message)}
+              />,
+              modalRoot,
+            )
+          : null}
       </section>
     </AppShell>
+  );
+}
+
+function imageOutputType(file: File, shape: CropRequest["shape"]) {
+  if (shape === "circle") return "image/png";
+  return file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/webp" ? file.type : "image/png";
+}
+
+function croppedFileName(file: File, type: string) {
+  const extension = type === "image/jpeg" ? "jpg" : type === "image/webp" ? "webp" : "png";
+  const base = file.name.replace(/\.[^.]+$/, "") || "image";
+  return `${base}-cropped.${extension}`;
+}
+
+async function cropImage(request: CropRequest, zoom: number, x: number, y: number) {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = request.sourceUrl;
+  await image.decode();
+
+  const canvas = document.createElement("canvas");
+  canvas.width = request.outputWidth;
+  canvas.height = request.outputHeight;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Image crop failed because canvas is unavailable.");
+
+  const imageRatio = image.naturalWidth / image.naturalHeight;
+  let sourceWidth: number;
+  let sourceHeight: number;
+  if (imageRatio > request.aspectRatio) {
+    sourceHeight = image.naturalHeight / zoom;
+    sourceWidth = sourceHeight * request.aspectRatio;
+  } else {
+    sourceWidth = image.naturalWidth / zoom;
+    sourceHeight = sourceWidth / request.aspectRatio;
+  }
+
+  sourceWidth = Math.min(sourceWidth, image.naturalWidth);
+  sourceHeight = Math.min(sourceHeight, image.naturalHeight);
+  const focusX = Math.min(Math.max(0.5 + x / 200, 0), 1);
+  const focusY = Math.min(Math.max(0.5 + y / 200, 0), 1);
+  const sourceX = (image.naturalWidth - sourceWidth) * focusX;
+  const sourceY = (image.naturalHeight - sourceHeight) * focusY;
+
+  if (request.shape === "circle") {
+    context.save();
+    context.beginPath();
+    context.arc(request.outputWidth / 2, request.outputHeight / 2, Math.min(request.outputWidth, request.outputHeight) / 2, 0, Math.PI * 2);
+    context.clip();
+  }
+
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, request.outputWidth, request.outputHeight);
+  if (request.shape === "circle") context.restore();
+
+  const type = imageOutputType(request.file, request.shape);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, 0.92));
+  if (!blob) throw new Error("Image crop failed. Try a PNG, JPG, or WEBP image.");
+  const file = new File([blob], croppedFileName(request.file, type), { type });
+  return { file, url: URL.createObjectURL(file) };
+}
+
+function ImageCropper({
+  request,
+  onCancel,
+  onCropped,
+  onError,
+}: {
+  request: CropRequest;
+  onCancel: () => void;
+  onCropped: (result: { url: string; file: File; kind: CropKind }) => void;
+  onError: (message: string) => void;
+}) {
+  const [zoom, setZoom] = useState(1);
+  const [x, setX] = useState(0);
+  const [y, setY] = useState(0);
+  const [isCropping, setIsCropping] = useState(false);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isCropping) onCancel();
+    };
+
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isCropping, onCancel]);
+
+  const apply = async () => {
+    try {
+      setIsCropping(true);
+      const cropped = await cropImage(request, zoom, x, y);
+      URL.revokeObjectURL(request.sourceUrl);
+      onCropped({ ...cropped, kind: request.kind });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Image crop failed.");
+    } finally {
+      setIsCropping(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={() => !isCropping && onCancel()}>
+      <div className="glass-card image-crop-modal" role="dialog" aria-modal="true" aria-labelledby="image-crop-title" onClick={(event) => event.stopPropagation()}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Image crop</p>
+            <h2 id="image-crop-title">{request.label}</h2>
+            <p>{request.kind === "mission" ? "Frame the image exactly as it will appear on mission cards and the mission page." : "Frame the token art inside the circular avatar."}</p>
+          </div>
+        </div>
+        <div className={cx("crop-preview-frame", request.shape === "circle" && "crop-preview-round")} style={{ aspectRatio: `${request.outputWidth} / ${request.outputHeight}` }}>
+          <img
+            src={request.sourceUrl}
+            alt=""
+            decoding="async"
+            style={{
+              objectPosition: `${50 + x / 2}% ${50 + y / 2}%`,
+              transform: `scale(${zoom})`,
+            }}
+          />
+        </div>
+        <div className="crop-control-grid">
+          <label>
+            <span className="form-label">Zoom</span>
+            <input className="range-field" min="1" max="3" step="0.01" type="range" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
+          </label>
+          <label>
+            <span className="form-label">Horizontal position</span>
+            <input className="range-field" min="-100" max="100" step="1" type="range" value={x} onChange={(event) => setX(Number(event.target.value))} />
+          </label>
+          <label>
+            <span className="form-label">Vertical position</span>
+            <input className="range-field" min="-100" max="100" step="1" type="range" value={y} onChange={(event) => setY(Number(event.target.value))} />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button className="button" type="button" disabled={isCropping} onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="button" disabled={isCropping} onClick={() => void apply()}>
+            {isCropping ? "Cropping..." : "Use cropped image"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1229,17 +1508,19 @@ function UploadBox({
   label,
   note,
   previewSrc,
+  shape = "rect",
   onFileSelect,
 }: {
   label: string;
   note: string;
   previewSrc?: string;
+  shape?: "rect" | "circle";
   onFileSelect?: (url: string, file: File) => void;
 }) {
   return (
     <div>
       <span className="form-label">{label}</span>
-      <label className="upload-box">
+      <label className={cx("upload-box", shape === "circle" && "upload-box-round")}>
         <input
           accept="image/*"
           className="sr-only"
@@ -1250,7 +1531,7 @@ function UploadBox({
             onFileSelect(URL.createObjectURL(file), file);
           }}
         />
-        {previewSrc ? <img className="upload-preview-image" src={previewSrc} alt="" /> : null}
+        {previewSrc ? <img className="upload-preview-image" src={previewSrc} alt="" decoding="async" /> : null}
         <div>
           <Sparkles size={22} />
           <p>{note}</p>
@@ -1269,24 +1550,40 @@ function InfoCard({ title, body }: { title: string; body: string }) {
   );
 }
 
-export function RequestFundingPage({ missionId }: { missionId: string }) {
+export function RequestFundingPage({ missionId, initialMission }: { missionId: string; initialMission?: Mission | null }) {
   const router = useRouter();
   const wallet = useSingularityWallet();
-  const [mission, setMission] = useState<Mission | null>(null);
+  const [mission, setMission] = useState<Mission | null>(initialMission ?? null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const loadedMissionId = useRef(initialMission?.id ?? null);
   useEffect(() => {
-    api.getMission(missionId).then(({ mission }) => setMission(mission)).catch((error: Error) => setStatus(error.message));
+    if (loadedMissionId.current === missionId) return;
+
+    const controller = new AbortController();
+    api
+      .getMission(missionId, { signal: controller.signal })
+      .then(({ mission }) => {
+        if (!controller.signal.aborted) {
+          setMission(mission);
+          loadedMissionId.current = mission.id;
+        }
+      })
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") setStatus(error.message);
+      });
+
+    return () => controller.abort();
   }, [missionId]);
 
   if (!mission) {
     return (
       <AppShell>
         <section className="page-container">
-          <GlassCard className="section-card">{status || "Loading mission..."}</GlassCard>
+          {status ? <GlassCard className="section-card">{status}</GlassCard> : <PageLoader />}
         </section>
       </AppShell>
     );
@@ -1435,7 +1732,7 @@ function EmptyState({ title, description }: { title: string; description: string
   );
 }
 
-export function ProfilePage() {
+export function ProfilePage({ address }: { address?: string }) {
   const wallet = useSingularityWallet();
   const [profile, setProfile] = useState<api.Profile | null>(null);
   const [missions, setMissions] = useState<Mission[]>([]);
@@ -1443,18 +1740,32 @@ export function ProfilePage() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [addressCopied, setAddressCopied] = useState(false);
   const [draft, setDraft] = useState({ name: "", description: "", avatar: "", x: "", telegram: "", github: "" });
   const [requestFilter, setRequestFilter] = useState<"submitted" | "council">("submitted");
+  const targetAddress = address || wallet.address;
   useEffect(() => {
-    if (!wallet.address) return;
-    api.getProfile(wallet.address).then(({ profile }) => {
-      setProfile(profile);
-      setDraft(profileDraftFromProfile(profile));
-    }).catch((error: Error) => setStatus(error.message));
-    api.listMissions().then(({ missions }) => setMissions(missions)).catch(() => undefined);
-  }, [wallet.address]);
+    if (!targetAddress) return;
+    const controller = new AbortController();
 
-  if (!wallet.address) {
+    Promise.all([
+      api.getProfile(targetAddress, { signal: controller.signal }),
+      api.listMissions({}, { signal: controller.signal }),
+    ])
+      .then(([{ profile }, { missions }]) => {
+        if (controller.signal.aborted) return;
+        setProfile(profile);
+        setDraft(profileDraftFromProfile(profile));
+        setMissions(missions);
+      })
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") setStatus(error.message);
+      });
+
+    return () => controller.abort();
+  }, [targetAddress]);
+
+  if (!targetAddress) {
     return (
       <AppShell>
         <section className="page-container">
@@ -1472,7 +1783,7 @@ export function ProfilePage() {
     return (
       <AppShell>
         <section className="page-container">
-          <GlassCard className="section-card">{status || "Loading profile..."}</GlassCard>
+          {status ? <GlassCard className="section-card">{status}</GlassCard> : <PageLoader />}
         </section>
       </AppShell>
     );
@@ -1493,6 +1804,8 @@ export function ProfilePage() {
   const visibleRequests = requestFilter === "submitted" ? submittedRequests : councilRequests;
   const displayName = profile.name || "Unnamed profile";
   const description = profile.description || "Add a short description about yourself.";
+  const isOwnProfile = Boolean(wallet.address && profile.address.toLowerCase() === wallet.address.toLowerCase());
+  const isEditingOwnProfile = isOwnProfile && editing;
   const saveProfile = async () => {
     try {
       setSaving(true);
@@ -1531,6 +1844,8 @@ export function ProfilePage() {
   const copyAddress = async () => {
     try {
       await navigator.clipboard.writeText(profile.address);
+      setAddressCopied(true);
+      window.setTimeout(() => setAddressCopied(false), 1400);
     } catch {
       setStatus("Could not copy address.");
     }
@@ -1539,13 +1854,21 @@ export function ProfilePage() {
   return (
     <AppShell>
       <section className="page-container">
-        <PageHeader eyebrow="Wallet identity" title="Profile" description="Your balances, mission positions, treasury council roles, and funding requests." />
-        <GlassCard className={cx("profile-hero", editing && "profile-hero-editing")}>
+        <PageHeader
+          eyebrow="Wallet identity"
+          title="Profile"
+          description={
+            isOwnProfile
+              ? "Your balances, mission positions, treasury council roles, and funding requests."
+              : "Balances, mission positions, treasury council roles, and funding requests for this wallet."
+          }
+        />
+        <GlassCard className={cx("profile-hero", isEditingOwnProfile && "profile-hero-editing")}>
           <div className="profile-avatar-column">
             <span className="avatar profile-avatar">
-              {(editing ? draft.avatar : profile.avatar) ? <img src={editing ? draft.avatar : profile.avatar} alt="" /> : <span>{profileInitial(profile)}</span>}
+              {(isEditingOwnProfile ? draft.avatar : profile.avatar) ? <img src={isEditingOwnProfile ? draft.avatar : profile.avatar} alt="" decoding="async" loading="eager" /> : <span>{profileInitial(profile)}</span>}
             </span>
-            {editing ? (
+            {isEditingOwnProfile ? (
               <label className="button profile-upload-button">
                 <Upload size={15} />
                 {uploading ? "Uploading..." : "Upload image"}
@@ -1554,7 +1877,7 @@ export function ProfilePage() {
             ) : null}
           </div>
           <div className="profile-main">
-            {editing ? (
+            {isEditingOwnProfile ? (
               <div className="profile-edit-form">
                 <label>
                   <span className="form-label">Display name</span>
@@ -1612,21 +1935,23 @@ export function ProfilePage() {
               </>
             )}
             <button className="status-pill wallet-pill wallet-copy-button" type="button" onClick={() => void copyAddress()} aria-label="Copy wallet address">
-              {shortAddress(profile.address)} <Copy size={12} />
+              {addressCopied ? "Copied" : shortAddress(profile.address)} <Copy size={12} />
             </button>
             {status ? <p className="stat-note profile-status">{status}</p> : null}
           </div>
-          <div className="profile-actions">
-            {editing ? (
-              <>
-                <button className="button button-primary" disabled={saving || uploading} onClick={() => void saveProfile()}>{saving ? <InlineLoader /> : "Save profile"}</button>
-                <button className="button" disabled={saving} onClick={() => { setDraft(profileDraftFromProfile(profile)); setEditing(false); setStatus(null); }}>Cancel</button>
-              </>
-            ) : (
-              <button className="button button-primary" onClick={() => setEditing(true)}>Edit profile</button>
-            )}
-            <button className="button" onClick={() => void wallet.signOut()}>Disconnect</button>
-          </div>
+          {isOwnProfile ? (
+            <div className="profile-actions">
+              {isEditingOwnProfile ? (
+                <>
+                  <button className="button button-primary" disabled={saving || uploading} onClick={() => void saveProfile()}>{saving ? <InlineLoader /> : "Save profile"}</button>
+                  <button className="button" disabled={saving} onClick={() => { setDraft(profileDraftFromProfile(profile)); setEditing(false); setStatus(null); }}>Cancel</button>
+                </>
+              ) : (
+                <button className="button button-primary" onClick={() => setEditing(true)}>Edit profile</button>
+              )}
+              <button className="button" onClick={() => void wallet.signOut()}>Disconnect</button>
+            </div>
+          ) : null}
         </GlassCard>
         <GlassCard className="section-card">
           <div className="section-heading">
@@ -1634,15 +1959,19 @@ export function ProfilePage() {
           </div>
           <div className="balance-grid">
             <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
-            {profile.tokenBalances.map((balance) => (
-              <BalanceCard
-                key={balance.symbol}
-                symbol={balance.symbol.slice(0, 1)}
-                label={balance.symbol}
-                value={`${number(balance.balance)} ${balance.symbol}`}
-                note={money(balance.usd)}
-              />
-            ))}
+            {profile.tokenBalances.map((balance) => {
+              const mission = missionById.get(balance.missionId);
+              return (
+                <BalanceCard
+                  key={balance.symbol}
+                  symbol={balance.symbol.slice(0, 1)}
+                  label={balance.symbol}
+                  value={`${number(balance.balance)} ${balance.symbol}`}
+                  note={money(balance.usd)}
+                  icon={mission?.tokenImage ? <img className="mission-token-logo" src={mission.tokenImage} alt={`${balance.symbol} logo`} /> : undefined}
+                />
+              );
+            })}
           </div>
         </GlassCard>
         <GlassCard className="section-card">
@@ -1654,7 +1983,7 @@ export function ProfilePage() {
               {createdMissions.map((entry) => (
               <GlassCard className="creator-fee-card interactive" key={entry.missionId}>
                 <span className="token-avatar">
-                  <img src={entry.mission.tokenImage} alt="" />
+                  <img src={entry.mission.tokenImage} alt="" decoding="async" loading="lazy" />
                 </span>
                 <div>
                   <span className="stat-label">{entry.mission.tokenSymbol} earned fees</span>
@@ -1702,10 +2031,10 @@ export function ProfilePage() {
             </div>
             <div className="filter-pills">
               <button className={cx("filter-pill", requestFilter === "submitted" && "active")} type="button" onClick={() => setRequestFilter("submitted")}>
-                Submitted by me
+                {isOwnProfile ? "Submitted by me" : "Submitted by profile"}
               </button>
               <button className={cx("filter-pill", requestFilter === "council" && "active")} type="button" onClick={() => setRequestFilter("council")}>
-                Submitted to me
+                {isOwnProfile ? "Submitted to me" : "Submitted to profile"}
               </button>
             </div>
           </div>
@@ -1752,7 +2081,7 @@ function GithubLogo() {
 }
 
 function UsdcLogo() {
-  return <img className="usdc-logo" src="https://cryptologos.cc/logos/usd-coin-usdc-logo.svg" alt="USDC logo" />;
+  return <img className="usdc-logo" src="https://cryptologos.cc/logos/usd-coin-usdc-logo.svg" alt="USDC logo" decoding="async" loading="lazy" />;
 }
 
 function BalanceCard({ symbol, label, value, note, icon }: { symbol: string; label: string; value: string; note?: string; icon?: React.ReactNode }) {

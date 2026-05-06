@@ -66,19 +66,19 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export function listMissions(params: { q?: string; sort?: string } = {}) {
+export function listMissions(params: { q?: string; sort?: string } = {}, init?: Pick<RequestInit, "signal">) {
   const search = new URLSearchParams();
   if (params.q) search.set("q", params.q);
   if (params.sort) search.set("sort", params.sort);
-  return api<{ missions: Mission[] }>(`/api/missions${search.size ? `?${search}` : ""}`);
+  return api<{ missions: Mission[] }>(`/api/missions${search.size ? `?${search}` : ""}`, init);
 }
 
-export function getMission(missionId: string) {
-  return api<{ mission: Mission }>(`/api/missions/${missionId}`);
+export function getMission(missionId: string, init?: Pick<RequestInit, "signal">) {
+  return api<{ mission: Mission }>(`/api/missions/${missionId}`, init);
 }
 
-export function getProfile(address: string) {
-  return api<{ profile: Profile }>(`/api/profile/${address}`);
+export function getProfile(address: string, init?: Pick<RequestInit, "signal">) {
+  return api<{ profile: Profile }>(`/api/profile/${address}`, init);
 }
 
 export function updateProfile(input: { name?: string; description?: string; avatar?: string; socials?: string[] }) {

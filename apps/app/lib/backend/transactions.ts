@@ -344,7 +344,7 @@ export async function prepareLaunchTransaction(input: {
       uri: input.metadataUri || `https://metadata.singularity.diy/${input.metadataHash}.json`,
       quoteMint: process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT,
       feeClaimer: process.env.SINGULARITY_METEORA_FEE_CLAIMER || input.creatorWallet,
-      leftoverReceiver: process.env.SINGULARITY_METEORA_LEFTOVER_RECEIVER || treasuryAuthority,
+      leftoverReceiver: treasuryAuthority,
       totalSupply: launchConfig.totalSupply,
       treasurySupplyPercent: launchConfig.treasurySupplyPercent,
       initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,

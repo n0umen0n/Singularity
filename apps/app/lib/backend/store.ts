@@ -72,6 +72,14 @@ type BackendState = {
 
 export type MissionSort = "highest-liquidity" | "newest" | "most-holders";
 
+const launchPerformance: Mission["performance"] = {
+  "1H": { label: "1 hour", agoLabel: "1 hour ago", value: 100, change: 0 },
+  "4H": { label: "4 hours", agoLabel: "4 hours ago", value: 100, change: 0 },
+  "1D": { label: "1 day", agoLabel: "1 day ago", value: 100, change: 0 },
+  "1W": { label: "1 week", agoLabel: "1 week ago", value: 100, change: 0 },
+  "1M": { label: "1 month", agoLabel: "1 month ago", value: 100, change: 0 },
+};
+
 const defaultDataPath = path.join(process.cwd(), ".singularity", "backend-db.json");
 
 function dataPath() {
@@ -332,6 +340,7 @@ export async function prepareMissionLaunch(input: {
       treasuryTokens,
       treasurySupplyPercent: launchConfig.treasurySupplyPercent,
       totalSupply: launchConfig.totalSupply,
+      performance: launchPerformance,
       council: [],
       requests: [],
     };

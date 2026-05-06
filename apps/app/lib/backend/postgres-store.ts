@@ -114,6 +114,21 @@ const performanceFrames = {
   "1M": { label: "1 month", agoLabel: "1 month ago", ms: 30 * 24 * 60 * 60 * 1000 },
 } as const satisfies Record<keyof Mission["performance"], { label: string; agoLabel: string; ms: number }>;
 
+const launchPerformance = Object.fromEntries(
+  Object.entries(performanceFrames).map(([key, frame]) => [
+    key,
+    {
+      label: frame.label,
+      agoLabel: frame.agoLabel,
+      value: 100,
+      change: 0,
+    },
+  ]),
+) as Mission["performance"];
+
+const marketRefreshTtlMs = 30_000;
+const marketRefreshCache = new Map<string, { expiresAt: number; promise: Promise<Mission | null> }>();
+
 function contentHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -468,7 +483,21 @@ async function performanceFromPricePoints(missionId: string, currentPrice: numbe
   ) as Mission["performance"];
 }
 
-export async function refreshMissionMarketDataInPostgres(missionId: string, client?: Queryable) {
+export async function refreshMissionMarketDataInPostgres(missionId: string, client?: Queryable): Promise<Mission | null> {
+  if (!client) {
+    const cached = marketRefreshCache.get(missionId);
+    if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+    let promise: Promise<Mission | null>;
+    promise = refreshMissionMarketDataInPostgres(missionId, { query: query as unknown as Queryable["query"] }).catch((error: unknown) => {
+      const cached = marketRefreshCache.get(missionId);
+      if (cached?.promise === promise) marketRefreshCache.delete(missionId);
+      throw error;
+    });
+    marketRefreshCache.set(missionId, { expiresAt: Date.now() + marketRefreshTtlMs, promise });
+    return promise;
+  }
+
   const mission = await getMissionByIdFromPostgres(missionId, client);
   if (!mission) return null;
   if (mission.lifecycle !== "bonding" || !mission.dbcPool) return mission;
@@ -478,7 +507,7 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
     tokenMint: mission.tokenMint,
     treasuryVault: mission.treasuryVault,
     totalSupply: mission.totalSupply,
-  });
+  }).catch(() => null);
   if (!snapshot) return mission;
 
   const holders = snapshot.holders || mission.holders || 1;
@@ -760,7 +789,7 @@ export async function prepareMissionLaunchInPostgres(input: {
     treasuryTokens,
     treasurySupplyPercent: launchConfig.treasurySupplyPercent,
     totalSupply: launchConfig.totalSupply,
-    performance: seed.performance,
+    performance: launchPerformance,
     council: [],
     requests: [],
   };
@@ -806,7 +835,7 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
   if (!input.signature) throw new Error("signature is required.");
   if (!input.wallet) throw new Error("wallet is required.");
 
-  return transaction(async (client) => {
+  const confirmed = await transaction(async (client) => {
     const pendingResult = await client.query<PendingMissionLaunchRow>(
       "select * from pending_mission_launches where id = $1 and creator_wallet = $2 and status = 'prepared' for update",
       [input.launchId, input.wallet],
@@ -814,8 +843,13 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
     const pending = pendingResult.rows[0];
     if (!pending) throw new Error("Pending mission launch not found.");
 
-    const seed = fixtureMissions[0];
     const accounts = pending.launch_accounts || {};
+    const launchConfig = resolveMeteoraDbcLaunchConfig({
+      totalSupply: Number(pending.total_supply || DEFAULT_DBC_TOTAL_SUPPLY),
+      initialPurchaseUsdc: Number(pending.initial_purchase_usdc || 0),
+    });
+    const tokenPrice = launchConfig.initialMarketCap / launchConfig.totalSupply;
+    const treasuryTokens = Math.floor((launchConfig.totalSupply * Number(pending.treasury_supply_percent || 20)) / 100);
     await client.query(
       `
         insert into missions (
@@ -841,15 +875,15 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
         pending.token_symbol,
         pending.total_supply,
         pending.treasury_supply_percent,
-        JSON.stringify(seed.performance),
+        JSON.stringify(launchPerformance),
       ],
     );
     await client.query(
       `
         insert into mission_metrics (mission_id, token_price_usdc, holders, liquidity_usdc, treasury_usdc, treasury_tokens)
-        values ($1, 0.01, 1, $2, 0, 10000000)
+        values ($1, $2, 1, $3, 0, $4)
       `,
-      [pending.id, Number(pending.initial_purchase_usdc || 0)],
+      [pending.id, tokenPrice, Number(pending.initial_purchase_usdc || 0), treasuryTokens],
     );
     await client.query(
       "insert into metadata_uploads (hash, uri, owner_wallet, content_type) values ($1, $2, $3, 'application/json') on conflict (hash) do nothing",
@@ -865,6 +899,9 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
     if (!mission) throw new Error("Mission launch confirmation failed.");
     return { mission };
   });
+
+  const refreshed = await refreshMissionMarketDataInPostgres(confirmed.mission.id).catch(() => null);
+  return { mission: refreshed || confirmed.mission };
 }
 
 export async function quoteMissionTradeFromPostgres(missionId: string, input: { side?: string; amount?: number; wallet?: string; slippageBps?: number }) {

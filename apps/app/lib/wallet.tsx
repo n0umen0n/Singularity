@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Connection, SendTransactionError, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { usePrivy } from "@privy-io/react-auth";
@@ -58,6 +58,17 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+async function getJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : null;
+  if (!response.ok) throw new Error(data?.error || `Request failed with status ${response.status}.`);
+  return data as T;
+}
+
 async function formatSendTransactionError(error: unknown, connection: Connection) {
   const plainLogs =
     typeof error === "object" && error && "logs" in error && Array.isArray((error as { logs?: unknown }).logs)
@@ -98,19 +109,47 @@ async function formatSendTransactionError(error: unknown, connection: Connection
 }
 
 export function SingularityWalletProvider({ children }: { children: React.ReactNode }) {
-  const { authenticated, login, logout, ready } = usePrivy();
+  const { authenticated: privyAuthenticated, login, logout, ready: privyReady } = usePrivy();
   const { wallets } = useWallets();
   const { signMessage } = useSignMessage();
   const { signTransaction } = useSignTransaction();
   const [sessionAddress, setSessionAddress] = useState<string | null>(null);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
 
   const wallet = wallets[0] ?? null;
   const address = sessionAddress;
+  const ready = privyReady && !restoringSession;
+  const authenticated = Boolean(sessionAddress);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreSession() {
+      try {
+        const data = await getJson<{ session: { address: string } | null }>("/api/auth/session");
+        if (!cancelled) setSessionAddress(data.session?.address ?? null);
+      } catch {
+        if (!cancelled) setSessionAddress(null);
+      } finally {
+        if (!cancelled) setRestoringSession(false);
+      }
+    }
+
+    void restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const signIn = useCallback(async () => {
     setStatus(null);
-    if (!authenticated) {
+    if (!privyReady) {
+      setStatus("Loading wallet session. Please try again in a moment.");
+      return null;
+    }
+    if (!privyAuthenticated) {
       login();
       setStatus("Choose a Solana wallet, then press Sign in again to verify ownership.");
       return null;
@@ -137,7 +176,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     setSessionAddress(wallet.address);
     setStatus("Wallet verified.");
     return wallet.address;
-  }, [authenticated, login, signMessage, wallet]);
+  }, [login, privyAuthenticated, privyReady, signMessage, wallet]);
 
   const signOut = useCallback(async () => {
     await postJson("/api/auth/logout");

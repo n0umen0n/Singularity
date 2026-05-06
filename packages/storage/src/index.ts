@@ -27,6 +27,7 @@ export async function storeObject(input: StoreObjectInput): Promise<StoredObject
     const body = Buffer.from(input.bytes);
     const blob = await put(key, body, {
       access: "public",
+      allowOverwrite: true,
       contentType: input.contentType,
     });
 
