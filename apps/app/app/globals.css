@@ -299,6 +299,12 @@ textarea {
   transform: translateY(-1px);
 }
 
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
+  transform: none;
+}
+
 .button-primary {
   border-color: rgba(255, 247, 237, 0.32);
   background:
@@ -1208,6 +1214,23 @@ textarea {
   object-fit: cover;
 }
 
+.placeholder-avatar {
+  display: inline-grid;
+  place-items: center;
+  color: rgba(255, 247, 237, 0.5);
+  background:
+    radial-gradient(circle at 50% 15%, rgba(255, 247, 237, 0.1), transparent 58%),
+    rgba(255, 247, 237, 0.045);
+  font-size: 1.4rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+}
+
+.council-placeholder-card {
+  border-style: dashed;
+  opacity: 0.72;
+}
+
 .flip-profile-card h3 {
   margin: 0;
   font-size: 1.45rem;
@@ -1717,9 +1740,77 @@ textarea {
   padding: 1.4rem;
 }
 
+.profile-hero-editing {
+  align-items: flex-start;
+}
+
+.profile-avatar-column,
+.profile-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.profile-actions {
+  align-items: stretch;
+}
+
+.profile-main {
+  min-width: 0;
+}
+
 .profile-avatar {
   width: 96px;
   height: 96px;
+}
+
+.profile-avatar > span {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 2rem;
+  font-weight: 950;
+}
+
+.profile-upload-button {
+  position: relative;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.profile-upload-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.profile-edit-form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.profile-textarea {
+  min-height: 92px;
+}
+
+.profile-social-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.placeholder-copy,
+.profile-social-link.muted {
+  color: rgba(255, 247, 237, 0.48);
+}
+
+.profile-status {
+  margin-top: 0.6rem;
 }
 
 .profile-socials {
@@ -1754,6 +1845,12 @@ textarea {
   background: rgba(255, 247, 237, 0.08);
 }
 
+.profile-social-link.muted:hover {
+  color: rgba(255, 247, 237, 0.48);
+  border-color: rgba(255, 247, 237, 0.12);
+  background: rgba(255, 247, 237, 0.045);
+}
+
 .profile-social-link svg {
   width: 0.88rem;
   height: 0.88rem;
@@ -1762,6 +1859,10 @@ textarea {
 
 .wallet-pill {
   gap: 0.38rem;
+}
+
+.wallet-copy-button {
+  cursor: pointer;
 }
 
 .wallet-pill svg {
@@ -1796,6 +1897,17 @@ textarea {
   font-weight: 950;
 }
 
+.balance-symbol img {
+  width: 84%;
+  height: 84%;
+  object-fit: contain;
+}
+
+.balance-symbol img.usdc-logo {
+  width: 88%;
+  height: 88%;
+}
+
 .fee-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1812,6 +1924,27 @@ textarea {
 
 .creator-fee-card .token-avatar {
   position: static;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  min-height: 110px;
+  border: 1px dashed rgba(255, 247, 237, 0.14);
+  border-radius: 24px;
+  padding: 1.1rem 1.2rem;
+  background: rgba(255, 247, 237, 0.035);
+}
+
+.empty-state strong {
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.empty-state p {
+  max-width: 56rem;
+  margin: 0.35rem 0 0;
+  color: var(--text-secondary);
 }
 
 .profile-mission-card {
@@ -2029,6 +2162,14 @@ textarea {
 
   .profile-hero {
     text-align: left;
+  }
+
+  .profile-social-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-actions {
+    width: 100%;
   }
 
   .profile-hero .button,

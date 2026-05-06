@@ -1,16 +1,22 @@
 import { createHash } from "node:crypto";
-import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
-import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import bs58 from "bs58";
 import {
   buildPreparedTransaction,
   buildPreparedTransactionSteps,
   councilInstruction,
+  DEFAULT_DBC_INITIAL_MARKET_CAP,
+  DEFAULT_DBC_MIGRATION_MARKET_CAP,
+  DEFAULT_DBC_TOTAL_SUPPLY,
+  DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
   fetchMeteoraDbcMarketSnapshot,
   latestBlockhash,
   prepareMeteoraDbcLaunchInstructions,
   prepareMeteoraDbcTrade,
   quoteMeteoraDbcTrade,
   requireProgramConfig,
+  resolveMeteoraDbcLaunchConfig,
   type MeteoraDbcMarketSnapshot,
   type PreparedSolanaTransaction,
 } from "@singularity/solana";
@@ -103,6 +109,15 @@ function epochCouncilPda(councilProgramId: string, mission: string, epoch: numbe
   return address.toBase58();
 }
 
+function candidatePda(councilProgramId: string, mission: string, owner: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("candidate"), new PublicKey(mission).toBuffer(), new PublicKey(owner).toBuffer()],
+    new PublicKey(councilProgramId),
+  );
+
+  return address.toBase58();
+}
+
 function treasuryAuthorityPda(programId: string, mission: string) {
   const [address] = PublicKey.findProgramAddressSync(
     [Buffer.from("treasury_authority"), new PublicKey(mission).toBuffer()],
@@ -126,6 +141,24 @@ function u16Buffer(value: number) {
   const buffer = Buffer.alloc(2);
   buffer.writeUInt16LE(value);
   return buffer;
+}
+
+function keypairFromEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required for automatic council checkpoint finalization.`);
+
+  const secret = value.startsWith("[")
+    ? Uint8Array.from(JSON.parse(value) as number[])
+    : bs58.decode(value);
+  return Keypair.fromSecretKey(secret);
+}
+
+function assertConfiguredCouncilAuthority(authority: PublicKey) {
+  const expected = process.env.SINGULARITY_COUNCIL_AUTHORITY_PUBKEY?.trim();
+  if (!expected) throw new Error("SINGULARITY_COUNCIL_AUTHORITY_PUBKEY is required for automatic council checkpoint finalization.");
+  if (!authority.equals(new PublicKey(expected))) {
+    throw new Error("SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR does not match SINGULARITY_COUNCIL_AUTHORITY_PUBKEY.");
+  }
 }
 
 function hashBytes(value: string) {
@@ -197,6 +230,19 @@ function registryMarkGraduatedInstruction(input: {
   });
 }
 
+function registerCandidateInstruction(input: { programId: string; owner: string; mission: string; candidate: string }) {
+  return new TransactionInstruction({
+    programId: new PublicKey(input.programId),
+    keys: [
+      { pubkey: new PublicKey(input.owner), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(input.mission), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.candidate), isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: anchorDiscriminator("register_candidate"),
+  });
+}
+
 function finalizeEpochCouncilInstruction(input: {
   programId: string;
   authority: string;
@@ -228,6 +274,39 @@ function finalizeEpochCouncilInstruction(input: {
   });
 }
 
+function createFundingRequestInstruction(input: {
+  programId: string;
+  requester: string;
+  mission: string;
+  epochCouncil: string;
+  request: string;
+  metadataHash: string;
+  recipient: string;
+  tokenAmount: number;
+}) {
+  const tokenAmount = Math.floor(Math.max(Number(input.tokenAmount) || 0, 0));
+  if (tokenAmount <= 0) throw new Error("Request token amount must be greater than zero.");
+
+  const data = Buffer.concat([
+    anchorDiscriminator("create_request"),
+    Buffer.from(input.metadataHash.slice(0, 64).padEnd(64, "0"), "hex"),
+    new PublicKey(input.recipient).toBuffer(),
+    u64Buffer(tokenAmount),
+  ]);
+
+  return new TransactionInstruction({
+    programId: new PublicKey(input.programId),
+    keys: [
+      { pubkey: new PublicKey(input.requester), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(input.mission), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.epochCouncil), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.request), isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
 export async function prepareLaunchTransaction(input: {
   creatorWallet?: string;
   missionId: string;
@@ -237,6 +316,8 @@ export async function prepareLaunchTransaction(input: {
   tokenSymbol?: string;
   totalSupply?: number;
   initialPurchaseUsdc?: number;
+  initialMarketCap?: number;
+  migrationMarketCap?: number;
 }) {
   const kind = "mission-launch";
 
@@ -247,7 +328,13 @@ export async function prepareLaunchTransaction(input: {
     const blockhash = await latestBlockhash(config);
     const missionAccount = missionPda(config.registryProgramId, input.missionId);
     const treasuryAuthority = treasuryAuthorityPda(config.councilProgramId, missionAccount);
-    const totalSupply = input.totalSupply ?? 50_000_000;
+    const launchConfig = resolveMeteoraDbcLaunchConfig({
+      totalSupply: input.totalSupply ?? DEFAULT_DBC_TOTAL_SUPPLY,
+      treasurySupplyPercent: DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
+      initialPurchaseUsdc: input.initialPurchaseUsdc,
+      initialMarketCap: input.initialMarketCap ?? DEFAULT_DBC_INITIAL_MARKET_CAP,
+      migrationMarketCap: input.migrationMarketCap ?? DEFAULT_DBC_MIGRATION_MARKET_CAP,
+    });
     const meteoraLaunch = await prepareMeteoraDbcLaunchInstructions({
       rpcUrl: config.rpcUrl,
       payer: input.creatorWallet,
@@ -258,29 +345,23 @@ export async function prepareLaunchTransaction(input: {
       quoteMint: process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT,
       feeClaimer: process.env.SINGULARITY_METEORA_FEE_CLAIMER || input.creatorWallet,
       leftoverReceiver: process.env.SINGULARITY_METEORA_LEFTOVER_RECEIVER || treasuryAuthority,
-      totalSupply,
-      treasurySupplyPercent: 20,
-      initialPurchaseUsdc: input.initialPurchaseUsdc,
+      totalSupply: launchConfig.totalSupply,
+      treasurySupplyPercent: launchConfig.treasurySupplyPercent,
+      initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
+      initialMarketCap: launchConfig.initialMarketCap,
+      migrationMarketCap: launchConfig.migrationMarketCap,
     });
-    const treasuryVault = getAssociatedTokenAddressSync(
-      new PublicKey(meteoraLaunch.accounts.tokenMint),
-      new PublicKey(treasuryAuthority),
-      true,
-      TOKEN_2022_PROGRAM_ID,
-    ).toBase58();
-
     return buildPreparedTransactionSteps({
       kind,
       feePayer: input.creatorWallet,
       recentBlockhash: blockhash.blockhash,
       steps: meteoraLaunch.transactionSteps.map((step) => ({
         ...step,
-        requiredSigners: [creatorWallet, ...step.signerKeypairs.map((signer) => signer.publicKey.toBase58())],
+        requiredSigners: [creatorWallet, ...(step.signerKeypairs || []).map((signer) => signer.publicKey.toBase58())],
       })),
       accounts: {
         mission: "",
         treasuryAuthority,
-        treasuryVault,
         ...meteoraLaunch.accounts,
       },
     });
@@ -457,20 +538,33 @@ export async function fetchMeteoraDbcMissionSnapshot(input: {
   });
 }
 
-export async function prepareFundingRequestTransaction(input: { requesterWallet?: string; missionId: string; requestId: string; metadataHash: string }) {
+export async function prepareFundingRequestTransaction(input: {
+  requesterWallet?: string;
+  missionId: string;
+  requestId: string;
+  metadataHash: string;
+  recipientWallet?: string;
+  tokenAmount: number;
+  epoch?: number;
+}) {
   const kind = "funding-request-create";
 
   try {
     if (!input.requesterWallet) throw new Error("requesterWallet is required to prepare a funding request transaction.");
     const config = requireProgramConfig(process.env);
     const blockhash = await latestBlockhash(config);
-    const instruction = councilInstruction({
+    const mission = missionPda(config.registryProgramId, input.missionId);
+    const request = requestPda(config.councilProgramId, mission, input.metadataHash);
+    const epochCouncil = epochCouncilPda(config.councilProgramId, mission, input.epoch ?? 1);
+    const instruction = createFundingRequestInstruction({
       programId: config.councilProgramId,
-      opcode: 1,
-      payer: input.requesterWallet,
-      mission: missionPda(config.registryProgramId, input.missionId),
-      request: requestPda(config.councilProgramId, missionPda(config.registryProgramId, input.missionId), input.metadataHash),
+      requester: input.requesterWallet,
+      mission,
+      epochCouncil,
+      request,
       metadataHash: input.metadataHash,
+      recipient: input.recipientWallet || input.requesterWallet,
+      tokenAmount: input.tokenAmount,
     });
 
     return buildPreparedTransaction({
@@ -479,6 +573,11 @@ export async function prepareFundingRequestTransaction(input: { requesterWallet?
       recentBlockhash: blockhash.blockhash,
       instructions: [instruction],
       requiredSigners: [input.requesterWallet],
+      accounts: {
+        mission,
+        epochCouncil,
+        request,
+      },
     });
   } catch (error) {
     return notConfigured(kind, error);
@@ -588,12 +687,26 @@ export async function prepareCandidateRegistrationTransaction(input: { wallet?: 
   try {
     if (!input.wallet) throw new Error("wallet is required to prepare candidate registration.");
     const config = requireProgramConfig(process.env);
+    const mission = missionPda(config.registryProgramId, input.missionId);
+    const candidate = candidatePda(config.councilProgramId, mission, input.wallet);
+    const connection = new Connection(config.rpcUrl, "confirmed");
+    const existingCandidate = await connection.getAccountInfo(new PublicKey(candidate));
+
+    if (existingCandidate) {
+      return {
+        kind,
+        status: "not_configured" as const,
+        message: "This wallet is already registered as a council candidate for this mission.",
+        instructions: [],
+      };
+    }
+
     const blockhash = await latestBlockhash(config);
-    const instruction = councilInstruction({
+    const instruction = registerCandidateInstruction({
       programId: config.councilProgramId,
-      opcode: 5,
-      payer: input.wallet,
-      mission: missionPda(config.registryProgramId, input.missionId),
+      owner: input.wallet,
+      mission,
+      candidate,
     });
 
     return buildPreparedTransaction({
@@ -602,6 +715,10 @@ export async function prepareCandidateRegistrationTransaction(input: { wallet?: 
       recentBlockhash: blockhash.blockhash,
       instructions: [instruction],
       requiredSigners: [input.wallet],
+      accounts: {
+        mission,
+        candidate,
+      },
     });
   } catch (error) {
     return notConfigured(kind, error);
@@ -643,6 +760,50 @@ export async function prepareFinalizeEpochCouncilTransaction(input: {
   } catch (error) {
     return notConfigured(kind, error);
   }
+}
+
+export async function submitFinalizeEpochCouncilTransaction(input: {
+  missionId: string;
+  epoch: number;
+  members: string[];
+  escrowAmounts: number[];
+}) {
+  if (!process.env.SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR) return null;
+  if (input.members.length !== 6) throw new Error("Automatic council finalization requires exactly 6 members.");
+  if (input.escrowAmounts.length !== 6) throw new Error("Automatic council finalization requires exactly 6 escrow amounts.");
+
+  const config = requireProgramConfig(process.env);
+  const authority = keypairFromEnv("SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR");
+  assertConfiguredCouncilAuthority(authority.publicKey);
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const blockhash = await connection.getLatestBlockhash();
+  const mission = missionPda(config.registryProgramId, input.missionId);
+  const epochCouncil = epochCouncilPda(config.councilProgramId, mission, input.epoch);
+  const instruction = finalizeEpochCouncilInstruction({
+    programId: config.councilProgramId,
+    authority: authority.publicKey.toBase58(),
+    mission,
+    epochCouncil,
+    epoch: input.epoch,
+    members: input.members,
+    escrowAmounts: input.escrowAmounts,
+  });
+  const message = new TransactionMessage({
+    payerKey: authority.publicKey,
+    recentBlockhash: blockhash.blockhash,
+    instructions: [instruction],
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  transaction.sign([authority]);
+  const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+  await connection.confirmTransaction({ signature, ...blockhash }, "confirmed");
+
+  return {
+    signature,
+    authorityWallet: authority.publicKey.toBase58(),
+    mission,
+    epochCouncil,
+  };
 }
 
 export async function prepareMissionGraduationTransaction(input: {

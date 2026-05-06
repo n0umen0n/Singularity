@@ -59,12 +59,42 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
 }
 
 async function formatSendTransactionError(error: unknown, connection: Connection) {
-  if (!(error instanceof SendTransactionError)) return error;
+  const plainLogs =
+    typeof error === "object" && error && "logs" in error && Array.isArray((error as { logs?: unknown }).logs)
+      ? ((error as { logs: string[] }).logs)
+      : null;
+  const plainMessage = typeof error === "object" && error && "message" in error ? String((error as { message?: unknown }).message) : "";
 
-  const logs = await error.getLogs(connection).catch(() => error.logs);
-  if (!logs?.length) return error;
+  if (!(error instanceof SendTransactionError) && !plainLogs) return error;
 
-  return new Error(`${error.message}\nLogs:\n${logs.join("\n")}`);
+  const logs = error instanceof SendTransactionError ? await error.getLogs(connection).catch(() => error.logs) : plainLogs;
+  const message = error instanceof SendTransactionError ? error.message : plainMessage;
+  console.error("Solana transaction failed", {
+    message,
+    logs,
+  });
+
+  const details = `${message}\n${logs?.join("\n") || ""}`;
+  if (details.includes("already in use")) {
+    return new Error("This wallet is already registered as a council candidate for this mission.");
+  }
+  if (details.includes("InstructionFallbackNotFound")) {
+    return new Error("This transaction is using an outdated on-chain instruction. Refresh the page and try again.");
+  }
+  if (details.includes("AccountNotInitialized") || details.includes("expected this account to be already initialized")) {
+    return new Error("This mission does not have 6 finalized councillors on-chain yet. Finalize the top 6 holders before submitting funding requests.");
+  }
+  if (details.includes("insufficient lamports") || details.includes("Attempt to debit an account")) {
+    return new Error("Your wallet does not have enough SOL to pay for this transaction.");
+  }
+  if (details.includes("User rejected") || details.includes("rejected")) {
+    return new Error("Transaction was cancelled in your wallet.");
+  }
+  if (details.includes("Blockhash not found")) {
+    return new Error("The transaction expired before it was submitted. Please try again.");
+  }
+
+  return new Error("The transaction could not be submitted. Please check your wallet and try again.");
 }
 
 export function SingularityWalletProvider({ children }: { children: React.ReactNode }) {

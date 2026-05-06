@@ -1,8 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
+import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
+import { DEFAULT_COUNCIL_PROGRAM_ID, DEFAULT_DBC_TOTAL_SUPPLY, DEFAULT_REGISTRY_PROGRAM_ID, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
 import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
+import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { query, transaction } from "@/lib/backend/db";
 import {
   prepareCandidateRegistrationTransaction,
@@ -15,6 +18,7 @@ import {
   prepareLaunchTransaction,
   prepareMeteoraDbcTradeTransaction,
   prepareMissionGraduationTransaction,
+  submitFinalizeEpochCouncilTransaction,
 } from "@/lib/backend/transactions";
 import type { MissionSort } from "@/lib/backend/store";
 
@@ -55,6 +59,15 @@ type FundingRequestRow = {
   rejections: string;
 };
 
+type CouncilCandidateRow = {
+  mission_id: string;
+  owner_wallet: string;
+  latest_checkpoint_balance: string;
+  created_at: string;
+  display_name: string | null;
+  avatar_url: string | null;
+};
+
 type PricePointRow = {
   timestamp: string;
   price_usdc: string;
@@ -88,6 +101,10 @@ type PendingMissionLaunchRow = {
 };
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
+type CouncilCheckpointMember = Mission["council"][number] & {
+  tokenBaseUnits: string;
+  tokenDecimals: number;
+};
 
 const performanceFrames = {
   "1H": { label: "1 hour", agoLabel: "1 hour ago", ms: 60 * 60 * 1000 },
@@ -113,6 +130,75 @@ function slugify(value: string) {
 
 function num(value: string | number | null | undefined) {
   return Number(value ?? 0);
+}
+
+function shortWallet(address: string) {
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function emptyProfile(address: string) {
+  return {
+    name: "",
+    address,
+    avatar: "",
+    description: "",
+    socials: [],
+    ...emptyWalletBalanceSnapshot(),
+    createdMissions: [],
+    submittedRequests: [],
+    councilRequests: [],
+  };
+}
+
+async function walletBalances(address: string, missionList: Mission[]) {
+  try {
+    return await getWalletBalanceSnapshot(address, missionList);
+  } catch {
+    return emptyWalletBalanceSnapshot();
+  }
+}
+
+function rpcUrl() {
+  return process.env.SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_MAINNET_RPC_URL;
+}
+
+function configuredAddressSet(value?: string) {
+  return new Set(
+    (value || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => entry.toLowerCase()),
+  );
+}
+
+function tokenAccountAmountToNumber(amount: string, decimals: number) {
+  return Number(amount) / 10 ** decimals;
+}
+
+function pda(programId: string, namespace: string, id: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from(namespace), createHash("sha256").update(id).digest().subarray(0, 32)],
+    new PublicKey(programId),
+  );
+
+  return address;
+}
+
+function missionPda(mission: Mission) {
+  if (mission.missionPda) return new PublicKey(mission.missionPda);
+  return pda(process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID, "mission", mission.id);
+}
+
+function epochCouncilPda(mission: PublicKey, epoch: number) {
+  const epochBuffer = Buffer.alloc(8);
+  epochBuffer.writeBigUInt64LE(BigInt(epoch));
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("epoch_council"), mission.toBuffer(), epochBuffer],
+    new PublicKey(process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID),
+  );
+
+  return address;
 }
 
 function requestTimeLeft(status: RequestStatus) {
@@ -164,6 +250,191 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
     council: row.council_json || [],
     requests,
   };
+}
+
+function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandidateRow[]) {
+  const existing = new Map((row.council_json || []).map((member) => [member.address.toLowerCase(), member]));
+  const totalSupply = num(row.total_supply);
+  const merged = [...(row.council_json || [])];
+
+  for (const candidate of candidates) {
+    if (existing.has(candidate.owner_wallet.toLowerCase())) continue;
+    const tokens = num(candidate.latest_checkpoint_balance);
+    merged.push({
+      id: `${row.id}-candidate-${candidate.owner_wallet}`,
+      name: candidate.display_name || shortWallet(candidate.owner_wallet),
+      address: candidate.owner_wallet,
+      avatar: candidate.avatar_url || row.token_image_url,
+      tokens,
+      ownership: totalSupply > 0 ? (tokens / totalSupply) * 100 : 0,
+    });
+  }
+
+  return merged.slice(0, 6);
+}
+
+async function councilCandidateRows(missionIds: string[], client?: Queryable) {
+  if (missionIds.length === 0) return new Map<string, CouncilCandidateRow[]>();
+  const result = await (client || { query }).query<CouncilCandidateRow>(
+    `
+      select cc.mission_id, cc.owner_wallet, cc.latest_checkpoint_balance, cc.created_at, p.display_name, p.avatar_url
+      from council_candidates cc
+      left join profiles p on p.wallet_address = cc.owner_wallet
+      where cc.mission_id = any($1::text[]) and cc.status = 'registered'
+      order by cc.latest_checkpoint_balance desc, cc.created_at asc
+    `,
+    [missionIds],
+  );
+  const byMission = new Map<string, CouncilCandidateRow[]>();
+  for (const row of result.rows) {
+    const entries = byMission.get(row.mission_id) || [];
+    entries.push(row);
+    byMission.set(row.mission_id, entries);
+  }
+
+  return byMission;
+}
+
+async function refreshMissionCouncilFromTopHoldersInPostgres(mission: Mission, client?: Queryable) {
+  if (!mission.tokenMint) throw new Error("Mission token mint is not available yet.");
+  const url = rpcUrl();
+  if (!url) throw new Error("SOLANA_RPC_URL is required to checkpoint token holders.");
+
+  const connection = new Connection(url, "confirmed");
+  const mint = new PublicKey(mission.tokenMint);
+  const largestAccounts = await connection.getTokenLargestAccounts(mint);
+  const excludedTokenAccounts = configuredAddressSet(process.env.SINGULARITY_COUNCIL_EXCLUDED_TOKEN_ACCOUNTS);
+  const excludedOwners = configuredAddressSet(process.env.SINGULARITY_COUNCIL_EXCLUDED_OWNERS);
+  if (mission.treasuryVault) excludedTokenAccounts.add(mission.treasuryVault.toLowerCase());
+
+  const tokenAccounts = largestAccounts.value
+    .filter((account) => BigInt(account.amount) > 0n)
+    .filter((account) => !excludedTokenAccounts.has(account.address.toBase58().toLowerCase()));
+
+  const tokenAccountInfos = await Promise.all(tokenAccounts.map((account) => connection.getParsedAccountInfo(account.address, "confirmed")));
+  const ownerCandidates = tokenAccounts
+    .map((account, index) => {
+      const parsed = tokenAccountInfos[index].value?.data;
+      if (!parsed || typeof parsed === "string" || !("parsed" in parsed)) return null;
+      const owner = String(parsed.parsed?.info?.owner || "");
+      if (!owner || excludedOwners.has(owner.toLowerCase())) return null;
+      const decimals = account.decimals;
+      return {
+        owner,
+        amount: account.amount,
+        decimals,
+        tokens: tokenAccountAmountToNumber(account.amount, decimals),
+      };
+    })
+    .filter((candidate): candidate is { owner: string; amount: string; decimals: number; tokens: number } => Boolean(candidate));
+
+  if (ownerCandidates.length === 0) throw new Error("No eligible token holders were found for this mission.");
+
+  const ownerInfos = await connection.getMultipleAccountsInfo(ownerCandidates.map((candidate) => new PublicKey(candidate.owner)), "confirmed");
+  const walletCandidates = ownerCandidates.filter((candidate, index) => ownerInfos[index]?.owner.equals(SystemProgram.programId));
+  const grouped = new Map<string, { owner: string; amount: bigint; decimals: number }>();
+  for (const candidate of walletCandidates) {
+    const existing = grouped.get(candidate.owner);
+    grouped.set(candidate.owner, {
+      owner: candidate.owner,
+      amount: (existing?.amount || 0n) + BigInt(candidate.amount),
+      decimals: candidate.decimals,
+    });
+  }
+
+  const ranked = [...grouped.values()].sort((a, b) => (a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1)).slice(0, 6);
+  if (ranked.length < 6) {
+    throw new Error(`This mission has only ${ranked.length} eligible token holder${ranked.length === 1 ? "" : "s"}. At least 6 holders are required before a treasury council can be finalized.`);
+  }
+
+  const profiles = await (client || { query }).query<Pick<ProfileRow, "wallet_address" | "display_name" | "avatar_url">>(
+    "select wallet_address, display_name, avatar_url from profiles where wallet_address = any($1::text[])",
+    [ranked.map((candidate) => candidate.owner)],
+  );
+  const profilesByWallet = new Map(profiles.rows.map((profile) => [profile.wallet_address, profile]));
+  const totalSupply = mission.totalSupply || DEFAULT_DBC_TOTAL_SUPPLY;
+  const council = ranked.map((candidate, index) => {
+    const profile = profilesByWallet.get(candidate.owner);
+    const tokens = tokenAccountAmountToNumber(candidate.amount.toString(), candidate.decimals);
+    return {
+      id: `${mission.id}-holder-${index + 1}`,
+      name: profile?.display_name || shortWallet(candidate.owner),
+      address: candidate.owner,
+      avatar: profile?.avatar_url || mission.tokenImage,
+      tokens,
+      ownership: totalSupply > 0 ? (tokens / totalSupply) * 100 : 0,
+      tokenBaseUnits: candidate.amount.toString(),
+      tokenDecimals: candidate.decimals,
+    } satisfies CouncilCheckpointMember;
+  });
+
+  await (client || { query }).query("update missions set council_json = $2 where id = $1", [mission.id, JSON.stringify(council)]);
+  for (const member of council) {
+    await (client || { query }).query(
+      `
+        insert into council_candidates (mission_id, owner_wallet, latest_checkpoint_balance, status)
+        values ($1, $2, $3, 'registered')
+        on conflict (mission_id, owner_wallet) do update set
+          latest_checkpoint_balance = excluded.latest_checkpoint_balance,
+          status = 'registered'
+      `,
+      [mission.id, member.address, member.tokenBaseUnits],
+    );
+  }
+
+  return council;
+}
+
+async function ensureEpochCouncilFinalizedOnChain(input: {
+  mission: Mission;
+  epoch: number;
+  candidates: CouncilCheckpointMember[];
+  escrowAmounts: number[];
+}) {
+  const url = rpcUrl();
+  if (!url) throw new Error("SOLANA_RPC_URL is required to verify the treasury council checkpoint.");
+  const connection = new Connection(url, "confirmed");
+  const account = await connection.getAccountInfo(epochCouncilPda(missionPda(input.mission), input.epoch), "confirmed");
+  if (account) return null;
+
+  const finalized = await submitFinalizeEpochCouncilTransaction({
+    missionId: input.mission.id,
+    epoch: input.epoch,
+    members: input.candidates.map((candidate) => candidate.address),
+    escrowAmounts: input.escrowAmounts,
+  });
+  if (!finalized) {
+    throw new Error("This mission has 6 holders, but automatic council finalization is not configured. Set SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR on the backend.");
+  }
+
+  return finalized;
+}
+
+async function recordEpochCouncilInPostgres(input: {
+  missionId: string;
+  epoch: number;
+  candidates: CouncilCheckpointMember[];
+  escrowAmounts: number[];
+  client?: Queryable;
+}) {
+  await (input.client || { query }).query(
+    `
+      insert into epoch_councils (mission_id, epoch_number, member_wallets, checkpoint_balances, escrow_amounts)
+      values ($1, $2, $3, $4, $5)
+      on conflict (mission_id, epoch_number) do update set
+        member_wallets = excluded.member_wallets,
+        checkpoint_balances = excluded.checkpoint_balances,
+        escrow_amounts = excluded.escrow_amounts,
+        finalized_at = now()
+    `,
+    [
+      input.missionId,
+      input.epoch,
+      JSON.stringify(input.candidates.map((candidate) => candidate.address)),
+      JSON.stringify(input.candidates.map((candidate) => candidate.tokenBaseUnits)),
+      JSON.stringify(input.escrowAmounts),
+    ],
+  );
 }
 
 async function performanceFromPricePoints(missionId: string, currentPrice: number, client?: Queryable): Promise<Mission["performance"]> {
@@ -317,8 +588,17 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
     values,
   );
   const requestsByMission = await requestRows(result.rows.map((row) => row.id));
+  const candidatesByMission = await councilCandidateRows(result.rows.map((row) => row.id));
 
-  return result.rows.map((row) => rowToMission(row, requestsByMission.get(row.id) || []));
+  return result.rows.map((row) =>
+    rowToMission(
+      {
+        ...row,
+        council_json: candidateRowsToCouncil(row, candidatesByMission.get(row.id) || []),
+      },
+      requestsByMission.get(row.id) || [],
+    ),
+  );
 }
 
 export async function getMissionByIdFromPostgres(missionId: string, client?: Queryable) {
@@ -336,27 +616,28 @@ export async function getMissionByIdFromPostgres(missionId: string, client?: Que
   if (!row) return null;
 
   const requestsByMission = await requestRows([missionId], client);
-  return rowToMission(row, requestsByMission.get(missionId) || []);
+  const candidatesByMission = await councilCandidateRows([missionId], client);
+  return rowToMission(
+    {
+      ...row,
+      council_json: candidateRowsToCouncil(row, candidatesByMission.get(missionId) || []),
+    },
+    requestsByMission.get(missionId) || [],
+  );
 }
 
 export async function getProfileFromPostgres(address: string) {
   const normalizedAddress = address === "me" ? currentUser.address : address;
   const result = await query<ProfileRow>("select * from profiles where wallet_address = $1 limit 1", [normalizedAddress]);
   const row = result.rows[0];
+  const allMissions = await listMissionsFromPostgres({ sort: "highest-liquidity" });
+  const balances = await walletBalances(normalizedAddress, allMissions);
 
   if (!row) {
-    return {
-      ...currentUser,
-      address: normalizedAddress,
-      tokenBalances: [],
-      createdMissions: [],
-      submittedRequests: [],
-      councilRequests: [],
-    };
+    return { ...emptyProfile(normalizedAddress), ...balances };
   }
 
-  const allMissions = await listMissionsFromPostgres({ sort: "highest-liquidity" });
-  const tokenBalances = row.token_balances.map((entry) => ({
+  const tokenBalances = balances.tokenBalances.map((entry) => ({
     ...entry,
     mission: allMissions.find((mission) => mission.id === entry.missionId) ?? null,
   }));
@@ -364,7 +645,7 @@ export async function getProfileFromPostgres(address: string) {
     ...entry,
     mission: allMissions.find((mission) => mission.id === entry.missionId) ?? null,
   }));
-  const councilMissionIds = new Set(row.token_balances.filter((entry) => entry.council).map((entry) => entry.missionId));
+  const councilMissionIds = new Set(balances.tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
   const submittedRequests = allMissions.flatMap((mission) =>
     mission.requests
       .filter((request) => request.requester === row.wallet_address || request.requester === row.display_name)
@@ -379,10 +660,10 @@ export async function getProfileFromPostgres(address: string) {
   return {
     name: row.display_name,
     address: row.wallet_address,
-    avatar: row.avatar_url || currentUser.avatar,
+    avatar: row.avatar_url || "",
     description: row.bio || "",
     socials: row.socials || [],
-    balances: row.balances || currentUser.balances,
+    balances: balances.balances,
     tokenBalances,
     createdMissions,
     submittedRequests,
@@ -391,7 +672,7 @@ export async function getProfileFromPostgres(address: string) {
 }
 
 export async function updateProfileInPostgres(input: { address: string; name?: string; description?: string; avatar?: string; socials?: string[] }) {
-  const result = await query<ProfileRow>(
+  await query<ProfileRow>(
     `
       insert into profiles (wallet_address, display_name, avatar_url, bio, socials)
       values ($1, $2, $3, $4, $5)
@@ -403,10 +684,10 @@ export async function updateProfileInPostgres(input: { address: string; name?: s
         updated_at = now()
       returning *
     `,
-    [input.address, input.name || input.address, input.avatar || null, input.description || null, JSON.stringify(input.socials || [])],
+    [input.address, input.name?.trim() ?? "", input.avatar?.trim() || null, input.description?.trim() || null, JSON.stringify(input.socials || [])],
   );
 
-  return result.rows[0];
+  return getProfileFromPostgres(input.address);
 }
 
 export async function prepareMissionLaunchInPostgres(input: {
@@ -417,6 +698,8 @@ export async function prepareMissionLaunchInPostgres(input: {
   missionImage?: string;
   tokenImage?: string;
   initialPurchaseUsdc?: number;
+  initialMarketCap?: number;
+  migrationMarketCap?: number;
 }) {
   const statement = input.statement?.trim();
   const description = input.description?.trim();
@@ -437,7 +720,14 @@ export async function prepareMissionLaunchInPostgres(input: {
   };
   const metadataHash = contentHash(metadata);
   const metadataUri = `db://metadata/${metadataHash}.json`;
-  const totalSupply = 50_000_000;
+  const launchConfig = resolveMeteoraDbcLaunchConfig({
+    totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
+    initialPurchaseUsdc: input.initialPurchaseUsdc,
+    initialMarketCap: input.initialMarketCap,
+    migrationMarketCap: input.migrationMarketCap,
+  });
+  const tokenPrice = launchConfig.initialMarketCap / launchConfig.totalSupply;
+  const treasuryTokens = Math.floor((launchConfig.totalSupply * launchConfig.treasurySupplyPercent) / 100);
   const launchTransaction = await prepareLaunchTransaction({
     creatorWallet: input.creatorWallet,
     missionId: id,
@@ -445,8 +735,10 @@ export async function prepareMissionLaunchInPostgres(input: {
     metadataUri,
     tokenName: statement,
     tokenSymbol,
-    totalSupply,
-    initialPurchaseUsdc: input.initialPurchaseUsdc,
+    totalSupply: launchConfig.totalSupply,
+    initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
+    initialMarketCap: launchConfig.initialMarketCap,
+    migrationMarketCap: launchConfig.migrationMarketCap,
   });
   const launchAccounts = "accounts" in launchTransaction ? launchTransaction.accounts || {} : {};
   const mission: Mission = {
@@ -461,13 +753,13 @@ export async function prepareMissionLaunchInPostgres(input: {
     dbcPool: launchAccounts.dbcPool || null,
     treasuryVault: launchAccounts.treasuryVault || null,
     lifecycle: "draft",
-    tokenPrice: 0.01,
+    tokenPrice,
     holders: 1,
-    liquidity: Number(input.initialPurchaseUsdc || 0),
+    liquidity: launchConfig.initialPurchaseUsdc,
     treasuryUsdc: 0,
-    treasuryTokens: 10_000_000,
-    treasurySupplyPercent: 20,
-    totalSupply,
+    treasuryTokens,
+    treasurySupplyPercent: launchConfig.treasurySupplyPercent,
+    totalSupply: launchConfig.totalSupply,
     performance: seed.performance,
     council: [],
     requests: [],
@@ -493,8 +785,8 @@ export async function prepareMissionLaunchInPostgres(input: {
         mission.image,
         mission.tokenImage,
         tokenSymbol,
-        totalSupply,
-        Number(input.initialPurchaseUsdc || 0),
+        launchConfig.totalSupply,
+        launchConfig.initialPurchaseUsdc,
         JSON.stringify(launchAccounts),
       ],
     );
@@ -677,6 +969,17 @@ export async function prepareFundingRequestInPostgres(input: {
   if (!name) throw new Error("Request name is required.");
   if (!description) throw new Error("Request description is required.");
   if (amountUsd <= 0) throw new Error("Request amount must be greater than zero.");
+  if (!Number.isFinite(mission.tokenPrice) || mission.tokenPrice <= 0) throw new Error("Mission token price is not available yet.");
+  const council = await refreshMissionCouncilFromTopHoldersInPostgres(mission);
+  if (council.length < 6) {
+    throw new Error("This mission does not have 6 eligible token holders yet. At least 6 holders are required before funding requests can open.");
+  }
+  const epoch = 1;
+  const escrowAmounts = councilEscrowAmounts(council);
+  const autoFinalized = await ensureEpochCouncilFinalizedOnChain({ mission, epoch, candidates: council, escrowAmounts });
+  if (autoFinalized) {
+    await recordEpochCouncilInPostgres({ missionId: mission.id, epoch, candidates: council, escrowAmounts });
+  }
 
   const tokenAmount = amountUsd / mission.tokenPrice;
   const id = `${mission.id}-r-${randomBytes(4).toString("hex")}`;
@@ -698,7 +1001,14 @@ export async function prepareFundingRequestInPostgres(input: {
   return {
     request: rowToRequest(result.rows[0]),
     metadataHash,
-    transaction: await prepareFundingRequestTransaction({ requesterWallet, missionId: mission.id, requestId: id, metadataHash }),
+    transaction: await prepareFundingRequestTransaction({
+      requesterWallet,
+      missionId: mission.id,
+      requestId: id,
+      metadataHash,
+      recipientWallet: requesterWallet,
+      tokenAmount: tokenAmount * 1_000_000,
+    }),
   };
 }
 
@@ -844,8 +1154,11 @@ export async function registerCouncilCandidateInPostgres(input: { missionId?: st
   };
 }
 
-function councilEscrowAmounts(candidates: Array<{ tokens: number }>) {
-  return candidates.slice(0, 6).map((candidate) => Math.max(Math.floor(candidate.tokens), 1));
+function councilEscrowAmounts(candidates: Array<{ tokens: number; tokenBaseUnits?: string }>) {
+  return candidates.slice(0, 6).map((candidate) => {
+    const baseUnits = Number(candidate.tokenBaseUnits);
+    return Number.isFinite(baseUnits) && baseUnits > 0 ? Math.floor(baseUnits) : Math.max(Math.floor(candidate.tokens), 1);
+  });
 }
 
 export async function prepareCouncilCheckpointInPostgres(input: { missionId?: string; epoch?: number; authorityWallet?: string }) {
@@ -853,28 +1166,11 @@ export async function prepareCouncilCheckpointInPostgres(input: { missionId?: st
   const mission = await getMissionByIdFromPostgres(input.missionId);
   if (!mission) throw new Error(`Mission not found: ${input.missionId}`);
   const epoch = input.epoch ?? 1;
-  const candidates = mission.council.slice(0, 6);
+  const candidates = await refreshMissionCouncilFromTopHoldersInPostgres(mission);
   const escrowAmounts = councilEscrowAmounts(candidates);
   const metadataHash = contentHash({ missionId: mission.id, epoch, candidates, escrowAmounts });
 
-  await query(
-    `
-      insert into epoch_councils (mission_id, epoch_number, member_wallets, checkpoint_balances, escrow_amounts)
-      values ($1, $2, $3, $4, $5)
-      on conflict (mission_id, epoch_number) do update set
-        member_wallets = excluded.member_wallets,
-        checkpoint_balances = excluded.checkpoint_balances,
-        escrow_amounts = excluded.escrow_amounts,
-        finalized_at = now()
-    `,
-    [
-      mission.id,
-      epoch,
-      JSON.stringify(candidates.map((candidate) => candidate.address)),
-      JSON.stringify(candidates.map((candidate) => candidate.tokens)),
-      JSON.stringify(escrowAmounts),
-    ],
-  );
+  await recordEpochCouncilInPostgres({ missionId: mission.id, epoch, candidates, escrowAmounts });
 
   return {
     missionId: mission.id,

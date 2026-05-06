@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
+use std::str::FromStr;
 
 declare_id!("4k7JhCHjs2uoiP1hmvYDawnwJuXMt5ZhUJotvMRqedKS");
 
@@ -7,6 +8,7 @@ const COUNCIL_SIZE: usize = 6;
 const APPROVAL_THRESHOLD: u8 = 4;
 const REJECTION_THRESHOLD: u8 = 3;
 const MIN_VOTING_SECONDS: i64 = 3 * 24 * 60 * 60;
+const DEFAULT_COUNCIL_AUTHORITY: &str = "11111111111111111111111111111111";
 
 #[program]
 pub mod singularity_council {
@@ -33,6 +35,11 @@ pub mod singularity_council {
         members: [Pubkey; COUNCIL_SIZE],
         escrow_amounts: [u64; COUNCIL_SIZE],
     ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            configured_council_authority()?,
+            CouncilError::UnauthorizedAuthority
+        );
         require!(
             escrow_amounts_are_valid(&escrow_amounts),
             CouncilError::InvalidEscrowAmount
@@ -434,6 +441,10 @@ pub enum CouncilError {
     NotCouncilMember,
     #[msg("Council escrow amount must be greater than zero.")]
     InvalidEscrowAmount,
+    #[msg("Only the configured council authority can finalize epoch councils.")]
+    UnauthorizedAuthority,
+    #[msg("Configured council authority public key is invalid.")]
+    InvalidAuthorityConfig,
 }
 
 fn is_accepted(status: u8) -> bool {
@@ -446,6 +457,14 @@ fn minimum_voting_period_met(created_at: i64, now: i64) -> bool {
 
 fn escrow_amounts_are_valid(amounts: &[u64; COUNCIL_SIZE]) -> bool {
     amounts.iter().all(|amount| *amount > 0)
+}
+
+fn configured_council_authority() -> Result<Pubkey> {
+    Pubkey::from_str(
+        option_env!("SINGULARITY_COUNCIL_AUTHORITY_PUBKEY")
+            .unwrap_or(DEFAULT_COUNCIL_AUTHORITY),
+    )
+    .map_err(|_| error!(CouncilError::InvalidAuthorityConfig))
 }
 
 fn council_member_index(members: &[Pubkey; COUNCIL_SIZE], voter: &Pubkey) -> Result<usize> {

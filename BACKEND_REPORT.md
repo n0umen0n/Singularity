@@ -307,6 +307,43 @@ Completed in the latest backend/program pass:
 - Added `POST /api/missions/:missionId/prepare-graduation` for registry graduation bookkeeping.
 - Added `migration_reconciliation_jobs` for tracking Meteora DBC migration reconciliation work.
 
+## Progress Update: Holder-Based Council Checkpoints
+
+Completed in the latest council readiness pass:
+
+- `POST /api/council/checkpoints/prepare` now refreshes the mission council from live token holder data before preparing the on-chain `finalize_epoch_council` transaction.
+- The backend fetches the token mint's largest token accounts, resolves token-account owners, filters out the mission treasury token account and configured exclusions, keeps system-owned wallet accounts, and persists the top six holders into `missions.council_json`.
+- The same top six holders are upserted into `council_candidates` with their latest checkpoint balance in token base units.
+- The checkpoint transaction uses those base-unit balances as the council vote escrow amounts, so the on-chain council matches the displayed holder ranking.
+- Funding request preparation now refreshes the live top-six holders and, when `SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR` is configured, automatically submits the `finalize_epoch_council` transaction before preparing the funding request transaction.
+- Funding request preparation now fails early when a mission has fewer than six eligible token holders or when automatic council finalization is not configured.
+
+Automatic finalization configuration:
+
+```bash
+SINGULARITY_COUNCIL_AUTHORITY_PUBKEY=your-authority-wallet-pubkey
+SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR='[12,34,...]' # Solana secret key JSON array
+```
+
+The keypair value may also be a base58-encoded 64-byte Solana secret key. This must be a backend-only secret, never a `NEXT_PUBLIC_` value. The wallet needs enough SOL to pay rent and transaction fees for epoch council account creation.
+
+The same authority public key must also be baked into the council program when it is built:
+
+```bash
+SINGULARITY_COUNCIL_AUTHORITY_PUBKEY=your-authority-wallet-pubkey anchor build
+```
+
+`finalize_epoch_council` rejects every signer except this configured authority, and the backend refuses to auto-submit if `SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR` does not match `SINGULARITY_COUNCIL_AUTHORITY_PUBKEY`.
+
+Optional exclusion configuration:
+
+```bash
+SINGULARITY_COUNCIL_EXCLUDED_OWNERS=wallet-or-pda-1,wallet-or-pda-2
+SINGULARITY_COUNCIL_EXCLUDED_TOKEN_ACCOUNTS=token-account-1,token-account-2
+```
+
+The mission treasury vault is excluded automatically. Use the optional exclusions for known program-owned reserve accounts or operational wallets that should not become councillors.
+
 ## Progress Update: Chain-First Launch And Vercel Indexer
 
 Completed in the latest production-readiness pass:

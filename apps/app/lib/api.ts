@@ -1,4 +1,5 @@
 import type { FundingRequest, Mission } from "@/lib/mock-data";
+import type { MeteoraDbcLaunchSimulation, MeteoraDbcLaunchSimulationInput } from "@singularity/solana";
 import type { PreparedTransaction } from "@/lib/wallet";
 
 export type Profile = {
@@ -98,8 +99,17 @@ export function prepareMissionLaunch(input: {
   missionImage?: string;
   tokenImage?: string;
   initialPurchaseUsdc?: number;
+  initialMarketCap?: number;
+  migrationMarketCap?: number;
 }) {
   return api<{ launchId: string | null; mission: Mission; transaction: PreparedTransaction }>("/api/missions/prepare-launch", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function simulateDbcLaunch(input: MeteoraDbcLaunchSimulationInput) {
+  return api<{ simulation: MeteoraDbcLaunchSimulation }>("/api/markets/dbc-simulation", {
     method: "POST",
     body: JSON.stringify(input),
   });

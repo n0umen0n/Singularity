@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_DBC_TOTAL_SUPPLY, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
+import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
 import {
   backendHealthFromPostgres,
@@ -138,6 +140,30 @@ function expiry(minutes: number) {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
+function shortWallet(address: string) {
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function emptyProfile(address: string) {
+  return {
+    name: "",
+    address,
+    avatar: "",
+    description: "",
+    socials: [],
+    ...emptyWalletBalanceSnapshot(),
+    createdMissions: [],
+  };
+}
+
+async function walletBalances(address: string, missionList: Mission[]) {
+  try {
+    return await getWalletBalanceSnapshot(address, missionList);
+  } catch {
+    return emptyWalletBalanceSnapshot();
+  }
+}
+
 function placeholderTransaction(kind: string): PreparedTransaction {
   return {
     kind,
@@ -200,24 +226,23 @@ export async function getProfile(address: string) {
   if (storageMode() === "postgres") return getProfileFromPostgres(address);
 
   const state = await readState();
-  const normalized = address.toLowerCase();
-  const isCurrentUser = state.currentUser.address.toLowerCase() === normalized || address === "me";
-  const user = isCurrentUser ? state.currentUser : { ...state.currentUser, address };
-
-  const tokenBalances = user.tokenBalances.map((entry) => ({
-    ...entry,
-    mission: state.missions.find((mission) => mission.id === entry.missionId) ?? null,
-  }));
+  const normalizedAddress = address === "me" ? state.currentUser.address : address;
+  const normalized = normalizedAddress.toLowerCase();
+  const isCurrentUser = state.currentUser.address.toLowerCase() === normalized;
+  const user = isCurrentUser ? state.currentUser : emptyProfile(normalizedAddress);
+  const balances = await walletBalances(normalizedAddress, state.missions);
   const createdMissions = user.createdMissions.map((entry) => ({
     ...entry,
     mission: state.missions.find((mission) => mission.id === entry.missionId) ?? null,
   }));
-  const councilMissionIds = new Set(user.tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
+  const councilMissionIds = new Set(balances.tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
   const submittedRequests = state.missions.flatMap((mission) =>
-    mission.requests.slice(0, 1).map((request) => ({
-      request: { ...request, requester: user.name, requesterAvatar: user.avatar },
-      symbol: mission.tokenSymbol,
-    })),
+    mission.requests
+      .filter((request) => request.requester === normalizedAddress || (user.name && request.requester === user.name))
+      .map((request) => ({
+        request: { ...request, requester: user.name || shortWallet(normalizedAddress), requesterAvatar: user.avatar },
+        symbol: mission.tokenSymbol,
+      })),
   );
   const councilRequests = state.missions.flatMap((mission) =>
     councilMissionIds.has(mission.id)
@@ -230,13 +255,13 @@ export async function getProfile(address: string) {
       : [],
   );
 
-  return { ...user, tokenBalances, createdMissions, submittedRequests, councilRequests };
+  return { ...user, ...balances, createdMissions, submittedRequests, councilRequests };
 }
 
 export async function updateProfile(input: { address: string; name?: string; description?: string; avatar?: string; socials?: string[] }) {
   if (storageMode() === "postgres") return updateProfileInPostgres(input);
 
-  return updateState(async (state) => {
+  await updateState(async (state) => {
     state.currentUser = {
       ...state.currentUser,
       address: input.address,
@@ -248,6 +273,8 @@ export async function updateProfile(input: { address: string; name?: string; des
 
     return state.currentUser;
   });
+
+  return getProfile(input.address);
 }
 
 export async function prepareMissionLaunch(input: {
@@ -258,6 +285,8 @@ export async function prepareMissionLaunch(input: {
   missionImage?: string;
   tokenImage?: string;
   initialPurchaseUsdc?: number;
+  initialMarketCap?: number;
+  migrationMarketCap?: number;
 }) {
   if (storageMode() === "postgres") return prepareMissionLaunchInPostgres(input);
 
@@ -280,6 +309,14 @@ export async function prepareMissionLaunch(input: {
     };
     const hash = contentHash(metadata);
     const seed = state.missions[0];
+    const launchConfig = resolveMeteoraDbcLaunchConfig({
+      totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
+      initialPurchaseUsdc: input.initialPurchaseUsdc,
+      initialMarketCap: input.initialMarketCap,
+      migrationMarketCap: input.migrationMarketCap,
+    });
+    const tokenPrice = launchConfig.initialMarketCap / launchConfig.totalSupply;
+    const treasuryTokens = Math.floor((launchConfig.totalSupply * launchConfig.treasurySupplyPercent) / 100);
     const mission: Mission = {
       ...seed,
       id,
@@ -288,12 +325,13 @@ export async function prepareMissionLaunch(input: {
       image: input.missionImage || seed.image,
       tokenImage: input.tokenImage || seed.tokenImage,
       tokenSymbol,
-      tokenPrice: 0.01,
+      tokenPrice,
       holders: 1,
-      liquidity: Number(input.initialPurchaseUsdc || 0),
+      liquidity: launchConfig.initialPurchaseUsdc,
       treasuryUsdc: 0,
-      treasuryTokens: 10_000_000,
-      totalSupply: 50_000_000,
+      treasuryTokens,
+      treasurySupplyPercent: launchConfig.treasurySupplyPercent,
+      totalSupply: launchConfig.totalSupply,
       council: [],
       requests: [],
     };
@@ -316,7 +354,9 @@ export async function prepareMissionLaunch(input: {
       tokenName: statement,
       tokenSymbol,
       totalSupply: mission.totalSupply,
-      initialPurchaseUsdc: input.initialPurchaseUsdc,
+      initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
+      initialMarketCap: launchConfig.initialMarketCap,
+      migrationMarketCap: launchConfig.migrationMarketCap,
     });
 
     return {
@@ -419,7 +459,9 @@ export async function prepareFundingRequest(input: {
     if (!name) throw new Error("Request name is required.");
     if (!description) throw new Error("Request description is required.");
     if (amountUsd <= 0) throw new Error("Request amount must be greater than zero.");
+    if (!Number.isFinite(mission.tokenPrice) || mission.tokenPrice <= 0) throw new Error("Mission token price is not available yet.");
 
+    const tokenAmount = amountUsd / mission.tokenPrice;
     const request: FundingRequest = {
       id: `${mission.id}-r${mission.requests.length + 1}-${randomBytes(2).toString("hex")}`,
       missionId: mission.id,
@@ -428,7 +470,7 @@ export async function prepareFundingRequest(input: {
       name,
       description,
       amountUsd,
-      tokenAmount: amountUsd / mission.tokenPrice,
+      tokenAmount,
       approvals: 0,
       rejections: 0,
       timeLeft: "3d left",
@@ -452,6 +494,8 @@ export async function prepareFundingRequest(input: {
         missionId: mission.id,
         requestId: request.id,
         metadataHash,
+        recipientWallet: input.requesterWallet,
+        tokenAmount: tokenAmount * 1_000_000,
       }),
     };
   });
@@ -567,16 +611,30 @@ export async function verifyAuth(input: { address?: string; nonce?: string; sign
 export async function registerCouncilCandidate(input: { missionId?: string; wallet?: string; tokenAccounts?: string[] }) {
   if (storageMode() === "postgres") return registerCouncilCandidateInPostgres(input);
 
-  const state = await readState();
   if (!input.missionId) throw new Error("missionId is required.");
-  const mission = findMissionOrThrow(state, input.missionId);
+  return updateState(async (state) => {
+    const mission = findMissionOrThrow(state, input.missionId!);
+    const wallet = input.wallet || state.currentUser.address;
+    const isKnownCandidate = mission.council.some((member) => member.address.toLowerCase() === wallet.toLowerCase());
 
-  return {
-    missionId: mission.id,
-    wallet: input.wallet || state.currentUser.address,
-    tokenAccounts: input.tokenAccounts || [],
-    transaction: await prepareCandidateRegistrationTransaction({ wallet: input.wallet || state.currentUser.address, missionId: mission.id }),
-  };
+    if (!isKnownCandidate) {
+      mission.council.push({
+        id: `${mission.id}-candidate-${wallet}`,
+        name: wallet === state.currentUser.address ? state.currentUser.name : `${wallet.slice(0, 4)}...${wallet.slice(-4)}`,
+        address: wallet,
+        avatar: wallet === state.currentUser.address ? state.currentUser.avatar : mission.tokenImage,
+        tokens: 0,
+        ownership: 0,
+      });
+    }
+
+    return {
+      missionId: mission.id,
+      wallet,
+      tokenAccounts: input.tokenAccounts || [],
+      transaction: await prepareCandidateRegistrationTransaction({ wallet, missionId: mission.id }),
+    };
+  });
 }
 
 function councilEscrowAmounts(candidates: Array<{ tokens: number }>) {

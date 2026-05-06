@@ -7,18 +7,28 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { createInitializeMint2Instruction, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  createInitializeMint2Instruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
 import {
   ActivationType,
   BaseFeeMode,
   buildCurveWithMarketCap,
   CollectFeeMode,
+  deriveDbcEventAuthority,
   deriveDbcPoolAddress,
+  deriveDbcPoolAuthority,
+  deriveDbcTokenVaultAddress,
+  DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   DynamicBondingCurveClient,
   getCurrentPoint,
   getPriceFromSqrtPrice,
   MigrationFeeOption,
   MigrationOption,
+  swapQuote,
   type PoolConfig,
   type SwapQuoteResult,
   TokenDecimal,
@@ -27,6 +37,20 @@ import {
   type VirtualPool,
 } from "@meteora-ag/dynamic-bonding-curve-sdk";
 import { BN } from "@coral-xyz/anchor";
+
+export const DEFAULT_DBC_TOTAL_SUPPLY = 50_000_000;
+export const DEFAULT_DBC_TREASURY_SUPPLY_PERCENT = 20;
+export const DEFAULT_DBC_INITIAL_MARKET_CAP = 10_000;
+export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 65_000;
+
+const DEFAULT_DBC_BUY_AMOUNTS_USDC = [5, 10, 25, 100, 1_000];
+const DBC_GUARDRAILS = {
+  maxTenUsdcTotalSupplyPercent: 0.5,
+  maxHundredUsdcTotalSupplyPercent: 3,
+  maxInitialPurchaseTotalSupplyPercent: 3,
+  minMigrationMarketCapMultiple: 3,
+};
+const WITHDRAW_LEFTOVER_DISCRIMINATOR = Buffer.from([20, 198, 202, 237, 235, 243, 183, 66]);
 
 export type SolanaProgramConfig = {
   rpcUrl: string;
@@ -92,6 +116,43 @@ export type MeteoraDbcLaunchInput = {
   migrationMarketCap?: number;
 };
 
+export type MeteoraDbcLaunchConfig = {
+  totalSupply: number;
+  treasurySupplyPercent: number;
+  initialMarketCap: number;
+  migrationMarketCap: number;
+  initialPurchaseUsdc: number;
+};
+
+export type MeteoraDbcLaunchSimulationInput = Partial<MeteoraDbcLaunchConfig> & {
+  buyAmountsUsdc?: number[];
+};
+
+export type MeteoraDbcLaunchSimulationQuote = {
+  buyAmountUsdc: number;
+  tokensOut: number;
+  totalSupplyPercent: number;
+  marketSupplyPercent: number;
+  averagePriceUsdc: number;
+  startingSpotPriceUsdc: number;
+  endingSpotPriceUsdc: number;
+  priceImpactPercent: number;
+  poolProgressPercent: number;
+};
+
+export type MeteoraDbcLaunchSimulation = {
+  config: MeteoraDbcLaunchConfig;
+  marketSupply: number;
+  treasurySupply: number;
+  migrationQuoteThresholdUsdc: number;
+  virtualDepthUsd: number;
+  quotes: MeteoraDbcLaunchSimulationQuote[];
+  guardrails: {
+    passed: boolean;
+    failures: string[];
+  };
+};
+
 export type MeteoraDbcTradeSide = "buy" | "sell";
 
 export type MeteoraDbcQuote = {
@@ -137,6 +198,216 @@ export type MeteoraDbcMarketSnapshot = {
 export type MeteoraDbcTradeResult = MeteoraDbcQuote & {
   transaction: PreparedSolanaTransaction;
 };
+
+function finitePositive(value: number | undefined, fallback: number) {
+  return Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+export function resolveMeteoraDbcLaunchConfig(input: Partial<MeteoraDbcLaunchConfig> = {}): MeteoraDbcLaunchConfig {
+  const totalSupply = finitePositive(input.totalSupply, DEFAULT_DBC_TOTAL_SUPPLY);
+  const treasurySupplyPercent = finitePositive(input.treasurySupplyPercent, DEFAULT_DBC_TREASURY_SUPPLY_PERCENT);
+  const initialMarketCap = finitePositive(input.initialMarketCap, DEFAULT_DBC_INITIAL_MARKET_CAP);
+  const migrationMarketCap = finitePositive(input.migrationMarketCap, DEFAULT_DBC_MIGRATION_MARKET_CAP);
+  const initialPurchaseUsdc = Math.max(Number(input.initialPurchaseUsdc || 0), 0);
+
+  if (treasurySupplyPercent <= 0 || treasurySupplyPercent >= 90) {
+    throw new Error("treasurySupplyPercent must be greater than 0 and less than 90.");
+  }
+  if (migrationMarketCap <= initialMarketCap) {
+    throw new Error("migrationMarketCap must be greater than initialMarketCap.");
+  }
+  if (migrationMarketCap < initialMarketCap * DBC_GUARDRAILS.minMigrationMarketCapMultiple) {
+    throw new Error(`migrationMarketCap must be at least ${DBC_GUARDRAILS.minMigrationMarketCapMultiple}x initialMarketCap.`);
+  }
+
+  const tenUsdcPercent = (10 / initialMarketCap) * 100;
+  if (tenUsdcPercent > DBC_GUARDRAILS.maxTenUsdcTotalSupplyPercent) {
+    throw new Error(`initialMarketCap is too low: a 10 USDC spot buy would exceed ${DBC_GUARDRAILS.maxTenUsdcTotalSupplyPercent}% of total supply.`);
+  }
+
+  const hundredUsdcPercent = (100 / initialMarketCap) * 100;
+  if (hundredUsdcPercent > DBC_GUARDRAILS.maxHundredUsdcTotalSupplyPercent) {
+    throw new Error(`initialMarketCap is too low: a 100 USDC spot buy would exceed ${DBC_GUARDRAILS.maxHundredUsdcTotalSupplyPercent}% of total supply.`);
+  }
+
+  const initialPurchasePercent = initialPurchaseUsdc > 0 ? (initialPurchaseUsdc / initialMarketCap) * 100 : 0;
+  if (initialPurchasePercent > DBC_GUARDRAILS.maxInitialPurchaseTotalSupplyPercent) {
+    throw new Error(`initialPurchaseUsdc is too large for this curve: it would exceed ${DBC_GUARDRAILS.maxInitialPurchaseTotalSupplyPercent}% of total supply at spot.`);
+  }
+
+  return {
+    totalSupply,
+    treasurySupplyPercent,
+    initialMarketCap,
+    migrationMarketCap,
+    initialPurchaseUsdc,
+  };
+}
+
+function buildMeteoraDbcCurveConfig(input: Partial<MeteoraDbcLaunchConfig>) {
+  const launchConfig = resolveMeteoraDbcLaunchConfig(input);
+  const treasurySupply = Math.floor((launchConfig.totalSupply * launchConfig.treasurySupplyPercent) / 100);
+
+  const curveConfig = buildCurveWithMarketCap({
+    token: {
+      tokenType: TokenType.Token2022,
+      tokenBaseDecimal: TokenDecimal.SIX,
+      tokenQuoteDecimal: TokenDecimal.SIX,
+      tokenUpdateAuthority: TokenUpdateAuthorityOption.Immutable,
+      totalTokenSupply: launchConfig.totalSupply,
+      leftover: treasurySupply,
+    },
+    fee: {
+      baseFeeParams: {
+        baseFeeMode: BaseFeeMode.FeeSchedulerLinear,
+        feeSchedulerParam: {
+          startingFeeBps: 100,
+          endingFeeBps: 100,
+          numberOfPeriod: 0,
+          totalDuration: 0,
+        },
+      },
+      dynamicFeeEnabled: true,
+      collectFeeMode: CollectFeeMode.QuoteToken,
+      creatorTradingFeePercentage: 50,
+      poolCreationFee: 0,
+      enableFirstSwapWithMinFee: launchConfig.initialPurchaseUsdc > 0,
+    },
+    migration: {
+      migrationOption: MigrationOption.MET_DAMM_V2,
+      migrationFeeOption: MigrationFeeOption.FixedBps100,
+      migrationFee: { feePercentage: 0, creatorFeePercentage: 0 },
+    },
+    liquidityDistribution: {
+      partnerLiquidityPercentage: 0,
+      partnerPermanentLockedLiquidityPercentage: 50,
+      creatorLiquidityPercentage: 0,
+      creatorPermanentLockedLiquidityPercentage: 50,
+    },
+    lockedVesting: {
+      totalLockedVestingAmount: 0,
+      numberOfVestingPeriod: 0,
+      cliffUnlockAmount: 0,
+      totalVestingDuration: 0,
+      cliffDurationFromMigrationTime: 0,
+    },
+    activationType: ActivationType.Slot,
+    initialMarketCap: launchConfig.initialMarketCap,
+    migrationMarketCap: launchConfig.migrationMarketCap,
+  });
+
+  return { launchConfig, treasurySupply, curveConfig };
+}
+
+function migrationSqrtPrice(curveConfig: ReturnType<typeof buildCurveWithMarketCap>) {
+  for (let index = curveConfig.curve.length - 1; index >= 0; index -= 1) {
+    const sqrtPrice = curveConfig.curve[index]?.sqrtPrice;
+    if (sqrtPrice && !sqrtPrice.isZero()) return sqrtPrice;
+  }
+
+  return curveConfig.sqrtStartPrice;
+}
+
+function initialVirtualPool(curveConfig: ReturnType<typeof buildCurveWithMarketCap>, marketSupply: number) {
+  return {
+    quoteReserve: new BN(0),
+    baseReserve: tokenAmount(marketSupply),
+    sqrtPrice: curveConfig.sqrtStartPrice,
+    volatilityTracker: {
+      lastUpdateTimestamp: new BN(0),
+      padding: [],
+      sqrtPriceReference: curveConfig.sqrtStartPrice,
+      volatilityAccumulator: new BN(0),
+      volatilityReference: new BN(0),
+    },
+    activationPoint: new BN(0),
+    baseMint: PublicKey.default,
+    quoteVault: PublicKey.default,
+    baseVault: PublicKey.default,
+  } as VirtualPool;
+}
+
+function withdrawLeftoverInstructions(input: {
+  payer: PublicKey;
+  config: PublicKey;
+  virtualPool: PublicKey;
+  baseMint: PublicKey;
+  leftoverReceiver: PublicKey;
+}) {
+  const tokenBaseAccount = getAssociatedTokenAddressSync(input.baseMint, input.leftoverReceiver, true, TOKEN_2022_PROGRAM_ID);
+  const baseVault = deriveDbcTokenVaultAddress(input.virtualPool, input.baseMint);
+
+  return [
+    createAssociatedTokenAccountIdempotentInstruction(input.payer, tokenBaseAccount, input.leftoverReceiver, input.baseMint, TOKEN_2022_PROGRAM_ID),
+    new TransactionInstruction({
+      programId: DYNAMIC_BONDING_CURVE_PROGRAM_ID,
+      keys: [
+        { pubkey: deriveDbcPoolAuthority(), isSigner: false, isWritable: false },
+        { pubkey: input.config, isSigner: false, isWritable: false },
+        { pubkey: input.virtualPool, isSigner: false, isWritable: true },
+        { pubkey: tokenBaseAccount, isSigner: false, isWritable: true },
+        { pubkey: baseVault, isSigner: false, isWritable: true },
+        { pubkey: input.baseMint, isSigner: false, isWritable: false },
+        { pubkey: input.leftoverReceiver, isSigner: false, isWritable: false },
+        { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: deriveDbcEventAuthority(), isSigner: false, isWritable: false },
+        { pubkey: DYNAMIC_BONDING_CURVE_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: WITHDRAW_LEFTOVER_DISCRIMINATOR,
+    }),
+  ];
+}
+
+export function simulateMeteoraDbcLaunch(input: MeteoraDbcLaunchSimulationInput = {}): MeteoraDbcLaunchSimulation {
+  const { launchConfig, treasurySupply, curveConfig } = buildMeteoraDbcCurveConfig(input);
+  const marketSupply = launchConfig.totalSupply - treasurySupply;
+  const configForQuote = {
+    ...curveConfig,
+    migrationSqrtPrice: migrationSqrtPrice(curveConfig),
+  } as PoolConfig;
+  const virtualPool = initialVirtualPool(curveConfig, marketSupply);
+  const startingSpotPriceUsdc = spotPrice(virtualPool);
+  const buyAmountsUsdc = input.buyAmountsUsdc?.length ? input.buyAmountsUsdc : DEFAULT_DBC_BUY_AMOUNTS_USDC;
+  const quotes = buyAmountsUsdc.map((buyAmountUsdc) => {
+    const quote = swapQuote(virtualPool, configForQuote, false, tokenAmount(buyAmountUsdc), 100, false, new BN(0), false);
+    const result = quote as { outputAmount?: BN; nextSqrtPrice?: BN };
+    const tokensOut = amountFromBaseUnits(result.outputAmount || new BN(0));
+    const endingSpotPriceUsdc = Number(getPriceFromSqrtPrice(result.nextSqrtPrice || curveConfig.sqrtStartPrice, TokenDecimal.SIX, TokenDecimal.SIX).toString());
+
+    return {
+      buyAmountUsdc,
+      tokensOut,
+      totalSupplyPercent: launchConfig.totalSupply > 0 ? (tokensOut / launchConfig.totalSupply) * 100 : 0,
+      marketSupplyPercent: marketSupply > 0 ? (tokensOut / marketSupply) * 100 : 0,
+      averagePriceUsdc: tokensOut > 0 ? buyAmountUsdc / tokensOut : 0,
+      startingSpotPriceUsdc,
+      endingSpotPriceUsdc,
+      priceImpactPercent: priceImpact({ side: "buy", inputAmount: buyAmountUsdc, estimatedOutput: tokensOut, currentPrice: startingSpotPriceUsdc }),
+      poolProgressPercent: Math.max(0, Math.min((buyAmountUsdc / amountFromBaseUnits(curveConfig.migrationQuoteThreshold)) * 100, 100)),
+    } satisfies MeteoraDbcLaunchSimulationQuote;
+  });
+  const failures = [
+    ...quotes
+      .filter((quote) => quote.buyAmountUsdc === 10 && quote.totalSupplyPercent > DBC_GUARDRAILS.maxTenUsdcTotalSupplyPercent)
+      .map((quote) => `10 USDC buys ${quote.totalSupplyPercent.toFixed(2)}% of total supply.`),
+    ...quotes
+      .filter((quote) => quote.buyAmountUsdc === 100 && quote.totalSupplyPercent > DBC_GUARDRAILS.maxHundredUsdcTotalSupplyPercent)
+      .map((quote) => `100 USDC buys ${quote.totalSupplyPercent.toFixed(2)}% of total supply.`),
+  ];
+
+  return {
+    config: launchConfig,
+    marketSupply,
+    treasurySupply,
+    migrationQuoteThresholdUsdc: amountFromBaseUnits(curveConfig.migrationQuoteThreshold),
+    virtualDepthUsd: marketSupply * startingSpotPriceUsdc,
+    quotes,
+    guardrails: {
+      passed: failures.length === 0,
+      failures,
+    },
+  };
+}
 
 export function requireProgramConfig(env: NodeJS.ProcessEnv): SolanaProgramConfig {
   const rpcUrl = env.SOLANA_RPC_URL;
@@ -242,56 +513,14 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
   const leftoverReceiver = new PublicKey(input.leftoverReceiver);
   const config = Keypair.generate();
   const baseMint = Keypair.generate();
-  const treasurySupplyPercent = input.treasurySupplyPercent ?? 20;
-  const treasurySupply = Math.floor((input.totalSupply * treasurySupplyPercent) / 100);
-  const poolSupply = input.totalSupply - treasurySupply;
-  const curveConfig = buildCurveWithMarketCap({
-    token: {
-      tokenType: TokenType.Token2022,
-      tokenBaseDecimal: TokenDecimal.SIX,
-      tokenQuoteDecimal: TokenDecimal.SIX,
-      tokenUpdateAuthority: TokenUpdateAuthorityOption.Immutable,
-      totalTokenSupply: input.totalSupply,
-      leftover: treasurySupply,
-    },
-    fee: {
-      baseFeeParams: {
-        baseFeeMode: BaseFeeMode.FeeSchedulerLinear,
-        feeSchedulerParam: {
-          startingFeeBps: 100,
-          endingFeeBps: 100,
-          numberOfPeriod: 0,
-          totalDuration: 0,
-        },
-      },
-      dynamicFeeEnabled: true,
-      collectFeeMode: CollectFeeMode.QuoteToken,
-      creatorTradingFeePercentage: 50,
-      poolCreationFee: 0,
-      enableFirstSwapWithMinFee: Boolean(input.initialPurchaseUsdc && input.initialPurchaseUsdc > 0),
-    },
-    migration: {
-      migrationOption: MigrationOption.MET_DAMM_V2,
-      migrationFeeOption: MigrationFeeOption.FixedBps100,
-      migrationFee: { feePercentage: 0, creatorFeePercentage: 0 },
-    },
-    liquidityDistribution: {
-      partnerLiquidityPercentage: 0,
-      partnerPermanentLockedLiquidityPercentage: 50,
-      creatorLiquidityPercentage: 0,
-      creatorPermanentLockedLiquidityPercentage: 50,
-    },
-    lockedVesting: {
-      totalLockedVestingAmount: 0,
-      numberOfVestingPeriod: 0,
-      cliffUnlockAmount: 0,
-      totalVestingDuration: 0,
-      cliffDurationFromMigrationTime: 0,
-    },
-    activationType: ActivationType.Slot,
-    initialMarketCap: input.initialMarketCap ?? 30,
-    migrationMarketCap: input.migrationMarketCap ?? 540,
+  const { launchConfig, treasurySupply, curveConfig } = buildMeteoraDbcCurveConfig({
+    totalSupply: input.totalSupply,
+    treasurySupplyPercent: input.treasurySupplyPercent,
+    initialPurchaseUsdc: input.initialPurchaseUsdc,
+    initialMarketCap: input.initialMarketCap,
+    migrationMarketCap: input.migrationMarketCap,
   });
+  const poolSupply = launchConfig.totalSupply - treasurySupply;
   const preCreatePoolParam = {
     name: input.name,
     symbol: input.symbol,
@@ -299,7 +528,7 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
     poolCreator,
     baseMint: baseMint.publicKey,
   };
-  const firstBuyQuoteAmount = Math.max(Number(input.initialPurchaseUsdc || 0), 0);
+  const firstBuyQuoteAmount = launchConfig.initialPurchaseUsdc;
   const firstBuyParam =
     firstBuyQuoteAmount > 0
       ? {
@@ -332,25 +561,43 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
       });
   const transactions = "createConfigTx" in result ? [result.createConfigTx, result.createPoolWithFirstBuyTx] : [result];
   const dbcPool = deriveDbcPoolAddress(quoteMint, baseMint.publicKey, config.publicKey);
+  const treasuryVault = getAssociatedTokenAddressSync(baseMint.publicKey, leftoverReceiver, true, TOKEN_2022_PROGRAM_ID);
+  const withdrawTreasuryInstructions = withdrawLeftoverInstructions({
+    payer,
+    config: config.publicKey,
+    virtualPool: dbcPool,
+    baseMint: baseMint.publicKey,
+    leftoverReceiver,
+  });
   const signerKeypairs = [config, baseMint];
 
   return {
-    instructions: transactions.flatMap((transaction) => transaction.instructions),
-    transactionSteps: transactions.map((transaction, index) => ({
-      label: index === 0 ? "Create Meteora DBC config" : "Create Meteora DBC pool",
-      instructions: transaction.instructions,
-      signerKeypairs: signerKeypairs.filter((signer) =>
-        transaction.instructions.some((instruction) => instruction.keys.some((key) => key.isSigner && key.pubkey.equals(signer.publicKey))),
-      ),
-    })),
+    instructions: [...transactions.flatMap((transaction) => transaction.instructions), ...withdrawTreasuryInstructions],
+    transactionSteps: [
+      ...transactions.map((transaction, index) => ({
+        label: index === 0 ? "Create Meteora DBC config" : "Create Meteora DBC pool",
+        instructions: transaction.instructions,
+        signerKeypairs: signerKeypairs.filter((signer) =>
+          transaction.instructions.some((instruction) => instruction.keys.some((key) => key.isSigner && key.pubkey.equals(signer.publicKey))),
+        ),
+      })),
+      {
+        label: "Send mission treasury allocation",
+        instructions: withdrawTreasuryInstructions,
+        signerKeypairs: [],
+      },
+    ],
     signerKeypairs,
     accounts: {
       meteoraConfig: config.publicKey.toBase58(),
       tokenMint: baseMint.publicKey.toBase58(),
       dbcPool: dbcPool.toBase58(),
       quoteMint: quoteMint.toBase58(),
+      treasuryVault: treasuryVault.toBase58(),
       poolSupply: String(poolSupply),
       treasurySupply: String(treasurySupply),
+      initialMarketCap: String(launchConfig.initialMarketCap),
+      migrationMarketCap: String(launchConfig.migrationMarketCap),
     },
   };
 }

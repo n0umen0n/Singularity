@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, ChevronDown, Copy, Sparkles, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { createPortal } from "react-dom";
+import { ArrowRight, ChevronDown, Copy, Sparkles, Upload, Zap } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
 import * as api from "@/lib/api";
-import type { FundingRequest, Mission, RequestStatus } from "@/lib/mock-data";
+import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/mock-data";
 import { money, number, shortAddress } from "@/lib/format";
 import { useSingularityWallet } from "@/lib/wallet";
 
@@ -176,15 +177,19 @@ function CouncilMemberFlipCard({
   member,
   index,
   symbol,
+  isCurrentUser = false,
 }: {
   member: Mission["council"][number];
   index: number;
   symbol: string;
+  isCurrentUser?: boolean;
 }) {
   const socialHandle = member.socials ?? `@${member.name.toLowerCase()}`;
   const description =
-    councilMemberDescriptions[member.name] ??
-    "Mission council member helping approve treasury funding for work that advances the mission.";
+    isCurrentUser
+      ? "Your candidacy is registered. Your council position will update from checkpointed token balances."
+      : councilMemberDescriptions[member.name] ??
+        "Mission council member helping approve treasury funding for work that advances the mission.";
 
   return (
     <FlipCard
@@ -198,30 +203,47 @@ function CouncilMemberFlipCard({
           <div>
             <h3>{member.name}</h3>
             <p>
-              {number(member.tokens, true)} {symbol}
+              {member.tokens > 0 ? `${number(member.tokens, true)} ${symbol}` : "Registered candidate"}
             </p>
           </div>
         </article>
       }
       back={
         <article className="glass-card flip-profile-card flip-profile-back">
-          <StatusPill tone="council">Councillor</StatusPill>
+          <StatusPill tone="council">{isCurrentUser ? "Registered" : "Councillor"}</StatusPill>
           <div>
             <h3>{member.name}</h3>
             <p className="flip-profile-description">{description}</p>
           </div>
-          <div className="flip-profile-socials">
-            <a href={`https://x.com/${socialHandle.replace(/^@/, "")}`} target="_blank" rel="noreferrer">
-              <span className="x-logo" aria-hidden="true">
-                X
-              </span>
-              {socialHandle}
-            </a>
-          </div>
+          {isCurrentUser ? (
+            <p className="stat-note">{shortAddress(member.address)}</p>
+          ) : (
+            <div className="flip-profile-socials">
+              <a href={`https://x.com/${socialHandle.replace(/^@/, "")}`} target="_blank" rel="noreferrer">
+                <span className="x-logo" aria-hidden="true">
+                  X
+                </span>
+                {socialHandle}
+              </a>
+            </div>
+          )}
           <div className="button button-primary flip-profile-button">Open profile</div>
         </article>
       }
     />
+  );
+}
+
+function CouncilPlaceholderCard({ index, symbol }: { index: number; symbol: string }) {
+  return (
+    <article className="glass-card flip-profile-card council-placeholder-card">
+      <StatusPill>#{index + 1}</StatusPill>
+      <span className="flip-profile-avatar placeholder-avatar">{symbol.slice(0, 2).toUpperCase()}</span>
+      <div>
+        <h3>Open council slot</h3>
+        <p>Waiting for registered candidates</p>
+      </div>
+    </article>
   );
 }
 
@@ -394,29 +416,162 @@ function PerformanceCard({ mission }: { mission: Mission }) {
 function CouncilSection({ mission }: { mission: Mission }) {
   const wallet = useSingularityWallet();
   const [status, setStatus] = useState<string | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
+  const [registeredCandidateAddress, setRegisteredCandidateAddress] = useState<string | null>(null);
   const userBalance = mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
   const trackedBalance = Math.max(0, Math.floor(userBalance));
   const candidateRank = trackedBalance > 0 ? mission.council.filter((member) => member.tokens > trackedBalance).length + 1 : null;
   const candidateRankDetail =
     candidateRank === null
-      ? `Hold ${mission.tokenSymbol} to estimate your candidate rank.`
+      ? `Register now to become eligible. Council rank is calculated from your ${mission.tokenSymbol} balance at the next checkpoint.`
       : candidateRank <= 6
         ? "You would be in the current top 6 council."
         : "";
   const [isCandidateModalOpen, setIsCandidateModalOpen] = useState(false);
+
+  useEffect(() => {
+    setModalRoot(document.body);
+  }, []);
+
+  const displayedCouncil = useMemo(() => {
+    const members = mission.council.map((member) =>
+      wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase()
+        ? {
+            ...member,
+            name: "You",
+          }
+        : member,
+    );
+    const registeredAddress = registeredCandidateAddress || wallet.address;
+    const isKnownCandidate =
+      registeredAddress && members.some((member) => member.address.toLowerCase() === registeredAddress.toLowerCase());
+
+    if (registeredCandidateAddress && registeredAddress && !isKnownCandidate) {
+      members.push({
+        id: `${mission.id}-${registeredAddress}`,
+        name: "You",
+        address: registeredAddress,
+        avatar: mission.tokenImage,
+        tokens: trackedBalance,
+        ownership: 0,
+      });
+    }
+
+    return members
+      .sort((left, right) => right.tokens - left.tokens)
+      .slice(0, 6);
+  }, [mission.council, mission.id, mission.tokenImage, registeredCandidateAddress, trackedBalance, wallet.address]);
+
+  const councilSlots = useMemo<Array<Investor | null>>(
+    () => Array.from({ length: 6 }, (_, index) => displayedCouncil[index] ?? null),
+    [displayedCouncil],
+  );
+  const isRegisteredCandidate =
+    Boolean(wallet.address && registeredCandidateAddress?.toLowerCase() === wallet.address.toLowerCase()) ||
+    Boolean(wallet.address && mission.council.some((member) => member.address.toLowerCase() === wallet.address?.toLowerCase()));
+
+  useEffect(() => {
+    if (!isCandidateModalOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsCandidateModalOpen(false);
+    };
+
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isCandidateModalOpen]);
+
   const register = async () => {
+    if (isRegistering) return;
     if (!wallet.address) {
       await wallet.signIn();
       return;
     }
+    setIsRegistering(true);
     try {
       const result = await api.registerCouncilCandidate(mission.id);
       const signature = await wallet.sendPreparedTransaction(result.transaction);
-      setStatus(signature ? `Registration submitted: ${shortAddress(signature)}` : result.transaction.status === "not_configured" ? result.transaction.message : "Registration recorded.");
+      if (signature) {
+        setRegisteredCandidateAddress(wallet.address);
+        const nextRank = displayedCouncil.length === 0 ? 1 : Math.min(displayedCouncil.length + 1, 6);
+        setStatus(`Registration confirmed on-chain: ${shortAddress(signature)}. You now appear in council slot #${nextRank}.`);
+        setIsCandidateModalOpen(false);
+      } else {
+        if (result.transaction.status === "not_configured" && result.transaction.message.includes("already registered")) {
+          setRegisteredCandidateAddress(wallet.address);
+          setStatus(null);
+          setIsCandidateModalOpen(false);
+        } else {
+          setStatus(result.transaction.status === "not_configured" ? result.transaction.message : "Registration recorded. Waiting for on-chain confirmation.");
+        }
+      }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Registration failed.");
+      const message = error instanceof Error ? error.message : "Registration failed.";
+      if (message.includes("already registered")) {
+        setRegisteredCandidateAddress(wallet.address);
+        setStatus(null);
+        setIsCandidateModalOpen(false);
+      } else {
+        setStatus(message);
+      }
+    } finally {
+      setIsRegistering(false);
     }
   };
+  const candidateModal = isCandidateModalOpen ? (
+    <div className="modal-backdrop" role="presentation" onClick={() => setIsCandidateModalOpen(false)}>
+      <div className="glass-card candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title" onClick={(event) => event.stopPropagation()}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Council candidacy</p>
+            <h2 id="candidate-modal-title">Become councillor</h2>
+            <p>
+              Register as a council candidate. Your current balance determines where you would rank among registered members.
+            </p>
+          </div>
+        </div>
+        <div className="candidate-metric-grid">
+          <div className="candidate-metric-card">
+            <span className="stat-label">Your current balance</span>
+            <strong>
+              {number(trackedBalance)} {mission.tokenSymbol}
+            </strong>
+          </div>
+          <div className="candidate-metric-card">
+            <span className="stat-label">Rank if you register</span>
+            <strong>{candidateRank === null ? "Checkpoint pending" : `#${candidateRank}`}</strong>
+            <small>{candidateRankDetail}</small>
+          </div>
+        </div>
+        <div className="candidate-rewards-panel">
+          <span className="stat-label">Fee rewards</span>
+          <div className="candidate-reward-row">
+            <span>Top 6 councillors</span>
+            <strong>60% of fees</strong>
+          </div>
+          <div className="candidate-reward-row">
+            <span>Other registered members</span>
+            <strong>10% of fees</strong>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="button" type="button" onClick={() => setIsCandidateModalOpen(false)}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="button" disabled={isRegistering} onClick={() => void register()}>
+            {isRegistering ? "Registering..." : wallet.address ? "Register" : "Sign in to register"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <GlassCard className="section-card">
@@ -430,64 +585,28 @@ function CouncilSection({ mission }: { mission: Mission }) {
         </div>
         <div className="council-actions">
           <StatusPill tone="council">4/6 approvals required to access treasury</StatusPill>
-          <button className="button button-primary" onClick={() => setIsCandidateModalOpen(true)}>
-            {wallet.address ? "Register" : "Sign in to register"}
+          <button className="button button-primary" disabled={isRegisteredCandidate} onClick={() => setIsCandidateModalOpen(true)}>
+            {isRegisteredCandidate ? "Registered" : wallet.address ? "Register" : "Sign in to register"}
           </button>
         </div>
       </div>
       {status ? <p className="stat-note">{status}</p> : null}
       <div className="council-grid">
-        {mission.council.map((member, index) => (
-          <CouncilMemberFlipCard index={index} key={member.id} member={member} symbol={mission.tokenSymbol} />
+        {councilSlots.map((member, index) => (
+          member ? (
+            <CouncilMemberFlipCard
+              index={index}
+              isCurrentUser={Boolean(wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase())}
+              key={member.id}
+              member={member}
+              symbol={mission.tokenSymbol}
+            />
+          ) : (
+            <CouncilPlaceholderCard index={index} key={`placeholder-${index}`} symbol={mission.tokenSymbol} />
+          )
         ))}
       </div>
-      {isCandidateModalOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={() => setIsCandidateModalOpen(false)}>
-          <div className="glass-card candidate-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-modal-title" onClick={(event) => event.stopPropagation()}>
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Council candidacy</p>
-                <h2 id="candidate-modal-title">Become councillor</h2>
-                <p>
-                  Register as a council candidate. Your current balance determines where you would rank among registered members.
-                </p>
-              </div>
-            </div>
-            <div className="candidate-metric-grid">
-              <div className="candidate-metric-card">
-                <span className="stat-label">Your current balance</span>
-                <strong>
-                  {number(trackedBalance)} {mission.tokenSymbol}
-                </strong>
-              </div>
-              <div className="candidate-metric-card">
-                <span className="stat-label">Rank if you register</span>
-                <strong>{candidateRank === null ? "No rank yet" : `#${candidateRank}`}</strong>
-                <small>{candidateRankDetail}</small>
-              </div>
-            </div>
-            <div className="candidate-rewards-panel">
-              <span className="stat-label">Fee rewards</span>
-              <div className="candidate-reward-row">
-                <span>Top 6 councillors</span>
-                <strong>60% of fees</strong>
-              </div>
-              <div className="candidate-reward-row">
-                <span>Other registered members</span>
-                <strong>10% of fees</strong>
-              </div>
-            </div>
-            <div className="modal-actions">
-              <button className="button" onClick={() => setIsCandidateModalOpen(false)}>
-                Cancel
-              </button>
-              <button className="button button-primary" disabled={Boolean(wallet.address) && trackedBalance <= 0} onClick={() => void register()}>
-                {wallet.address ? "Register" : "Sign in to register"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {modalRoot && candidateModal ? createPortal(candidateModal, modalRoot) : null}
     </GlassCard>
   );
 }
@@ -620,25 +739,23 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
 function capitalizationBreakdown(mission: Mission) {
   const treasuryTokens = mission.treasuryTokens;
   const marketTokens = mission.marketTokens ?? Math.max(mission.totalSupply - treasuryTokens, 0);
-  const circulatingTokens = mission.circulatingTokens ?? Math.max(mission.totalSupply - treasuryTokens - marketTokens, 0);
+  const investorTokens = mission.circulatingTokens ?? Math.max(mission.totalSupply - treasuryTokens - marketTokens, 0);
 
   return {
-    circulatingTokens,
-    circulatingValue: circulatingTokens * mission.tokenPrice,
+    investorTokens,
     treasuryTokens,
     marketTokens,
     marketCapValue: mission.totalSupply * mission.tokenPrice,
-    treasuryValue: treasuryTokens * mission.tokenPrice,
+    treasuryValue: mission.treasuryUsdc,
     marketValue: marketTokens * mission.tokenPrice,
   };
 }
 
 function TreasuryPanel({ mission }: { mission: Mission }) {
-  const { circulatingTokens, marketCapValue, marketTokens, marketValue, treasuryTokens, treasuryValue } = capitalizationBreakdown(mission);
+  const { marketCapValue, marketTokens, treasuryTokens, treasuryValue } = capitalizationBreakdown(mission);
   const totalSupplyAmount = `${number(mission.totalSupply)} ${mission.tokenSymbol}`;
   const treasuryTokenAmount = `${number(treasuryTokens)} ${mission.tokenSymbol}`;
   const marketTokenAmount = `${number(marketTokens)} ${mission.tokenSymbol}`;
-  const circulatingTokenAmount = `${number(circulatingTokens)} ${mission.tokenSymbol}`;
 
   return (
     <GlassCard className="section-card">
@@ -664,35 +781,28 @@ function TreasuryPanel({ mission }: { mission: Mission }) {
           </div>
         </div>
         <div>
-          <span className="stat-label">DBC Pool Tokens</span>
-          <div className="stat-value">{money(marketValue)}</div>
+          <span className="stat-label">Liquidity</span>
+          <div className="stat-value">{money(mission.liquidity)}</div>
           <div className="stat-note" title={marketTokenAmount}>
             {number(marketTokens, true)} {mission.tokenSymbol}
-          </div>
-        </div>
-        <div>
-          <span className="stat-label">Circulating Holders</span>
-          <div className="stat-value">{money(circulatingTokens * mission.tokenPrice)}</div>
-          <div className="stat-note" title={circulatingTokenAmount}>
-            {number(circulatingTokens, true)} {mission.tokenSymbol}
           </div>
         </div>
       </div>
       <TreasuryMarketDonut mission={mission} />
       <p className="stat-note">
-        The treasury is reserved for funding work that advances this mission. Market liquidity enables to purchase and sell tokens.
+        The treasury is reserved for funding work that advances this mission. Liquidity shows how much value is available for buying and selling in the market.
       </p>
     </GlassCard>
   );
 }
 
 function TreasuryMarketDonut({ mission }: { mission: Mission }) {
-  const [active, setActive] = useState<"circulating" | "treasury" | "market">("treasury");
-  const { circulatingTokens, marketTokens, treasuryTokens } = capitalizationBreakdown(mission);
+  const [active, setActive] = useState<"investors" | "treasury" | "market">("market");
+  const { investorTokens, marketTokens, treasuryTokens } = capitalizationBreakdown(mission);
   const chartData = [
-    { key: "circulating" as const, name: "Circulating", value: circulatingTokens, gradient: "url(#investorsGradient)" },
+    { key: "market" as const, name: "Market", value: marketTokens, gradient: "url(#marketGradient)" },
+    { key: "investors" as const, name: "Investors", value: investorTokens, gradient: "url(#investorsGradient)" },
     { key: "treasury" as const, name: "Treasury", value: treasuryTokens, gradient: "url(#treasuryGradient)" },
-    { key: "market" as const, name: "DBC pool", value: marketTokens, gradient: "url(#marketGradient)" },
   ];
   const activeEntry = chartData.find((entry) => entry.key === active) ?? chartData[0];
   const activePercentage = mission.totalSupply > 0 ? (activeEntry.value / mission.totalSupply) * 100 : 0;
@@ -734,7 +844,7 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
               strokeWidth={1}
               isAnimationActive
               animationDuration={700}
-              onMouseEnter={(_, index) => setActive(chartData[index]?.key ?? "treasury")}
+              onMouseEnter={(_, index) => setActive(chartData[index]?.key ?? "market")}
             >
               {chartData.map((entry) => (
                 <Cell
@@ -753,17 +863,17 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
         </div>
       </div>
       <div className="donut-legend">
-        <button className={cx("legend-item", active === "circulating" && "active")} onMouseEnter={() => setActive("circulating")} onFocus={() => setActive("circulating")}>
+        <button className={cx("legend-item", active === "market" && "active")} onMouseEnter={() => setActive("market")} onFocus={() => setActive("market")}>
+          <span className="legend-dot market-dot" />
+          Market
+        </button>
+        <button className={cx("legend-item", active === "investors" && "active")} onMouseEnter={() => setActive("investors")} onFocus={() => setActive("investors")}>
           <span className="legend-dot investors-dot" />
-          Circulating
+          Investors
         </button>
         <button className={cx("legend-item", active === "treasury" && "active")} onMouseEnter={() => setActive("treasury")} onFocus={() => setActive("treasury")}>
           <span className="legend-dot treasury-dot" />
           Treasury
-        </button>
-        <button className={cx("legend-item", active === "market" && "active")} onMouseEnter={() => setActive("market")} onFocus={() => setActive("market")}>
-          <span className="legend-dot market-dot" />
-          DBC pool
         </button>
       </div>
     </div>
@@ -943,7 +1053,7 @@ export function LaunchMissionPage() {
   const [symbol, setSymbol] = useState("");
   const [statement, setStatement] = useState("");
   const [description, setDescription] = useState("");
-  const [initialPurchaseUsdc, setInitialPurchaseUsdc] = useState("1000");
+  const [initialPurchaseUsdc, setInitialPurchaseUsdc] = useState("100");
   const [missionImage, setMissionImage] = useState(defaultMissionImage);
   const [tokenImage, setTokenImage] = useState(defaultTokenImage);
   const [missionImageFile, setMissionImageFile] = useState<File | null>(null);
@@ -957,8 +1067,8 @@ export function LaunchMissionPage() {
     description: description || "Live preview of how your mission will appear in discovery.",
     image: missionImage,
     tokenImage,
-    tokenPrice: 0.01,
-    liquidity: 1000000,
+    tokenPrice: 0.0002,
+    liquidity: 10000,
     holders: 1800,
     treasuryUsdc: 0,
     treasuryTokens: 10_000_000,
@@ -1034,12 +1144,12 @@ export function LaunchMissionPage() {
               <div className="section-heading">
                 <div>
                   <h2>Tokenomics</h2>
-                  <p>A market is created for every mission. The market is the mission AMM, where investors buy and sell mission tokens. 20% of supply goes to the treasury and 80% goes to AMM liquidity.</p>
+                  <p>A bonding curve is created for every mission, where investors buy and sell mission tokens before the market graduates to an AMM. 20% of supply goes to the treasury and 80% becomes bonding-curve token inventory.</p>
                 </div>
               </div>
               <div className="treasury-ring" />
               <div className="info-grid">
-                <InfoCard title="80% Market liquidity" body="Seeded into the mission AMM so tokens are available for trading." />
+                <InfoCard title="80% Bonding curve inventory" body="Assigned to the Meteora DBC virtual pool so tokens are available for trading." />
                 <InfoCard title="20% Mission treasury" body="Reserved for funding mission-related work." />
               </div>
             </GlassCard>
@@ -1100,7 +1210,7 @@ export function LaunchMissionPage() {
               />
               <label>
                 <span className="form-label">Initial purchase in USDC</span>
-                <input className="field" placeholder="1000" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
+                <input className="field" placeholder="100" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
               </label>
               <StatusPill tone="warning">Minimum is 5 USDC</StatusPill>
               {status ? <p className="stat-note">{status}</p> : null}
@@ -1167,6 +1277,7 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   useEffect(() => {
     api.getMission(missionId).then(({ mission }) => setMission(mission)).catch((error: Error) => setStatus(error.message));
   }, [missionId]);
@@ -1182,19 +1293,47 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
   }
 
   const usd = Number(amount) || 0;
-  const tokenAmount = usd / mission.tokenPrice;
+  const tokenPrice = Number.isFinite(mission.tokenPrice) && mission.tokenPrice > 0 ? mission.tokenPrice : null;
+  const tokenAmount = tokenPrice ? usd / tokenPrice : null;
+  const treasuryValue =
+    Number.isFinite(mission.treasuryUsdc) && mission.treasuryUsdc > 0
+      ? mission.treasuryUsdc
+      : tokenPrice && Number.isFinite(mission.treasuryTokens) && mission.treasuryTokens > 0
+        ? mission.treasuryTokens * tokenPrice
+        : null;
+  const treasuryPercent = treasuryValue && usd > 0 ? (usd / treasuryValue) * 100 : null;
   const submit = async () => {
     if (!wallet.address) {
       await wallet.signIn();
       return;
     }
+    if (!name.trim()) {
+      setStatus("Enter a request name before submitting.");
+      return;
+    }
+    if (!description.trim()) {
+      setStatus("Enter a request description before submitting.");
+      return;
+    }
+    if (usd <= 0) {
+      setStatus("Enter a request amount greater than zero.");
+      return;
+    }
+    if (!tokenPrice) {
+      setStatus("This mission does not have a live token price yet. Try again after the market data updates.");
+      return;
+    }
     try {
+      setSubmitting(true);
+      setStatus("Preparing funding request...");
       const result = await api.prepareFundingRequest({ missionId: mission.id, name, description, amountUsd: usd });
       const signature = await wallet.sendPreparedTransaction(result.transaction);
       setStatus(signature ? `Request submitted: ${shortAddress(signature)}` : result.transaction.status === "not_configured" ? result.transaction.message : "Funding request created.");
       router.push(`/missions/${mission.id}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Funding request failed.");
+    } finally {
+      setSubmitting(false);
     }
   };
   return (
@@ -1216,7 +1355,7 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
             </GlassCard>
             <GlassCard className="section-card">
               <MissionCard mission={mission} />
-              <p className="stat-note">Treasury available: {money(mission.treasuryUsdc)}</p>
+              <p className="stat-note">Treasury available: {treasuryValue !== null ? money(treasuryValue) : "Updating"}</p>
             </GlassCard>
           </div>
           <GlassCard className="section-card">
@@ -1236,17 +1375,17 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
               <GlassCard className="stat-card">
                 <span className="stat-label">Conversion preview</span>
                 <div className="stat-value">
-                  {money(usd)} = {number(tokenAmount)} {mission.tokenSymbol}
+                  {money(usd)} = {tokenAmount !== null ? number(tokenAmount) : "Updating"} {mission.tokenSymbol}
                 </div>
                 <div className="stat-note">
-                  Based on current token price: {money(mission.tokenPrice)}. This request equals{" "}
-                  {((usd / mission.treasuryUsdc) * 100).toFixed(2)}% of treasury funds.
+                  Based on current token price: {tokenPrice ? money(tokenPrice) : "updating"}.{" "}
+                  {treasuryPercent === null ? "Treasury share is updating." : `This request equals ${number(treasuryPercent)}% of treasury funds.`}
                 </div>
               </GlassCard>
               <StatusPill tone="council">Voting lasts at least 3 days · 4/6 approvals required</StatusPill>
               {status ? <p className="stat-note">{status}</p> : null}
-              <button className="button button-primary" onClick={() => void submit()}>
-                {wallet.address ? "Submit request" : "Sign in to request funding"}
+              <button className="button button-primary" disabled={submitting} onClick={() => void submit()}>
+                {submitting ? <InlineLoader /> : wallet.address ? "Submit request" : "Sign in to request funding"}
               </button>
             </div>
           </GlassCard>
@@ -1256,15 +1395,62 @@ export function RequestFundingPage({ missionId }: { missionId: string }) {
   );
 }
 
+function profileDraftFromProfile(profile: api.Profile) {
+  return {
+    name: profile.name || "",
+    description: profile.description || "",
+    avatar: profile.avatar || "",
+    x: profile.socials[0] || "",
+    telegram: profile.socials[1] || "",
+    github: profile.socials[2] || "",
+  };
+}
+
+function profileInitial(profile: api.Profile) {
+  return (profile.name || profile.address || "S").slice(0, 1).toUpperCase();
+}
+
+function socialHref(kind: "x" | "telegram" | "github", value: string) {
+  const entry = value.trim();
+  if (!entry) return "";
+  if (/^https?:\/\//i.test(entry)) return entry;
+  const handle = entry.replace(/^@/, "").replace(/^\/+/, "");
+  if (kind === "x") return `https://x.com/${handle.replace(/^x\.com\//, "")}`;
+  if (kind === "telegram") return `https://t.me/${handle.replace(/^t\.me\//, "")}`;
+  return `https://github.com/${handle.replace(/^github\.com\//, "")}`;
+}
+
+function socialLabel(value: string, fallback: string) {
+  return value.trim() || fallback;
+}
+
+function EmptyState({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="empty-state">
+      <div>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </div>
+    </div>
+  );
+}
+
 export function ProfilePage() {
   const wallet = useSingularityWallet();
   const [profile, setProfile] = useState<api.Profile | null>(null);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [draft, setDraft] = useState({ name: "", description: "", avatar: "", x: "", telegram: "", github: "" });
   const [requestFilter, setRequestFilter] = useState<"submitted" | "council">("submitted");
   useEffect(() => {
     if (!wallet.address) return;
-    api.getProfile(wallet.address).then(({ profile }) => setProfile(profile)).catch((error: Error) => setStatus(error.message));
+    api.getProfile(wallet.address).then(({ profile }) => {
+      setProfile(profile);
+      setDraft(profileDraftFromProfile(profile));
+    }).catch((error: Error) => setStatus(error.message));
     api.listMissions().then(({ missions }) => setMissions(missions)).catch(() => undefined);
   }, [wallet.address]);
 
@@ -1305,44 +1491,149 @@ export function ProfilePage() {
   const submittedRequests = profile.submittedRequests || [];
   const councilRequests = profile.councilRequests || [];
   const visibleRequests = requestFilter === "submitted" ? submittedRequests : councilRequests;
+  const displayName = profile.name || "Unnamed profile";
+  const description = profile.description || "Add a short description about yourself.";
+  const saveProfile = async () => {
+    try {
+      setSaving(true);
+      setStatus(null);
+      const { profile: nextProfile } = await api.updateProfile({
+        name: draft.name.trim(),
+        description: draft.description.trim(),
+        avatar: draft.avatar.trim(),
+        socials: [draft.x.trim(), draft.telegram.trim(), draft.github.trim()],
+      });
+      setProfile(nextProfile);
+      setDraft(profileDraftFromProfile(nextProfile));
+      setEditing(false);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Profile save failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const uploadAvatar = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploading(true);
+      setStatus(null);
+      const { upload } = await api.uploadObject({ file, purpose: "profile-avatar" });
+      setDraft((current) => ({ ...current, avatar: upload.uri }));
+      setEditing(true);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Profile image upload failed.");
+    } finally {
+      setUploading(false);
+      event.target.value = "";
+    }
+  };
+  const copyAddress = async () => {
+    try {
+      await navigator.clipboard.writeText(profile.address);
+    } catch {
+      setStatus("Could not copy address.");
+    }
+  };
+
   return (
     <AppShell>
       <section className="page-container">
         <PageHeader eyebrow="Wallet identity" title="Profile" description="Your balances, mission positions, treasury council roles, and funding requests." />
-        <GlassCard className="profile-hero">
-          <span className="avatar profile-avatar">
-            <img src={profile.avatar} alt="" />
-          </span>
-          <div>
-            <h2 style={{ margin: 0 }}>{profile.name}</h2>
-            <p className="stat-note">{profile.description}</p>
-            <div className="profile-socials" aria-label="Social links">
-              <a className="profile-social-link" href={profile.socials[0] || "https://x.com"} target="_blank" rel="noreferrer">
-                <XLogo />
-                <span>{profile.socials[0] || "No X linked"}</span>
-              </a>
-              <a className="profile-social-link" href={profile.socials[1] || "https://discord.com"} target="_blank" rel="noreferrer">
-                <DiscordLogo />
-                <span>{profile.socials[1] || "No Discord linked"}</span>
-              </a>
-              <a className="profile-social-link" href={profile.socials[2] || "https://github.com"} target="_blank" rel="noreferrer">
-                <GithubLogo />
-                <span>{profile.socials[2] || "No GitHub linked"}</span>
-              </a>
-            </div>
-            <span className="status-pill wallet-pill">
-              {shortAddress(profile.address)} <Copy size={12} />
+        <GlassCard className={cx("profile-hero", editing && "profile-hero-editing")}>
+          <div className="profile-avatar-column">
+            <span className="avatar profile-avatar">
+              {(editing ? draft.avatar : profile.avatar) ? <img src={editing ? draft.avatar : profile.avatar} alt="" /> : <span>{profileInitial(profile)}</span>}
             </span>
+            {editing ? (
+              <label className="button profile-upload-button">
+                <Upload size={15} />
+                {uploading ? "Uploading..." : "Upload image"}
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => void uploadAvatar(event)} />
+              </label>
+            ) : null}
           </div>
-          <button className="button" onClick={() => void wallet.signOut()}>Disconnect</button>
+          <div className="profile-main">
+            {editing ? (
+              <div className="profile-edit-form">
+                <label>
+                  <span className="form-label">Display name</span>
+                  <input className="field" placeholder="Your name" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
+                </label>
+                <label>
+                  <span className="form-label">About you</span>
+                  <textarea className="textarea profile-textarea" placeholder="Add a short description about yourself." value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
+                </label>
+                <div className="profile-social-fields">
+                  <label>
+                    <span className="form-label">X</span>
+                    <input className="field" placeholder="@handle" value={draft.x} onChange={(event) => setDraft((current) => ({ ...current, x: event.target.value }))} />
+                  </label>
+                  <label>
+                    <span className="form-label">Telegram</span>
+                    <input className="field" placeholder="@handle" value={draft.telegram} onChange={(event) => setDraft((current) => ({ ...current, telegram: event.target.value }))} />
+                  </label>
+                  <label>
+                    <span className="form-label">GitHub</span>
+                    <input className="field" placeholder="github.com/handle" value={draft.github} onChange={(event) => setDraft((current) => ({ ...current, github: event.target.value }))} />
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <>
+                <h2 style={{ margin: 0 }}>{displayName}</h2>
+                <p className={cx("stat-note", !profile.description && "placeholder-copy")}>{description}</p>
+                <div className="profile-socials" aria-label="Social links">
+                  {profile.socials[0] ? (
+                    <a className="profile-social-link" href={socialHref("x", profile.socials[0])} target="_blank" rel="noreferrer">
+                      <XLogo />
+                      <span>{socialLabel(profile.socials[0], "Add X")}</span>
+                    </a>
+                  ) : (
+                    <span className="profile-social-link muted"><XLogo /><span>X</span></span>
+                  )}
+                  {profile.socials[1] ? (
+                    <a className="profile-social-link" href={socialHref("telegram", profile.socials[1])} target="_blank" rel="noreferrer">
+                      <TelegramLogo />
+                      <span>{socialLabel(profile.socials[1], "Add Telegram")}</span>
+                    </a>
+                  ) : (
+                    <span className="profile-social-link muted"><TelegramLogo /><span>Telegram</span></span>
+                  )}
+                  {profile.socials[2] ? (
+                    <a className="profile-social-link" href={socialHref("github", profile.socials[2])} target="_blank" rel="noreferrer">
+                      <GithubLogo />
+                      <span>{socialLabel(profile.socials[2], "Add GitHub")}</span>
+                    </a>
+                  ) : (
+                    <span className="profile-social-link muted"><GithubLogo /><span>GitHub</span></span>
+                  )}
+                </div>
+              </>
+            )}
+            <button className="status-pill wallet-pill wallet-copy-button" type="button" onClick={() => void copyAddress()} aria-label="Copy wallet address">
+              {shortAddress(profile.address)} <Copy size={12} />
+            </button>
+            {status ? <p className="stat-note profile-status">{status}</p> : null}
+          </div>
+          <div className="profile-actions">
+            {editing ? (
+              <>
+                <button className="button button-primary" disabled={saving || uploading} onClick={() => void saveProfile()}>{saving ? <InlineLoader /> : "Save profile"}</button>
+                <button className="button" disabled={saving} onClick={() => { setDraft(profileDraftFromProfile(profile)); setEditing(false); setStatus(null); }}>Cancel</button>
+              </>
+            ) : (
+              <button className="button button-primary" onClick={() => setEditing(true)}>Edit profile</button>
+            )}
+            <button className="button" onClick={() => void wallet.signOut()}>Disconnect</button>
+          </div>
         </GlassCard>
         <GlassCard className="section-card">
           <div className="section-heading">
             <h2>Balances</h2>
           </div>
           <div className="balance-grid">
-            <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} />
-            <BalanceCard symbol="◎" label="SOL" value={`${number(profile.balances.sol || 0)} SOL`} note={money(profile.balances.solUsd || 0)} />
+            <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
             {profile.tokenBalances.map((balance) => (
               <BalanceCard
                 key={balance.symbol}
@@ -1357,10 +1648,10 @@ export function ProfilePage() {
         <GlassCard className="section-card">
           <div className="section-heading">
             <h2>Earned trading fees</h2>
-            <p>Trading fees are distributed to creators, top councillors, and other registered candidates as markets trade.</p>
           </div>
-          <div className="fee-grid">
-            {createdMissions.map((entry) => (
+          {createdMissions.length ? (
+            <div className="fee-grid">
+              {createdMissions.map((entry) => (
               <GlassCard className="creator-fee-card interactive" key={entry.missionId}>
                 <span className="token-avatar">
                   <img src={entry.mission.tokenImage} alt="" />
@@ -1374,16 +1665,19 @@ export function ProfilePage() {
                   Claim trading fees
                 </button>
               </GlassCard>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="No fees to claim" description="Create a mission or join a council to start earning trading fees as markets trade." />
+          )}
         </GlassCard>
         <GlassCard className="section-card">
           <div className="section-heading">
             <h2>My missions</h2>
           </div>
-          <div className="mission-grid">
-            {userMissions
-              .map((entry) => {
+          {userMissions.length ? (
+            <div className="mission-grid">
+              {userMissions.map((entry) => {
                 const isCreator = entry.missionId === featuredCreatorMissionId;
                 const label = isCreator ? "Creator" : entry.council ? "Councillor" : "Investor";
 
@@ -1396,13 +1690,15 @@ export function ProfilePage() {
                   </div>
                 );
               })}
-          </div>
+            </div>
+          ) : (
+            <EmptyState title="No missions yet" description="When you buy mission tokens or create a mission, those positions will show up here." />
+          )}
         </GlassCard>
         <GlassCard className="section-card">
           <div className="section-heading">
             <div>
               <h2>Funding requests</h2>
-              <p>Track requests you submitted or need to vote on as a council member</p>
             </div>
             <div className="filter-pills">
               <button className={cx("filter-pill", requestFilter === "submitted" && "active")} type="button" onClick={() => setRequestFilter("submitted")}>
@@ -1413,11 +1709,18 @@ export function ProfilePage() {
               </button>
             </div>
           </div>
-          <div className="request-list">
-            {visibleRequests.map(({ request, symbol }) => (
+          {visibleRequests.length ? (
+            <div className="request-list">
+              {visibleRequests.map(({ request, symbol }) => (
               <FundingRequestCard key={`${requestFilter}-${request.id}`} request={request} symbol={symbol} />
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title={requestFilter === "submitted" ? "No funding requests submitted" : "No requests awaiting your vote"}
+              description={requestFilter === "submitted" ? "Submitted requests will appear here." : "Active council votes will appear here when you are a councillor for a mission."}
+            />
+          )}
         </GlassCard>
       </section>
     </AppShell>
@@ -1432,10 +1735,10 @@ function XLogo() {
   );
 }
 
-function DiscordLogo() {
+function TelegramLogo() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M19.8 5.4A16.2 16.2 0 0 0 15.7 4l-.2.4c1.5.4 2.2 1 2.2 1a13.8 13.8 0 0 0-11.4 0s.7-.6 2.3-1L8.3 4a16.2 16.2 0 0 0-4.1 1.4C1.6 9.3.9 13.1 1.3 16.9a16.4 16.4 0 0 0 5 2.5l.9-1.5a10.4 10.4 0 0 1-1.4-.7l.3-.2a11.6 11.6 0 0 0 11.8 0l.3.2c-.5.3-.9.5-1.4.7l.9 1.5a16.4 16.4 0 0 0 5-2.5c.5-4.4-.7-8.1-2.9-11.5ZM8.7 14.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" fill="currentColor" />
+      <path d="M21.9 4.1 18.6 20c-.2 1.1-.9 1.4-1.8.9l-5-3.7-2.4 2.3c-.3.3-.5.5-1 .5l.4-5.1 9.3-8.4c.4-.4-.1-.6-.6-.2L6 13.5 1 11.9c-1.1-.3-1.1-1.1.2-1.6L20.7 2.8c.9-.3 1.7.2 1.2 1.3Z" fill="currentColor" />
     </svg>
   );
 }
@@ -1448,10 +1751,14 @@ function GithubLogo() {
   );
 }
 
-function BalanceCard({ symbol, label, value, note }: { symbol: string; label: string; value: string; note?: string }) {
+function UsdcLogo() {
+  return <img className="usdc-logo" src="https://cryptologos.cc/logos/usd-coin-usdc-logo.svg" alt="USDC logo" />;
+}
+
+function BalanceCard({ symbol, label, value, note, icon }: { symbol: string; label: string; value: string; note?: string; icon?: React.ReactNode }) {
   return (
     <GlassCard className="stat-card balance-card">
-      <span className="balance-symbol">{symbol}</span>
+      <span className="balance-symbol">{icon || symbol}</span>
       <div>
         <span className="stat-label">{label}</span>
         <div className="stat-value">{value}</div>
