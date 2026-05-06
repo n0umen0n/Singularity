@@ -8,10 +8,12 @@ import {
   prepareCandidateRegistrationTransaction,
   prepareCouncilExecuteTransaction,
   prepareFinalizeEpochCouncilTransaction,
+  fetchMeteoraDbcMissionSnapshot,
   prepareJupiterTradeTransaction,
   prepareCouncilVoteTransaction,
   prepareFundingRequestTransaction,
   prepareLaunchTransaction,
+  prepareMeteoraDbcTradeTransaction,
   prepareMissionGraduationTransaction,
 } from "@/lib/backend/transactions";
 import type { MissionSort } from "@/lib/backend/store";
@@ -53,6 +55,11 @@ type FundingRequestRow = {
   rejections: string;
 };
 
+type PricePointRow = {
+  timestamp: string;
+  price_usdc: string;
+};
+
 type ProfileRow = {
   wallet_address: string;
   display_name: string;
@@ -81,6 +88,14 @@ type PendingMissionLaunchRow = {
 };
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
+
+const performanceFrames = {
+  "1H": { label: "1 hour", agoLabel: "1 hour ago", ms: 60 * 60 * 1000 },
+  "4H": { label: "4 hours", agoLabel: "4 hours ago", ms: 4 * 60 * 60 * 1000 },
+  "1D": { label: "1 day", agoLabel: "1 day ago", ms: 24 * 60 * 60 * 1000 },
+  "1W": { label: "1 week", agoLabel: "1 week ago", ms: 7 * 24 * 60 * 60 * 1000 },
+  "1M": { label: "1 month", agoLabel: "1 month ago", ms: 30 * 24 * 60 * 60 * 1000 },
+} as const satisfies Record<keyof Mission["performance"], { label: string; agoLabel: string; ms: number }>;
 
 function contentHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -149,6 +164,101 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
     council: row.council_json || [],
     requests,
   };
+}
+
+async function performanceFromPricePoints(missionId: string, currentPrice: number, client?: Queryable): Promise<Mission["performance"]> {
+  const result = await (client || { query }).query<PricePointRow>(
+    `
+      select timestamp, price_usdc
+      from price_points
+      where mission_id = $1 and timestamp >= now() - interval '31 days'
+      order by timestamp asc
+    `,
+    [missionId],
+  );
+  const points = result.rows.map((row) => ({ timestamp: new Date(row.timestamp).getTime(), price: num(row.price_usdc) })).filter((point) => point.price > 0);
+  const now = Date.now();
+
+  return Object.fromEntries(
+    Object.entries(performanceFrames).map(([key, frame]) => {
+      const cutoff = now - frame.ms;
+      const baseline = [...points].reverse().find((point) => point.timestamp <= cutoff)?.price || points[0]?.price || currentPrice || 1;
+      const value = baseline > 0 ? (currentPrice / baseline) * 100 : 100;
+      return [
+        key,
+        {
+          label: frame.label,
+          agoLabel: frame.agoLabel,
+          value: Number(value.toFixed(2)),
+          change: Number((value - 100).toFixed(2)),
+        },
+      ];
+    }),
+  ) as Mission["performance"];
+}
+
+export async function refreshMissionMarketDataInPostgres(missionId: string, client?: Queryable) {
+  const mission = await getMissionByIdFromPostgres(missionId, client);
+  if (!mission) return null;
+  if (mission.lifecycle !== "bonding" || !mission.dbcPool) return mission;
+
+  const snapshot = await fetchMeteoraDbcMissionSnapshot({
+    dbcPool: mission.dbcPool,
+    tokenMint: mission.tokenMint,
+    treasuryVault: mission.treasuryVault,
+    totalSupply: mission.totalSupply,
+  });
+  if (!snapshot) return mission;
+
+  const holders = snapshot.holders || mission.holders || 1;
+  await (client || { query }).query(
+    `
+      insert into mission_metrics (
+        mission_id, token_price_usdc, holders, liquidity_usdc, treasury_usdc, treasury_tokens, volume_usdc, updated_at
+      )
+      values ($1, $2, $3, $4, $5, $6, 0, now())
+      on conflict (mission_id) do update set
+        token_price_usdc = excluded.token_price_usdc,
+        holders = excluded.holders,
+        liquidity_usdc = excluded.liquidity_usdc,
+        treasury_usdc = excluded.treasury_usdc,
+        treasury_tokens = excluded.treasury_tokens,
+        updated_at = now()
+    `,
+    [missionId, snapshot.currentPrice, holders, snapshot.liquidityUsd, snapshot.treasuryUsdc, snapshot.treasuryTokens],
+  );
+
+  const lastPoint = await (client || { query }).query<{ price_usdc: string; timestamp: string }>(
+    "select price_usdc, timestamp from price_points where mission_id = $1 order by timestamp desc limit 1",
+    [missionId],
+  );
+  const last = lastPoint.rows[0];
+  const lastPrice = num(last?.price_usdc);
+  const lastTimestamp = last ? new Date(last.timestamp).getTime() : 0;
+  const shouldInsertPoint = !last || Date.now() - lastTimestamp > 5 * 60 * 1000 || Math.abs(lastPrice - snapshot.currentPrice) / Math.max(lastPrice, 1e-12) > 0.001;
+
+  if (shouldInsertPoint) {
+    await (client || { query }).query(
+      "insert into price_points (mission_id, timestamp, price_usdc, volume_usdc, source) values ($1, now(), $2, 0, 'meteora-dbc')",
+      [missionId, snapshot.currentPrice],
+    );
+  }
+
+  const performance = await performanceFromPricePoints(missionId, snapshot.currentPrice, client);
+  await (client || { query }).query("update missions set performance_json = $2 where id = $1", [missionId, JSON.stringify(performance)]);
+
+  const refreshed = await getMissionByIdFromPostgres(missionId, client);
+  return refreshed
+    ? {
+        ...refreshed,
+        marketTokens: snapshot.marketTokens,
+        circulatingTokens: snapshot.circulatingTokens,
+        baseReserve: snapshot.baseReserve,
+        quoteReserve: snapshot.quoteReserve,
+        poolProgressPercent: snapshot.poolProgressPercent,
+        marketDataUpdatedAt: snapshot.updatedAt,
+      }
+    : refreshed;
 }
 
 async function requestRows(missionIds: string[], client?: Queryable) {
@@ -471,27 +581,38 @@ export async function quoteMissionTradeFromPostgres(missionId: string, input: { 
 
   const amount = Math.max(Number(input.amount) || 0, 0);
   const side = input.side === "sell" ? "sell" : "buy";
-  const estimatedOutput = side === "buy" ? amount / mission.tokenPrice : amount * mission.tokenPrice;
-  const chainQuote = await prepareJupiterTradeTransaction({
-    wallet: input.wallet,
-    side,
-    amount,
-    tokenMint: mission.tokenMint,
-    slippageBps: input.slippageBps,
-  });
+  const isBondingDbc = mission.lifecycle === "bonding" && Boolean(mission.dbcPool);
+  const chainQuote = isBondingDbc
+    ? await prepareMeteoraDbcTradeTransaction({
+        wallet: input.wallet,
+        side,
+        amount,
+        dbcPool: mission.dbcPool,
+        slippageBps: input.slippageBps,
+      })
+    : await prepareJupiterTradeTransaction({
+        wallet: input.wallet,
+        side,
+        amount,
+        tokenMint: mission.tokenMint,
+        slippageBps: input.slippageBps,
+      });
 
   return {
     missionId,
     side,
     route: "route" in chainQuote ? chainQuote.route : mission.lifecycle === "graduated" ? "amm" : "bonding-curve",
     inputAmount: amount,
-    estimatedOutput: "estimatedOutput" in chainQuote ? chainQuote.estimatedOutput : estimatedOutput,
-    priceImpactPercent: "priceImpactPercent" in chainQuote ? chainQuote.priceImpactPercent : 0.42,
+    estimatedOutput: "estimatedOutput" in chainQuote ? chainQuote.estimatedOutput : 0,
+    minimumAmountOut: "minimumAmountOut" in chainQuote ? chainQuote.minimumAmountOut : null,
+    priceImpactPercent: "priceImpactPercent" in chainQuote ? chainQuote.priceImpactPercent : null,
+    currentPrice: "currentPrice" in chainQuote ? chainQuote.currentPrice : mission.tokenPrice,
     market: {
       lifecycle: mission.lifecycle || "draft",
       tokenMint: mission.tokenMint || null,
       dbcPool: mission.dbcPool || null,
       dammPool: mission.dammPool || null,
+      ...("market" in chainQuote ? chainQuote.market : {}),
     },
     transaction: "transaction" in chainQuote ? chainQuote.transaction : chainQuote,
   };

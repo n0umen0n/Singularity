@@ -1,4 +1,5 @@
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type ParsedTransactionWithMeta } from "@solana/web3.js";
+import { fetchMeteoraDbcMarketSnapshot } from "@singularity/solana";
 import type pg from "pg";
 
 const defaultSource = "singularity-mainnet";
@@ -57,8 +58,65 @@ export async function runIndexerBatch(input: {
   for (const program of programs) {
     results.push(await indexProgram({ ...input, source, batchSize, maxPages, program }));
   }
+  await syncMissionMarketMetrics(input);
 
   return { ok: true, source, programs: results };
+}
+
+async function syncMissionMarketMetrics(input: { connection: Connection; pool: pg.Pool; env: NodeJS.ProcessEnv }) {
+  if (!input.env.SOLANA_RPC_URL) return;
+
+  const missions = await input.pool.query<{
+    id: string;
+    token_mint: string | null;
+    dbc_pool: string | null;
+    treasury_vault: string | null;
+    total_supply: string;
+  }>(
+    `
+      select id, token_mint, dbc_pool, treasury_vault, total_supply
+      from missions
+      where lifecycle_state = 'bonding' and dbc_pool is not null
+    `,
+  );
+
+  for (const mission of missions.rows) {
+    const snapshot = await fetchMeteoraDbcMarketSnapshot({
+      rpcUrl: input.env.SOLANA_RPC_URL,
+      pool: mission.dbc_pool!,
+      tokenMint: mission.token_mint,
+      treasuryVault: mission.treasury_vault,
+      totalSupply: Number(mission.total_supply || 0),
+    }).catch(() => null);
+    if (!snapshot) continue;
+
+    await input.pool.query(
+      `
+        insert into mission_metrics (
+          mission_id, token_price_usdc, holders, liquidity_usdc, treasury_usdc, treasury_tokens, volume_usdc, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, 0, now())
+        on conflict (mission_id) do update set
+          token_price_usdc = excluded.token_price_usdc,
+          holders = excluded.holders,
+          liquidity_usdc = excluded.liquidity_usdc,
+          treasury_usdc = excluded.treasury_usdc,
+          treasury_tokens = excluded.treasury_tokens,
+          updated_at = now()
+      `,
+      [mission.id, snapshot.currentPrice, snapshot.holders, snapshot.liquidityUsd, snapshot.treasuryUsdc, snapshot.treasuryTokens],
+    );
+    await input.pool.query(
+      `
+        insert into price_points (mission_id, timestamp, price_usdc, volume_usdc, source)
+        select $1, now(), $2, 0, 'meteora-dbc-indexer'
+        where not exists (
+          select 1 from price_points where mission_id = $1 and source = 'meteora-dbc-indexer' and timestamp > now() - interval '5 minutes'
+        )
+      `,
+      [mission.id, snapshot.currentPrice],
+    );
+  }
 }
 
 async function indexProgram(input: {

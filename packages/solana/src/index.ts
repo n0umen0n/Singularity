@@ -15,11 +15,16 @@ import {
   CollectFeeMode,
   deriveDbcPoolAddress,
   DynamicBondingCurveClient,
+  getCurrentPoint,
+  getPriceFromSqrtPrice,
   MigrationFeeOption,
   MigrationOption,
+  type PoolConfig,
+  type SwapQuoteResult,
   TokenDecimal,
   TokenType,
   TokenUpdateAuthorityOption,
+  type VirtualPool,
 } from "@meteora-ag/dynamic-bonding-curve-sdk";
 import { BN } from "@coral-xyz/anchor";
 
@@ -85,6 +90,52 @@ export type MeteoraDbcLaunchInput = {
   initialPurchaseUsdc?: number;
   initialMarketCap?: number;
   migrationMarketCap?: number;
+};
+
+export type MeteoraDbcTradeSide = "buy" | "sell";
+
+export type MeteoraDbcQuote = {
+  route: "meteora-dbc";
+  side: MeteoraDbcTradeSide;
+  inputAmount: number;
+  estimatedOutput: number;
+  minimumAmountOut: number;
+  priceImpactPercent: number;
+  currentPrice: number;
+  inputMint: string;
+  outputMint: string;
+  baseMint: string;
+  quoteMint: string;
+  dbcPool: string;
+  baseReserve: number;
+  quoteReserve: number;
+  liquidityUsd: number;
+  poolProgressPercent: number;
+  baseDecimals: number;
+  quoteDecimals: number;
+};
+
+export type MeteoraDbcMarketSnapshot = {
+  route: "meteora-dbc";
+  dbcPool: string;
+  baseMint: string;
+  quoteMint: string;
+  currentPrice: number;
+  baseReserve: number;
+  quoteReserve: number;
+  liquidityUsd: number;
+  poolProgressPercent: number;
+  treasuryTokens: number;
+  treasuryUsdc: number;
+  holders: number;
+  totalSupply: number;
+  circulatingTokens: number;
+  marketTokens: number;
+  updatedAt: string;
+};
+
+export type MeteoraDbcTradeResult = MeteoraDbcQuote & {
+  transaction: PreparedSolanaTransaction;
 };
 
 export function requireProgramConfig(env: NodeJS.ProcessEnv): SolanaProgramConfig {
@@ -302,6 +353,198 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
       treasurySupply: String(treasurySupply),
     },
   };
+}
+
+function tokenAmount(value: number, decimals = 6) {
+  return new BN(Math.floor(Math.max(Number(value) || 0, 0) * 10 ** decimals));
+}
+
+function amountFromBaseUnits(value: BN, decimals = 6) {
+  return value.toNumber() / 10 ** decimals;
+}
+
+function bnField(value: unknown) {
+  if (BN.isBN(value)) return value;
+  if (typeof value === "number") return new BN(value);
+  if (typeof value === "bigint") return new BN(value.toString());
+  if (typeof value === "string") return new BN(value);
+  return new BN(0);
+}
+
+function spotPrice(virtualPool: VirtualPool) {
+  const price = getPriceFromSqrtPrice(bnField((virtualPool as { sqrtPrice?: unknown }).sqrtPrice), TokenDecimal.SIX, TokenDecimal.SIX);
+  return Number(price.toString());
+}
+
+function reserveAmount(value: unknown) {
+  return amountFromBaseUnits(bnField(value));
+}
+
+function priceImpact(input: { side: MeteoraDbcTradeSide; inputAmount: number; estimatedOutput: number; currentPrice: number }) {
+  const spotOutput = input.side === "buy" ? input.inputAmount / input.currentPrice : input.inputAmount * input.currentPrice;
+  if (!Number.isFinite(spotOutput) || spotOutput <= 0) return 0;
+  return Math.max(((spotOutput - input.estimatedOutput) / spotOutput) * 100, 0);
+}
+
+async function dbcPoolState(input: { rpcUrl: string; pool: string }) {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const client = new DynamicBondingCurveClient(connection, "confirmed");
+  const virtualPool = await client.state.getPool(input.pool);
+  const config = await client.state.getPoolConfig((virtualPool as { config: PublicKey }).config);
+  const currentPoint = await getCurrentPoint(connection, (config as { activationType?: ActivationType }).activationType ?? ActivationType.Slot);
+
+  return { connection, client, virtualPool, config, currentPoint };
+}
+
+function dbcQuoteFromResult(input: {
+  pool: string;
+  side: MeteoraDbcTradeSide;
+  amount: number;
+  virtualPool: VirtualPool;
+  config: PoolConfig;
+  quote: SwapQuoteResult;
+}) {
+  const currentPrice = spotPrice(input.virtualPool);
+  const baseMint = (input.virtualPool as { baseMint: PublicKey }).baseMint.toBase58();
+  const quoteMint = (input.config as { quoteMint: PublicKey }).quoteMint.toBase58();
+  const quote = input.quote as { outputAmount?: BN; minimumAmountOut?: BN };
+  const estimatedOutput = amountFromBaseUnits(quote.outputAmount || new BN(0));
+  const minimumAmountOut = amountFromBaseUnits(quote.minimumAmountOut || new BN(0));
+  const baseReserve = reserveAmount((input.virtualPool as { baseReserve?: unknown }).baseReserve);
+  const quoteReserve = reserveAmount((input.virtualPool as { quoteReserve?: unknown }).quoteReserve);
+
+  return {
+    route: "meteora-dbc" as const,
+    side: input.side,
+    inputAmount: input.amount,
+    estimatedOutput,
+    minimumAmountOut,
+    priceImpactPercent: priceImpact({ side: input.side, inputAmount: input.amount, estimatedOutput, currentPrice }),
+    currentPrice,
+    inputMint: input.side === "buy" ? quoteMint : baseMint,
+    outputMint: input.side === "buy" ? baseMint : quoteMint,
+    baseMint,
+    quoteMint,
+    dbcPool: input.pool,
+    baseReserve,
+    quoteReserve,
+    liquidityUsd: quoteReserve + baseReserve * currentPrice,
+    poolProgressPercent: 0,
+    baseDecimals: 6,
+    quoteDecimals: 6,
+  };
+}
+
+export async function quoteMeteoraDbcTrade(input: {
+  rpcUrl: string;
+  pool: string;
+  side: MeteoraDbcTradeSide;
+  amount: number;
+  slippageBps?: number;
+}) {
+  if (input.amount <= 0) throw new Error("amount must be greater than zero.");
+  const { client, virtualPool, config, currentPoint } = await dbcPoolState(input);
+  const quote = client.pool.swapQuote({
+    virtualPool,
+    config,
+    swapBaseForQuote: input.side === "sell",
+    amountIn: tokenAmount(input.amount),
+    slippageBps: input.slippageBps ?? 100,
+    hasReferral: false,
+    eligibleForFirstSwapWithMinFee: false,
+    currentPoint,
+  });
+  const result = dbcQuoteFromResult({ pool: input.pool, side: input.side, amount: input.amount, virtualPool, config, quote });
+  const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
+
+  return { ...result, poolProgressPercent: Math.max(0, Math.min(progress * 100, 100)) };
+}
+
+export async function prepareMeteoraDbcTrade(input: {
+  rpcUrl: string;
+  pool: string;
+  wallet: string;
+  side: MeteoraDbcTradeSide;
+  amount: number;
+  recentBlockhash: string;
+  slippageBps?: number;
+}): Promise<MeteoraDbcTradeResult> {
+  const quote = await quoteMeteoraDbcTrade(input);
+  const owner = new PublicKey(input.wallet);
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const client = new DynamicBondingCurveClient(connection, "confirmed");
+  const transaction = await client.pool.swap({
+    owner,
+    payer: owner,
+    pool: new PublicKey(input.pool),
+    amountIn: tokenAmount(input.amount),
+    minimumAmountOut: tokenAmount(quote.minimumAmountOut),
+    swapBaseForQuote: input.side === "sell",
+    referralTokenAccount: null,
+  });
+
+  return {
+    ...quote,
+    transaction: buildPreparedTransaction({
+      kind: "trade",
+      feePayer: input.wallet,
+      recentBlockhash: input.recentBlockhash,
+      instructions: transaction.instructions,
+      requiredSigners: [input.wallet],
+      accounts: {
+        dbcPool: input.pool,
+        inputMint: quote.inputMint,
+        outputMint: quote.outputMint,
+      },
+    }),
+  };
+}
+
+export async function fetchMeteoraDbcMarketSnapshot(input: {
+  rpcUrl: string;
+  pool: string;
+  tokenMint?: string | null;
+  treasuryVault?: string | null;
+  totalSupply?: number;
+}) {
+  const { connection, client, virtualPool, config } = await dbcPoolState(input);
+  const currentPrice = spotPrice(virtualPool);
+  const baseMint = input.tokenMint || (virtualPool as { baseMint: PublicKey }).baseMint.toBase58();
+  const quoteMint = (config as { quoteMint: PublicKey }).quoteMint.toBase58();
+  const baseReserve = reserveAmount((virtualPool as { baseReserve?: unknown }).baseReserve);
+  const quoteReserve = reserveAmount((virtualPool as { quoteReserve?: unknown }).quoteReserve);
+  const supply = input.totalSupply ?? (await connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0));
+  const treasuryTokens = input.treasuryVault
+    ? await connection.getTokenAccountBalance(new PublicKey(input.treasuryVault)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0)
+    : 0;
+  const holders = await connection
+    .getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
+      filters: [{ memcmp: { offset: 0, bytes: baseMint } }],
+      dataSlice: { offset: 64, length: 8 },
+    })
+    .then((accounts) => accounts.filter((account) => account.account.data.length >= 8 && account.account.data.readBigUInt64LE(0) > 0n).length)
+    .catch(() => 0);
+  const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
+  const marketTokens = baseReserve;
+
+  return {
+    route: "meteora-dbc" as const,
+    dbcPool: input.pool,
+    baseMint,
+    quoteMint,
+    currentPrice,
+    baseReserve,
+    quoteReserve,
+    liquidityUsd: quoteReserve + baseReserve * currentPrice,
+    poolProgressPercent: Math.max(0, Math.min(progress * 100, 100)),
+    treasuryTokens,
+    treasuryUsdc: treasuryTokens * currentPrice,
+    holders,
+    totalSupply: supply,
+    circulatingTokens: Math.max(supply - treasuryTokens - marketTokens, 0),
+    marketTokens,
+    updatedAt: new Date().toISOString(),
+  } satisfies MeteoraDbcMarketSnapshot;
 }
 
 export function registryInstruction(input: {

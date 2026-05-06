@@ -16,6 +16,7 @@ import {
   prepareMissionGraduationInPostgres,
   prepareMissionLaunchInPostgres,
   quoteMissionTradeFromPostgres,
+  refreshMissionMarketDataInPostgres,
   registerCouncilCandidateInPostgres,
   updateProfileInPostgres,
   verifyAuthInPostgres,
@@ -188,6 +189,13 @@ export async function getMissionById(missionId: string) {
   return state.missions.find((mission) => mission.id === missionId) ?? null;
 }
 
+export async function refreshMissionMarketData(missionId: string) {
+  if (storageMode() === "postgres") return refreshMissionMarketDataInPostgres(missionId);
+
+  const state = await readState();
+  return state.missions.find((mission) => mission.id === missionId) ?? null;
+}
+
 export async function getProfile(address: string) {
   if (storageMode() === "postgres") return getProfileFromPostgres(address);
 
@@ -336,7 +344,6 @@ export async function quoteMissionTrade(missionId: string, input: { side?: strin
   const mission = findMissionOrThrow(state, missionId);
   const amount = Math.max(Number(input.amount) || 0, 0);
   const side = input.side === "sell" ? "sell" : "buy";
-  const estimatedOutput = side === "buy" ? amount / mission.tokenPrice : amount * mission.tokenPrice;
   const chainQuote = mission.tokenMint
     ? await prepareJupiterTradeTransaction({
         wallet: input.wallet,
@@ -352,8 +359,10 @@ export async function quoteMissionTrade(missionId: string, input: { side?: strin
     side,
     route: chainQuote && "route" in chainQuote ? chainQuote.route : mission.lifecycle === "graduated" ? "amm" : "bonding-curve",
     inputAmount: amount,
-    estimatedOutput: chainQuote && "estimatedOutput" in chainQuote ? chainQuote.estimatedOutput : estimatedOutput,
-    priceImpactPercent: chainQuote && "priceImpactPercent" in chainQuote ? chainQuote.priceImpactPercent : 0.42,
+    estimatedOutput: chainQuote && "estimatedOutput" in chainQuote ? chainQuote.estimatedOutput : 0,
+    minimumAmountOut: chainQuote && "minimumAmountOut" in chainQuote ? chainQuote.minimumAmountOut : null,
+    priceImpactPercent: chainQuote && "priceImpactPercent" in chainQuote ? chainQuote.priceImpactPercent : null,
+    currentPrice: chainQuote && "currentPrice" in chainQuote ? chainQuote.currentPrice : mission.tokenPrice,
     market: {
       lifecycle: mission.lifecycle || "draft",
       tokenMint: mission.tokenMint || null,

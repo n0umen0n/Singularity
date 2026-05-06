@@ -52,6 +52,12 @@ export type Mission = {
   treasuryTokens: number;
   treasurySupplyPercent: number;
   totalSupply: number;
+  marketTokens?: number;
+  circulatingTokens?: number;
+  quoteReserve?: number;
+  baseReserve?: number;
+  poolProgressPercent?: number;
+  marketDataUpdatedAt?: string;
   performance: Record<"1H" | "4H" | "1D" | "1W" | "1M", PerformancePoint>;
   council: Investor[];
   requests: FundingRequest[];

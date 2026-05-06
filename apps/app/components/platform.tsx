@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowRight, ChevronDown, Copy, Sparkles, Zap } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
@@ -288,7 +288,7 @@ export function MissionDetailPage({ missionId }: { missionId: string }) {
         </div>
         <aside className="right-rail">
           <TreasuryPanel mission={mission} />
-          <TradePanel mission={mission} />
+          <TradePanel mission={mission} onMissionChange={setMission} />
         </aside>
       </section>
     </AppShell>
@@ -338,7 +338,7 @@ function StatsGrid({ mission }: { mission: Mission }) {
 function PerformanceCard({ mission }: { mission: Mission }) {
   const [frame, setFrame] = useState<keyof Mission["performance"]>("1D");
   const [investmentInput, setInvestmentInput] = useState("100");
-  const point = mission.performance[frame];
+  const point = mission.performance[frame] || previewPerformance[frame];
   const investmentAmount = Math.max(Number(investmentInput) || 0, 0);
   const returnMultiplier = point.value / 100;
   const projectedValue = investmentAmount * returnMultiplier;
@@ -619,12 +619,12 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
 
 function capitalizationBreakdown(mission: Mission) {
   const treasuryTokens = mission.treasuryTokens;
-  const investorTokens = mission.council.reduce((total, investor) => total + investor.tokens, 0);
-  const marketTokens = Math.max(mission.totalSupply - treasuryTokens - investorTokens, 0);
+  const marketTokens = mission.marketTokens ?? Math.max(mission.totalSupply - treasuryTokens, 0);
+  const circulatingTokens = mission.circulatingTokens ?? Math.max(mission.totalSupply - treasuryTokens - marketTokens, 0);
 
   return {
-    investorTokens,
-    investorValue: investorTokens * mission.tokenPrice,
+    circulatingTokens,
+    circulatingValue: circulatingTokens * mission.tokenPrice,
     treasuryTokens,
     marketTokens,
     marketCapValue: mission.totalSupply * mission.tokenPrice,
@@ -634,10 +634,11 @@ function capitalizationBreakdown(mission: Mission) {
 }
 
 function TreasuryPanel({ mission }: { mission: Mission }) {
-  const { marketCapValue, marketTokens, marketValue, treasuryTokens, treasuryValue } = capitalizationBreakdown(mission);
+  const { circulatingTokens, marketCapValue, marketTokens, marketValue, treasuryTokens, treasuryValue } = capitalizationBreakdown(mission);
   const totalSupplyAmount = `${number(mission.totalSupply)} ${mission.tokenSymbol}`;
   const treasuryTokenAmount = `${number(treasuryTokens)} ${mission.tokenSymbol}`;
   const marketTokenAmount = `${number(marketTokens)} ${mission.tokenSymbol}`;
+  const circulatingTokenAmount = `${number(circulatingTokens)} ${mission.tokenSymbol}`;
 
   return (
     <GlassCard className="section-card">
@@ -663,10 +664,17 @@ function TreasuryPanel({ mission }: { mission: Mission }) {
           </div>
         </div>
         <div>
-          <span className="stat-label">Market Liquidity</span>
+          <span className="stat-label">DBC Pool Tokens</span>
           <div className="stat-value">{money(marketValue)}</div>
           <div className="stat-note" title={marketTokenAmount}>
             {number(marketTokens, true)} {mission.tokenSymbol}
+          </div>
+        </div>
+        <div>
+          <span className="stat-label">Circulating Holders</span>
+          <div className="stat-value">{money(circulatingTokens * mission.tokenPrice)}</div>
+          <div className="stat-note" title={circulatingTokenAmount}>
+            {number(circulatingTokens, true)} {mission.tokenSymbol}
           </div>
         </div>
       </div>
@@ -679,12 +687,12 @@ function TreasuryPanel({ mission }: { mission: Mission }) {
 }
 
 function TreasuryMarketDonut({ mission }: { mission: Mission }) {
-  const [active, setActive] = useState<"investors" | "treasury" | "market">("treasury");
-  const { investorTokens, marketTokens, treasuryTokens } = capitalizationBreakdown(mission);
+  const [active, setActive] = useState<"circulating" | "treasury" | "market">("treasury");
+  const { circulatingTokens, marketTokens, treasuryTokens } = capitalizationBreakdown(mission);
   const chartData = [
-    { key: "investors" as const, name: "Investors", value: investorTokens, gradient: "url(#investorsGradient)" },
+    { key: "circulating" as const, name: "Circulating", value: circulatingTokens, gradient: "url(#investorsGradient)" },
     { key: "treasury" as const, name: "Treasury", value: treasuryTokens, gradient: "url(#treasuryGradient)" },
-    { key: "market" as const, name: "Market", value: marketTokens, gradient: "url(#marketGradient)" },
+    { key: "market" as const, name: "DBC pool", value: marketTokens, gradient: "url(#marketGradient)" },
   ];
   const activeEntry = chartData.find((entry) => entry.key === active) ?? chartData[0];
   const activePercentage = mission.totalSupply > 0 ? (activeEntry.value / mission.totalSupply) * 100 : 0;
@@ -745,9 +753,9 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
         </div>
       </div>
       <div className="donut-legend">
-        <button className={cx("legend-item", active === "investors" && "active")} onMouseEnter={() => setActive("investors")} onFocus={() => setActive("investors")}>
+        <button className={cx("legend-item", active === "circulating" && "active")} onMouseEnter={() => setActive("circulating")} onFocus={() => setActive("circulating")}>
           <span className="legend-dot investors-dot" />
-          Investors
+          Circulating
         </button>
         <button className={cx("legend-item", active === "treasury" && "active")} onMouseEnter={() => setActive("treasury")} onFocus={() => setActive("treasury")}>
           <span className="legend-dot treasury-dot" />
@@ -755,23 +763,73 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
         </button>
         <button className={cx("legend-item", active === "market" && "active")} onMouseEnter={() => setActive("market")} onFocus={() => setActive("market")}>
           <span className="legend-dot market-dot" />
-          Market
+          DBC pool
         </button>
       </div>
     </div>
   );
 }
 
-function TradePanel({ mission }: { mission: Mission }) {
+function InlineLoader() {
+  return (
+    <span className="inline-loader" aria-label="Loading">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
+function InlineSuccess() {
+  return (
+    <span className="inline-success" aria-label="Success">
+      ✓
+    </span>
+  );
+}
+
+function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionChange?: (mission: Mission) => void }) {
   const [mode, setMode] = useState<"buy" | "sell">("buy");
-  const [amount, setAmount] = useState("1000");
+  const [amount, setAmount] = useState("");
   const [quote, setQuote] = useState<api.MissionQuote | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [balances, setBalances] = useState<api.MissionBalances | null>(null);
+  const [balancesLoading, setBalancesLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [tradePending, setTradePending] = useState(false);
+  const [tradeSucceeded, setTradeSucceeded] = useState(false);
   const wallet = useSingularityWallet();
   const numeric = Number(amount) || 0;
-  const estimate = quote?.estimatedOutput ?? (mode === "buy" ? numeric / mission.tokenPrice : numeric * mission.tokenPrice);
-  const requestQuote = async () => {
+  const hasAmount = numeric > 0;
+  const activeBalance = mode === "buy" ? balances?.usdc : balances?.missionToken;
+  const activeBalanceLabel = mode === "buy" ? "USDC balance" : `${mission.tokenSymbol} balance`;
+  const refreshBalances = useCallback(async () => {
+    if (!wallet.address) {
+      setBalances(null);
+      setBalancesLoading(false);
+      return null;
+    }
+
+    setBalancesLoading(true);
     try {
+      const next = await api.getMissionBalances(mission.id, wallet.address);
+      setBalances(next);
+      return next;
+    } catch {
+      setBalances(null);
+      return null;
+    } finally {
+      setBalancesLoading(false);
+    }
+  }, [mission.id, wallet.address]);
+  const requestQuote = async () => {
+    if (!hasAmount) {
+      setQuote(null);
+      setQuoteLoading(false);
+      return null;
+    }
+    try {
+      setQuoteLoading(true);
       const next = await api.getMissionQuote(mission.id, { side: mode, amount: numeric, wallet: wallet.address });
       setQuote(next);
       setStatus(null);
@@ -779,6 +837,8 @@ function TradePanel({ mission }: { mission: Mission }) {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Quote failed.");
       return null;
+    } finally {
+      setQuoteLoading(false);
     }
   };
   const trade = async () => {
@@ -786,15 +846,48 @@ function TradePanel({ mission }: { mission: Mission }) {
       await wallet.signIn();
       return;
     }
-    const nextQuote = quote ?? (await requestQuote());
-    const signature = await wallet.sendPreparedTransaction(nextQuote?.transaction);
-    if (signature) setStatus(`Trade submitted: ${shortAddress(signature)}`);
+    try {
+      setStatus(null);
+      setTradeSucceeded(false);
+      setTradePending(true);
+      const nextQuote = await requestQuote();
+      const signature = await wallet.sendPreparedTransaction(nextQuote?.transaction);
+      if (signature) {
+        setQuote(null);
+        setAmount("");
+        const [refreshed] = await Promise.all([api.getMission(mission.id), refreshBalances()]);
+        onMissionChange?.(refreshed.mission);
+        setTradeSucceeded(true);
+        window.setTimeout(() => setTradeSucceeded(false), 1600);
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Trade failed.");
+    } finally {
+      setTradePending(false);
+    }
   };
 
   useEffect(() => {
+    setQuote(null);
+    if (!hasAmount) {
+      setQuoteLoading(false);
+      return;
+    }
+    setQuoteLoading(true);
     const timer = window.setTimeout(() => void requestQuote(), 350);
     return () => window.clearTimeout(timer);
-  }, [amount, mode, mission.id, wallet.address]);
+  }, [amount, mode, mission.id, wallet.address, hasAmount]);
+
+  useEffect(() => {
+    void refreshBalances();
+  }, [refreshBalances]);
+
+  const minimumReceived =
+    quote?.minimumAmountOut === null || quote?.minimumAmountOut === undefined
+      ? null
+      : mode === "buy"
+        ? `${number(quote.minimumAmountOut)} ${mission.tokenSymbol}`
+        : `${money(quote.minimumAmountOut)} USDC`;
 
   return (
     <GlassCard className="section-card">
@@ -808,18 +901,37 @@ function TradePanel({ mission }: { mission: Mission }) {
       </div>
       <label>
         <span className="form-label">{mode === "buy" ? "USDC amount" : `${mission.tokenSymbol} amount`}</span>
-        <input className="field" value={amount} onChange={(event) => setAmount(event.target.value)} />
+        <input
+          className="field"
+          inputMode="decimal"
+          placeholder={mode === "buy" ? "0.00" : "0"}
+          value={amount}
+          onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))}
+        />
       </label>
       <p className="stat-note">
-        Estimated output:{" "}
+        {activeBalanceLabel}:{" "}
         <strong>
-          {mode === "buy" ? `${number(estimate)} ${mission.tokenSymbol}` : `${money(estimate)} USDC`}
+          {wallet.address
+            ? balancesLoading
+              ? <InlineLoader />
+              : `${number(activeBalance || 0)} ${mode === "buy" ? "USDC" : mission.tokenSymbol}`
+            : "Sign in to view"}
         </strong>
       </p>
-      <p className="stat-note">Price impact: {number(quote?.priceImpactPercent ?? 0)}%</p>
-      {status ? <p className="stat-note">{status}</p> : null}
-      <button className={cx("button", mode === "buy" ? "button-primary" : "button-danger")} style={{ width: "100%" }} onClick={() => void trade()}>
-        {wallet.address ? (mode === "buy" ? "Buy tokens" : "Sell tokens") : "Sign in to trade"}
+      {hasAmount ? (
+        <>
+          <p className="stat-note">Minimum received: {quoteLoading || !minimumReceived ? <InlineLoader /> : minimumReceived}</p>
+          <p className="stat-note">Price impact: {quoteLoading || quote?.priceImpactPercent === null || quote?.priceImpactPercent === undefined ? <InlineLoader /> : `${number(quote.priceImpactPercent)}%`}</p>
+        </>
+      ) : null}
+      {tradePending ? null : tradeSucceeded ? (
+        <p className="stat-note">Success <InlineSuccess /></p>
+      ) : status ? (
+        <p className="stat-note">{status}</p>
+      ) : null}
+      <button className={cx("button", mode === "buy" ? "button-primary" : "button-danger")} disabled={tradePending} style={{ width: "100%" }} onClick={() => void trade()}>
+        {tradePending ? <InlineLoader /> : wallet.address ? (mode === "buy" ? "Buy tokens" : "Sell tokens") : "Sign in to trade"}
       </button>
     </GlassCard>
   );

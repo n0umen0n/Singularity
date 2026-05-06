@@ -24,9 +24,29 @@ export type MissionQuote = {
   side: "buy" | "sell";
   inputAmount: number;
   estimatedOutput: number;
-  priceImpactPercent: number;
+  minimumAmountOut?: number | null;
+  priceImpactPercent?: number | null;
+  currentPrice?: number;
   route: string;
+  market?: {
+    lifecycle?: string | null;
+    tokenMint?: string | null;
+    dbcPool?: string | null;
+    dammPool?: string | null;
+    baseReserve?: number;
+    quoteReserve?: number;
+    liquidityUsd?: number;
+    poolProgressPercent?: number;
+  };
   transaction: PreparedTransaction;
+};
+
+export type MissionBalances = {
+  wallet: string;
+  missionId: string;
+  usdc: number;
+  missionToken: number;
+  tokenSymbol: string;
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -97,6 +117,11 @@ export function getMissionQuote(missionId: string, input: { side: "buy" | "sell"
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function getMissionBalances(missionId: string, wallet: string) {
+  const search = new URLSearchParams({ wallet });
+  return api<MissionBalances>(`/api/missions/${missionId}/balances?${search}`);
 }
 
 export function prepareFundingRequest(input: { missionId: string; name: string; description: string; amountUsd: number }) {

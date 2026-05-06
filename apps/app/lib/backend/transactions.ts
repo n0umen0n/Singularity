@@ -5,9 +5,13 @@ import {
   buildPreparedTransaction,
   buildPreparedTransactionSteps,
   councilInstruction,
+  fetchMeteoraDbcMarketSnapshot,
   latestBlockhash,
   prepareMeteoraDbcLaunchInstructions,
+  prepareMeteoraDbcTrade,
+  quoteMeteoraDbcTrade,
   requireProgramConfig,
+  type MeteoraDbcMarketSnapshot,
   type PreparedSolanaTransaction,
 } from "@singularity/solana";
 
@@ -22,6 +26,7 @@ type TransactionResult =
 
 const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_JUPITER_API_URL = "https://quote-api.jup.ag/v6";
+type NotConfiguredTransaction = { kind: string; status: "not_configured"; message: string; instructions: unknown[] };
 
 export type JupiterTradeResult = {
   route: "jupiter";
@@ -32,6 +37,27 @@ export type JupiterTradeResult = {
   priceImpactPercent: number;
   transaction: TransactionResult;
   quoteResponse?: unknown;
+};
+
+export type MeteoraDbcTradeQuoteResult = {
+  route: "meteora-dbc";
+  inputMint: string;
+  outputMint: string;
+  inputAmount: number;
+  estimatedOutput: number;
+  minimumAmountOut: number;
+  priceImpactPercent: number;
+  currentPrice: number;
+  market: {
+    dbcPool: string;
+    tokenMint: string;
+    quoteMint: string;
+    baseReserve: number;
+    quoteReserve: number;
+    liquidityUsd: number;
+    poolProgressPercent: number;
+  };
+  transaction: TransactionResult;
 };
 
 function notConfigured(kind: string, error: unknown): TransactionResult {
@@ -354,6 +380,81 @@ export async function prepareJupiterTradeTransaction(input: {
       instructions: [],
     };
   }
+}
+
+export async function prepareMeteoraDbcTradeTransaction(input: {
+  wallet?: string;
+  side: "buy" | "sell";
+  amount: number;
+  dbcPool?: string | null;
+  slippageBps?: number;
+}): Promise<MeteoraDbcTradeQuoteResult | { kind: string; status: "not_configured"; message: string; instructions: unknown[] }> {
+  const kind = "trade";
+
+  try {
+    if (!input.dbcPool) throw new Error("dbcPool is required for Meteora DBC trading.");
+    const config = requireProgramConfig(process.env);
+    const quoteOnly = await quoteMeteoraDbcTrade({
+      rpcUrl: config.rpcUrl,
+      pool: input.dbcPool,
+      side: input.side,
+      amount: input.amount,
+      slippageBps: input.slippageBps,
+    });
+    const transaction = input.wallet
+      ? (
+          await prepareMeteoraDbcTrade({
+            rpcUrl: config.rpcUrl,
+            pool: input.dbcPool,
+            wallet: input.wallet,
+            side: input.side,
+            amount: input.amount,
+            recentBlockhash: (await latestBlockhash(config)).blockhash,
+            slippageBps: input.slippageBps,
+          })
+        ).transaction
+      : (notConfigured(kind, new Error("wallet is required to prepare a Meteora DBC swap transaction.")) as NotConfiguredTransaction);
+
+    return {
+      route: "meteora-dbc",
+      inputMint: quoteOnly.inputMint,
+      outputMint: quoteOnly.outputMint,
+      inputAmount: quoteOnly.inputAmount,
+      estimatedOutput: quoteOnly.estimatedOutput,
+      minimumAmountOut: quoteOnly.minimumAmountOut,
+      priceImpactPercent: quoteOnly.priceImpactPercent,
+      currentPrice: quoteOnly.currentPrice,
+      market: {
+        dbcPool: quoteOnly.dbcPool,
+        tokenMint: quoteOnly.baseMint,
+        quoteMint: quoteOnly.quoteMint,
+        baseReserve: quoteOnly.baseReserve,
+        quoteReserve: quoteOnly.quoteReserve,
+        liquidityUsd: quoteOnly.liquidityUsd,
+        poolProgressPercent: quoteOnly.poolProgressPercent,
+      },
+      transaction,
+    };
+  } catch (error) {
+    return notConfigured(kind, error) as NotConfiguredTransaction;
+  }
+}
+
+export async function fetchMeteoraDbcMissionSnapshot(input: {
+  dbcPool?: string | null;
+  tokenMint?: string | null;
+  treasuryVault?: string | null;
+  totalSupply?: number;
+}): Promise<MeteoraDbcMarketSnapshot | null> {
+  if (!input.dbcPool) return null;
+  const config = requireProgramConfig(process.env);
+  return fetchMeteoraDbcMarketSnapshot({
+    rpcUrl: config.rpcUrl,
+    pool: input.dbcPool,
+    tokenMint: input.tokenMint,
+    treasuryVault: input.treasuryVault,
+    totalSupply: input.totalSupply,
+  });
 }
 
 export async function prepareFundingRequestTransaction(input: { requesterWallet?: string; missionId: string; requestId: string; metadataHash: string }) {
