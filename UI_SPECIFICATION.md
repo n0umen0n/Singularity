@@ -13,7 +13,7 @@ Core product objects:
 - `Mission`: a goal, market, token, treasury, funding request feed, and investor community.
 - `Mission token`: the tradable token attached to a mission.
 - `Treasury`: 20% of mission token supply, shown in USDC value and project token amount.
-- `Treasury council`: the top 6 token holders of a mission.
+- `Treasury council`: the top 6 registered mission-token investors of a mission.
 - `Funding request`: a proposal to receive treasury funds for mission-related work.
 - `Profile`: a wallet-based identity showing balances, missions, council roles, and user-created requests.
 
@@ -441,11 +441,11 @@ Layout:
 
 Title: `Treasury Council`
 
-Subtitle: `The top 6 investors form this mission's treasury council. Funding requests require 4 of 6 approvals.`
+Subtitle: `The top 6 registered investors form this mission's treasury council. Funding requests require 4 of 6 approvals. 60% of trading fees are distributed between the top 6 councillors.`
 
 Content:
 
-- Show top 6 investors in a 6-card grid.
+- Show top 6 registered investors in a 6-card grid.
 - Desktop: 3 columns x 2 rows or 6 compact horizontal cards depending available space.
 - Each council member card:
   - Profile image.
@@ -455,11 +455,50 @@ Content:
   - Rank badge `#1` to `#6`.
 - Highlight with gradient ring around profile image.
 - The top investor can have a slightly stronger glow, but do not make it look like they have more governance power than others.
+- Add a primary/secondary CTA near the section title: `Become councillor`.
+- The CTA opens a registration modal for users who want to become eligible for future council epochs.
 
 Council approval rule:
 
 - Always show `4/6 approvals required` as a persistent pill near the section title.
-- Use simple explanatory copy: `Council members are selected by token holdings. A funding request passes when at least 4 of 6 approve.`
+- Use simple explanatory copy: `Council members are selected from registered candidates by tracked mission-token balances. A funding request passes when at least 4 of 6 approve.`
+
+Council reward rule:
+
+- Show compact helper copy near the CTA: `Councillors share 60% of trading fees. Other registered candidates share 10%.`
+- Do not imply unregistered token holders earn council rewards.
+
+### Become Councillor Modal
+
+Triggered by: `Become councillor`.
+
+Purpose: let a user register as a council candidate so their liquid mission-token balance can be tracked for future council epochs and trading-fee rewards.
+
+Modal content:
+
+- Title: `Become councillor`.
+- Subtitle: `Register your wallet as a council candidate. Your liquid mission-token balance remains tradable, but voting later requires temporary escrow until the funding request resolves.`
+- Current balance row: available mission token balance.
+- Candidate registration summary:
+  - Registered wallet address.
+  - Tracked token accounts.
+  - Current tracked mission-token balance.
+  - Current estimated council rank, if indexer data is available.
+- Eligibility preview:
+  - `Council rank estimate`: show whether current tracked balance would place the user in top 6.
+  - `Liquid tokens`: tokens remain tradable while registered.
+  - `Vote escrow`: if selected as a councillor, voting temporarily escrows the required tokens until the request resolves.
+  - `Rewards`: `Top 6 councillors share 60% of trading fees. Other registered candidates share 10%.`
+- CTA: `Register candidacy`.
+- Secondary action: `Cancel`.
+
+Important states:
+
+- Wallet not connected: CTA says `Sign in to register`.
+- No mission token balance: show `Buy tokens to become competitive`.
+- Pending transaction: show Singularity ring loader.
+- Success: show receipt and next council epoch.
+- Error: show actionable message.
 
 ### Funding Requests Section
 
@@ -651,9 +690,9 @@ Mission participation card:
 - Current token value.
 - Role indicators:
   - `Investor`
-  - `Council member` if in top 6.
+  - `Councillor` if in top 6 registered investors for an epoch.
 
-If user is a council member, make it unmistakable:
+If user is a councillor, make it unmistakable:
 
 - Add a gradient `Council` badge.
 - Add a tiny 6-dot council icon.
@@ -699,6 +738,37 @@ Status colors:
 - Accepted: green.
 - Rejected: red.
 - Expired: muted amber/gray.
+
+### Earned Trading Fees Section
+
+Title: `Earned trading fees`
+
+Description: `Trading fees are distributed to mission creators, top councillors, and other registered candidates as markets trade.`
+
+Replace any `Creator trading fees` section with this broader section.
+
+Fee card fields:
+
+1. Mission token/image.
+2. Earning role:
+   - `Creator`: 10% of trading fees for missions the user created.
+   - `Councillor`: share of the 60% council reward allocation for epochs where the user was top 6.
+   - `Registered candidate`: pro-rata share of the 10% other registered candidate allocation.
+3. Earned amount in USDC.
+4. Claimable amount in USDC.
+5. CTA: `Claim trading fees`.
+
+Card copy examples:
+
+- `MARS council rewards`
+- `SUN creator rewards`
+- `TIDE candidate rewards`
+
+Important states:
+
+- No earned fees: show empty state `Register as a council candidate or create a mission to earn trading fees.`
+- Pending claim: show compact loading state.
+- Success: show receipt with claimed USDC amount.
 
 ### Edit Profile Modal
 
@@ -758,7 +828,7 @@ Required explanation:
 - The market is the mission AMM, where investors buy and sell mission tokens.
 - 20% of token supply goes to the treasury.
 - 80% goes to AMM liquidity.
-- The mission creator can earn trading fees for creating the mission.
+- Trading fees are shared between the mission creator, Singularity platform, councillors, and other registered candidates.
 
 Visual:
 
@@ -768,7 +838,7 @@ Visual:
 - Include labels and short descriptions:
   - `80% Market liquidity`: available for trading through the AMM or curve.
   - `20% Mission treasury`: reserved for funding mission-related work.
-  - `Creator fees`: mission creator earns trading fees when the market is active.
+  - `Trading fee rewards`: 10% creator, 20% Singularity platform, 60% councillors, 10% other registered candidates.
 
 ### Launch Form
 

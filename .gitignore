@@ -1,5 +1,7 @@
 node_modules/
 dist/
+target/
+.anchor/
 .next/
 apps/*/.next/
 apps/*/dist/
@@ -10,3 +12,4 @@ apps/*/dist/
 .env
 .env.*
 !.env.example
+.singularity/

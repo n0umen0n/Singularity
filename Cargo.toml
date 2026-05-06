@@ -1,0 +1,13 @@
+[workspace]
+members = [
+  "programs/singularity_registry",
+  "programs/singularity_council"
+]
+resolver = "2"
+
+[workspace.dependencies]
+anchor-lang = "0.31.1"
+anchor-spl = "0.31.1"
+
+[profile.release]
+overflow-checks = true

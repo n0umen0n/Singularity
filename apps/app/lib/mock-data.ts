@@ -34,11 +34,17 @@ export type PerformancePoint = {
 
 export type Mission = {
   id: string;
+  missionPda?: string | null;
   statement: string;
   description: string;
   image: string;
   tokenImage: string;
   tokenSymbol: string;
+  tokenMint?: string | null;
+  dbcPool?: string | null;
+  dammPool?: string | null;
+  treasuryVault?: string | null;
+  lifecycle?: "draft" | "bonding" | "graduated";
   tokenPrice: number;
   holders: number;
   liquidity: number;

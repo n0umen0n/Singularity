@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build App
+        run: npm run build:app
+
+      - name: Security Gate
+        run: npm run security:gate
+
+      - name: Dependency Audit
+        run: npm audit --audit-level=high
+
+  # Production configuration validation is intentionally disabled for now.
+  # Re-enable this job before mainnet launch, after production secrets are added.
+  # production-gate:
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Setup Node
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         cache: npm
+  #
+  #     - name: Install
+  #       run: npm ci
+  #
+  #     - name: Enforce Production Configuration
+  #       env:
+  #         CI_PRODUCTION_GATE: "true"
+  #         DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  #         SINGULARITY_STORAGE: ${{ secrets.SINGULARITY_STORAGE }}
+  #         SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+  #         SINGULARITY_REGISTRY_PROGRAM_ID: ${{ secrets.SINGULARITY_REGISTRY_PROGRAM_ID }}
+  #         SINGULARITY_COUNCIL_PROGRAM_ID: ${{ secrets.SINGULARITY_COUNCIL_PROGRAM_ID }}
+  #         BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+  #       run: npm run security:gate
