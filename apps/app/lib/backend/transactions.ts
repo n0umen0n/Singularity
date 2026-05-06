@@ -3,6 +3,7 @@ import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.j
 import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import {
   buildPreparedTransaction,
+  buildPreparedTransactionSteps,
   councilInstruction,
   latestBlockhash,
   prepareMeteoraDbcLaunchInstructions,
@@ -215,6 +216,7 @@ export async function prepareLaunchTransaction(input: {
 
   try {
     if (!input.creatorWallet) throw new Error("creatorWallet is required to prepare a launch transaction.");
+    const creatorWallet = input.creatorWallet;
     const config = requireProgramConfig(process.env);
     const blockhash = await latestBlockhash(config);
     const missionAccount = missionPda(config.registryProgramId, input.missionId);
@@ -240,27 +242,17 @@ export async function prepareLaunchTransaction(input: {
       true,
       TOKEN_2022_PROGRAM_ID,
     ).toBase58();
-    const instruction = registryInitializeMissionInstruction({
-      programId: config.registryProgramId,
-      creator: input.creatorWallet,
-      mission: missionAccount,
-      slugHash: hashBytes(input.missionId),
-      metadataHash: input.metadataHash,
-      tokenMint: meteoraLaunch.accounts.tokenMint,
-      treasuryVault,
-      totalSupply,
-      treasuryBps: 2_000,
-    });
 
-    return buildPreparedTransaction({
+    return buildPreparedTransactionSteps({
       kind,
       feePayer: input.creatorWallet,
       recentBlockhash: blockhash.blockhash,
-      instructions: [...meteoraLaunch.instructions, instruction],
-      requiredSigners: [input.creatorWallet, ...meteoraLaunch.signerKeypairs.map((signer) => signer.publicKey.toBase58())],
-      signerKeypairs: meteoraLaunch.signerKeypairs,
+      steps: meteoraLaunch.transactionSteps.map((step) => ({
+        ...step,
+        requiredSigners: [creatorWallet, ...step.signerKeypairs.map((signer) => signer.publicKey.toBase58())],
+      })),
       accounts: {
-        mission: missionAccount,
+        mission: "",
         treasuryAuthority,
         treasuryVault,
         ...meteoraLaunch.accounts,

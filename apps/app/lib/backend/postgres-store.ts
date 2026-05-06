@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type pg from "pg";
 import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
@@ -62,6 +63,24 @@ type ProfileRow = {
   token_balances: typeof currentUser.tokenBalances;
   created_missions: typeof currentUser.createdMissions;
 };
+
+type PendingMissionLaunchRow = {
+  id: string;
+  creator_wallet: string;
+  metadata_hash: string;
+  metadata_uri: string;
+  statement: string;
+  description: string;
+  image_url: string;
+  token_image_url: string;
+  token_symbol: string;
+  total_supply: string;
+  treasury_supply_percent: string;
+  initial_purchase_usdc: string;
+  launch_accounts: Record<string, string>;
+};
+
+type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
 
 function contentHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -132,10 +151,10 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
   };
 }
 
-async function requestRows(missionIds: string[]) {
+async function requestRows(missionIds: string[], client?: Queryable) {
   if (missionIds.length === 0) return new Map<string, FundingRequest[]>();
 
-  const result = await query<FundingRequestRow>(
+  const result = await (client || { query }).query<FundingRequestRow>(
     `
       select
         fr.*,
@@ -192,8 +211,8 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
   return result.rows.map((row) => rowToMission(row, requestsByMission.get(row.id) || []));
 }
 
-export async function getMissionByIdFromPostgres(missionId: string) {
-  const result = await query<MissionRow>(
+export async function getMissionByIdFromPostgres(missionId: string, client?: Queryable) {
+  const result = await (client || { query }).query<MissionRow>(
     `
       select m.*, mm.token_price_usdc, mm.holders, mm.liquidity_usdc, mm.treasury_usdc, mm.treasury_tokens
       from missions m
@@ -206,7 +225,7 @@ export async function getMissionByIdFromPostgres(missionId: string) {
   const row = result.rows[0];
   if (!row) return null;
 
-  const requestsByMission = await requestRows([missionId]);
+  const requestsByMission = await requestRows([missionId], client);
   return rowToMission(row, requestsByMission.get(missionId) || []);
 }
 
@@ -308,6 +327,7 @@ export async function prepareMissionLaunchInPostgres(input: {
   };
   const metadataHash = contentHash(metadata);
   const metadataUri = `db://metadata/${metadataHash}.json`;
+  const totalSupply = 50_000_000;
   const launchTransaction = await prepareLaunchTransaction({
     creatorWallet: input.creatorWallet,
     missionId: id,
@@ -315,12 +335,85 @@ export async function prepareMissionLaunchInPostgres(input: {
     metadataUri,
     tokenName: statement,
     tokenSymbol,
-    totalSupply: 50_000_000,
+    totalSupply,
     initialPurchaseUsdc: input.initialPurchaseUsdc,
   });
   const launchAccounts = "accounts" in launchTransaction ? launchTransaction.accounts || {} : {};
+  const mission: Mission = {
+    id,
+    missionPda: launchAccounts.mission || null,
+    statement,
+    description,
+    image: input.missionImage || seed.image,
+    tokenImage: input.tokenImage || seed.tokenImage,
+    tokenSymbol,
+    tokenMint: launchAccounts.tokenMint || null,
+    dbcPool: launchAccounts.dbcPool || null,
+    treasuryVault: launchAccounts.treasuryVault || null,
+    lifecycle: "draft",
+    tokenPrice: 0.01,
+    holders: 1,
+    liquidity: Number(input.initialPurchaseUsdc || 0),
+    treasuryUsdc: 0,
+    treasuryTokens: 10_000_000,
+    treasurySupplyPercent: 20,
+    totalSupply,
+    performance: seed.performance,
+    council: [],
+    requests: [],
+  };
+
+  if (launchTransaction.status === "ready") {
+    await query(
+      `
+        insert into pending_mission_launches (
+          id, creator_wallet, metadata_hash, metadata_uri, statement, description,
+          image_url, token_image_url, token_symbol, total_supply, treasury_supply_percent,
+          initial_purchase_usdc, launch_accounts
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 20, $11, $12)
+      `,
+      [
+        id,
+        input.creatorWallet || currentUser.address,
+        metadataHash,
+        metadataUri,
+        statement,
+        description,
+        mission.image,
+        mission.tokenImage,
+        tokenSymbol,
+        totalSupply,
+        Number(input.initialPurchaseUsdc || 0),
+        JSON.stringify(launchAccounts),
+      ],
+    );
+  }
+
+  return {
+    launchId: launchTransaction.status === "ready" ? id : null,
+    mission,
+    metadataHash,
+    metadataUri,
+    transaction: launchTransaction,
+  };
+}
+
+export async function confirmMissionLaunchInPostgres(input: { launchId?: string; signature?: string; wallet?: string }) {
+  if (!input.launchId) throw new Error("launchId is required.");
+  if (!input.signature) throw new Error("signature is required.");
+  if (!input.wallet) throw new Error("wallet is required.");
 
   return transaction(async (client) => {
+    const pendingResult = await client.query<PendingMissionLaunchRow>(
+      "select * from pending_mission_launches where id = $1 and creator_wallet = $2 and status = 'prepared' for update",
+      [input.launchId, input.wallet],
+    );
+    const pending = pendingResult.rows[0];
+    if (!pending) throw new Error("Pending mission launch not found.");
+
+    const seed = fixtureMissions[0];
+    const accounts = pending.launch_accounts || {};
     await client.query(
       `
         insert into missions (
@@ -329,22 +422,23 @@ export async function prepareMissionLaunchInPostgres(input: {
           image_url, token_image_url, token_symbol, total_supply, treasury_supply_percent,
           performance_json, council_json
         )
-        values ($1, $2, $3, $4, $5, $6, 'bonding', $7, $8, $9, $10, $11, $12, $13, 20, $14, '[]'::jsonb)
+        values ($1, $2, $3, $4, $5, $6, 'bonding', $7, $8, $9, $10, $11, $12, $13, $14, $15, '[]'::jsonb)
       `,
       [
-        id,
-        launchAccounts.mission || null,
-        input.creatorWallet || currentUser.address,
-        launchAccounts.tokenMint || null,
-        launchAccounts.dbcPool || null,
-        launchAccounts.treasuryVault || null,
-        metadataHash,
-        statement,
-        description,
-        input.missionImage || seed.image,
-        input.tokenImage || seed.tokenImage,
-        tokenSymbol,
-        50_000_000,
+        pending.id,
+        accounts.mission || null,
+        pending.creator_wallet,
+        accounts.tokenMint || null,
+        accounts.dbcPool || null,
+        accounts.treasuryVault || null,
+        pending.metadata_hash,
+        pending.statement,
+        pending.description,
+        pending.image_url,
+        pending.token_image_url,
+        pending.token_symbol,
+        pending.total_supply,
+        pending.treasury_supply_percent,
         JSON.stringify(seed.performance),
       ],
     );
@@ -353,38 +447,21 @@ export async function prepareMissionLaunchInPostgres(input: {
         insert into mission_metrics (mission_id, token_price_usdc, holders, liquidity_usdc, treasury_usdc, treasury_tokens)
         values ($1, 0.01, 1, $2, 0, 10000000)
       `,
-      [id, Number(input.initialPurchaseUsdc || 0)],
+      [pending.id, Number(pending.initial_purchase_usdc || 0)],
     );
     await client.query(
-      "insert into metadata_uploads (hash, uri, owner_wallet, content_type) values ($1, $2, $3, 'application/json')",
-      [metadataHash, metadataUri, input.creatorWallet || currentUser.address],
+      "insert into metadata_uploads (hash, uri, owner_wallet, content_type) values ($1, $2, $3, 'application/json') on conflict (hash) do nothing",
+      [pending.metadata_hash, pending.metadata_uri, pending.creator_wallet],
     );
+    await client.query(
+      "insert into transactions (signature, wallet, mission_id, type, status) values ($1, $2, $3, 'mission-launch', 'submitted') on conflict (signature) do nothing",
+      [input.signature, pending.creator_wallet, pending.id],
+    );
+    await client.query("update pending_mission_launches set status = 'submitted', signature = $1, confirmed_at = now() where id = $2", [input.signature, pending.id]);
 
-    const mission: Mission = {
-      id,
-      statement,
-      description,
-      image: input.missionImage || seed.image,
-      tokenImage: input.tokenImage || seed.tokenImage,
-      tokenSymbol,
-      tokenPrice: 0.01,
-      holders: 1,
-      liquidity: Number(input.initialPurchaseUsdc || 0),
-      treasuryUsdc: 0,
-      treasuryTokens: 10_000_000,
-      treasurySupplyPercent: 20,
-      totalSupply: 50_000_000,
-      performance: seed.performance,
-      council: [],
-      requests: [],
-    };
-
-    return {
-      mission,
-      metadataHash,
-      metadataUri,
-      transaction: launchTransaction,
-    };
+    const mission = await getMissionByIdFromPostgres(pending.id, client);
+    if (!mission) throw new Error("Mission launch confirmation failed.");
+    return { mission };
   });
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { Connection } from "@solana/web3.js";
+import { Connection, SendTransactionError, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { usePrivy } from "@privy-io/react-auth";
 import { useSignMessage, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
@@ -12,6 +12,11 @@ export type PreparedTransaction =
       status: "ready";
       network?: string;
       transactionBase64: string;
+      transactions?: Array<{
+        label?: string;
+        transactionBase64: string;
+        requiredSigners?: string[];
+      }>;
       requiredSigners?: string[];
       message?: string;
     }
@@ -53,6 +58,15 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+async function formatSendTransactionError(error: unknown, connection: Connection) {
+  if (!(error instanceof SendTransactionError)) return error;
+
+  const logs = await error.getLogs(connection).catch(() => error.logs);
+  if (!logs?.length) return error;
+
+  return new Error(`${error.message}\nLogs:\n${logs.join("\n")}`);
+}
+
 export function SingularityWalletProvider({ children }: { children: React.ReactNode }) {
   const { authenticated, login, logout, ready } = usePrivy();
   const { wallets } = useWallets();
@@ -62,7 +76,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
   const [status, setStatus] = useState<string | null>(null);
 
   const wallet = wallets[0] ?? null;
-  const address = wallet?.address ?? sessionAddress;
+  const address = sessionAddress;
 
   const signIn = useCallback(async () => {
     setStatus(null);
@@ -114,14 +128,27 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
         return null;
       }
 
-      const transactionBytes = bytesFromBase64(transaction.transactionBase64);
-      const signed = await signTransaction({ transaction: transactionBytes, wallet });
-      const signedBytes = "signedTransaction" in signed ? signed.signedTransaction : signed;
-      const rawTransaction = signedBytes instanceof Uint8Array ? signedBytes : new Uint8Array(signedBytes as ArrayBuffer);
       const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_MAINNET_RPC_URL || "https://api.mainnet-beta.solana.com";
       const connection = new Connection(rpcUrl, "confirmed");
-      const signature = await connection.sendRawTransaction(rawTransaction, { skipPreflight: false });
-      setStatus(`Transaction submitted: ${signature}`);
+      const preparedTransactions = transaction.transactions?.length ? transaction.transactions : [{ transactionBase64: transaction.transactionBase64 }];
+      const signatures: string[] = [];
+
+      for (const [index, prepared] of preparedTransactions.entries()) {
+        setStatus(prepared.label || `Approve transaction ${index + 1} of ${preparedTransactions.length}.`);
+        const transactionBytes = bytesFromBase64(prepared.transactionBase64);
+        const versionedTransaction = VersionedTransaction.deserialize(transactionBytes);
+        const signed = await signTransaction({ transaction: versionedTransaction.serialize(), wallet });
+        const signedBytes = "signedTransaction" in signed ? signed.signedTransaction : signed;
+        const rawTransaction = signedBytes instanceof Uint8Array ? signedBytes : new Uint8Array(signedBytes as ArrayBuffer);
+        const submitted = await connection.sendRawTransaction(rawTransaction, { skipPreflight: false }).catch(async (error: unknown) => {
+          throw await formatSendTransactionError(error, connection);
+        });
+        signatures.push(submitted);
+        await connection.confirmTransaction(submitted, "confirmed");
+      }
+
+      const signature = signatures.at(-1) || null;
+      setStatus(signature ? `Transaction submitted: ${signature}` : "Transaction was not submitted.");
       return signature;
     },
     [signIn, signTransaction, wallet],

@@ -16,7 +16,7 @@ The backend can run in two modes:
 - Mission feed API with search and sorting.
 - Mission detail API.
 - Buy/sell quote API for the current UI trading panel.
-- Mission launch preparation endpoint that validates mission metadata, creates a local mission record, creates a metadata hash, and returns a placeholder transaction response.
+- Mission launch preparation endpoint that validates mission metadata, prepares a Meteora DBC launch transaction, and stores only a pending launch until the wallet transaction is submitted.
 - Funding request preparation endpoint that validates and stores a request locally.
 - Funding request vote and execution endpoints.
 - Profile read/update endpoints.
@@ -24,7 +24,7 @@ The backend can run in two modes:
 - Council candidate registration and checkpoint preparation endpoints.
 - Health endpoint for checking backend status.
 - Postgres schema baseline and migration script in `packages/db`.
-- Indexer scaffold in `apps/indexer` for future Solana/indexing work.
+- Production-ready Vercel cron indexer route plus reusable indexer core package.
 - Shared Solana transaction builder package in `packages/solana`.
 - Object storage package in `packages/storage`.
 - Upload API at `POST /api/uploads/prepare`.
@@ -88,6 +88,8 @@ NEXT_PUBLIC_SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=your-key
 NEXT_PUBLIC_PRIVY_APP_ID=your-privy-app-id
 SINGULARITY_REGISTRY_PROGRAM_ID=...
 SINGULARITY_COUNCIL_PROGRAM_ID=...
+SINGULARITY_METEORA_DBC_PROGRAM_ID=...
+CRON_SECRET=replace-with-a-long-random-secret
 BLOB_READ_WRITE_TOKEN=...
 ```
 
@@ -107,6 +109,7 @@ In production, file storage is blocked. The app must have Postgres configured.
 - `GET /api/missions/:missionId/quote?side=buy&amount=100`
 - `POST /api/missions/:missionId/quote`
 - `POST /api/missions/prepare-launch`
+- `POST /api/missions/confirm-launch`
 - `POST /api/funding-requests/prepare`
 - `POST /api/funding-requests/:requestId/vote`
 - `POST /api/funding-requests/:requestId/execute`
@@ -118,6 +121,7 @@ In production, file storage is blocked. The app must have Postgres configured.
 - `POST /api/council-candidates/register`
 - `POST /api/council/checkpoints/prepare`
 - `POST /api/uploads/prepare`
+- `GET /api/indexer/run`
 
 ## Progress Update: Frontend, Privy Wallet, And Session Wiring
 
@@ -213,18 +217,53 @@ Without that token, local development stores objects under `.singularity/objects
 
 ## Indexer
 
-The indexer in `apps/indexer` now:
+The production indexer is Vercel-native and runs through:
+
+```text
+GET /api/indexer/run
+```
+
+The route uses shared logic from `packages/indexer` (`@singularity/indexer-core`) and is scheduled by `vercel.json`:
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/indexer/run",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
+```
+
+Each invocation does a bounded batch:
 
 - Connects to Solana RPC.
-- Reads signatures for the registry and council programs.
-- Stores raw chain events in Postgres.
+- Reads signatures for the registry, council, and optional Meteora DBC program.
+- Fetches parsed transactions for signatures newer than the last indexed slot.
+- Stores raw chain event payloads in Postgres.
 - Tracks replay progress in `indexer_state`.
 - Uses idempotent `(signature, instruction_index)` storage so replays are safe.
+- Scans Meteora DBC transactions for known mission `dbc_pool` addresses and inserts `migration_reconciliation_jobs` when a matching transaction appears.
+
+The route is secured by `CRON_SECRET` in production. Vercel cron calls it with:
+
+```text
+Authorization: Bearer <CRON_SECRET>
+```
+
+Local development is still available through the CLI app:
 
 Run it after configuring `DATABASE_URL`, `SOLANA_RPC_URL`, and program IDs:
 
 ```bash
 npm run dev --workspace @singularity/indexer
+```
+
+Manual local route testing:
+
+```bash
+curl "http://127.0.0.1:8094/api/indexer/run?batchSize=1&maxPages=1"
 ```
 
 ## Custom Programs
@@ -243,7 +282,7 @@ Latest implementation status:
 - Execution checks that the request is accepted, the 3 day voting period has passed, and the request was not already executed.
 - Epoch council finalization now stores a required escrow amount for each of the 6 council members.
 - Council voting now escrows the voter's required mission-token amount into a request-specific escrow vault before counting the vote.
-- Mission launch transaction preparation now uses the Meteora Dynamic Bonding Curve SDK to create a Token-2022 DBC pool configured for DAMM v2 migration, then initializes Singularity registry bookkeeping with the created mint and treasury vault.
+- Mission launch transaction preparation now uses the Meteora Dynamic Bonding Curve SDK to create a Token-2022 DBC pool configured for DAMM v2 migration. The user signs only the Meteora launch transaction; Singularity records the launch in Postgres after submission.
 - Mission graduation transaction preparation can mark a registry mission as graduated with a DAMM pool address after Meteora migration.
 - The backend execution transaction builder now refuses to return a ready transaction unless the caller provides the real request account, treasury vault, recipient token account, and mint.
 - `tests/singularity-council.ts` now runs against the local validator and verifies mission creation, council finalization with escrow amounts, request creation, vote escrow movement, 4 of 6 approval, and blocked early treasury execution with no token movement.
@@ -257,9 +296,9 @@ Completed in the latest backend/program pass:
 - Added backend checkpoint plumbing so council checkpoint preparation includes the six escrow amounts and can build the updated `finalize_epoch_council` transaction shape.
 - Added `epoch_councils.escrow_amounts` to the Postgres schema.
 - Added the Meteora Dynamic Bonding Curve SDK to `packages/solana`.
-- Added mission launch transaction preparation that creates a Token-2022 Meteora DBC pool configured for DAMM v2 migration, then initializes the Singularity registry mission using the created token mint and treasury vault.
+- Added mission launch transaction preparation that creates a Token-2022 Meteora DBC pool configured for DAMM v2 migration. The registry initialization was removed from the user launch path because it made the transaction exceed Solana's transaction size limit.
 - Added mission graduation transaction preparation for recording a migrated DAMM pool in the registry through `mark_graduated`.
-- Extended the indexer scaffold so it can include the Meteora DBC program ID and preserve raw Meteora migration candidate transactions for later reconciliation.
+- Added a shared production indexer core and Vercel cron route so registry, council, and Meteora DBC events can be indexed continuously in bounded batches.
 - Updated `PROGRAM_DOCUMENTATION.md` to explain the new council escrow behavior.
 - Fixed the TypeScript deprecation setting so the full workspace typecheck can run with the installed TypeScript version.
 - Added `test:anchor:local` to run a robust local Anchor test flow. It builds programs, copies SBF artifacts from the active Cargo target deploy directory into workspace `target/deploy`, then runs `anchor test --skip-build`.
@@ -267,6 +306,41 @@ Completed in the latest backend/program pass:
 - Surfaced mission chain state in backend mission models: mission PDA, token mint, DBC pool, DAMM pool, treasury vault, and lifecycle.
 - Added `POST /api/missions/:missionId/prepare-graduation` for registry graduation bookkeeping.
 - Added `migration_reconciliation_jobs` for tracking Meteora DBC migration reconciliation work.
+
+## Progress Update: Chain-First Launch And Vercel Indexer
+
+Completed in the latest production-readiness pass:
+
+- Fixed production API crashes caused by ESM/CommonJS packaging by removing `"type": "module"` from the Next app package.
+- Hardened client API helpers so non-JSON error responses no longer crash the UI with `Unexpected token '<'`.
+- Fixed wallet auth state so a Privy-connected wallet is not treated as backend-authenticated until the app's own signed nonce flow creates `singularity_session`.
+- Changed mission launch from DB-first to chain-first:
+  - `POST /api/missions/prepare-launch` prepares the launch and stores `pending_mission_launches`.
+  - The visible `missions` row is not inserted during preparation.
+  - The client submits the wallet transaction.
+  - `POST /api/missions/confirm-launch` records the mission only after transaction submission.
+- Removed Singularity registry initialization from the user launch transaction. The user now approves only the Meteora DBC launch transaction.
+- Measured the current Meteora-only launch transaction at about `1117` raw bytes, under Solana's `1232` byte limit.
+- Added fresh blockhash rewriting before client-side signing to avoid `Blockhash not found` errors from stale backend-prepared transactions.
+- Added `pending_mission_launches` to the Postgres schema for prepared-but-not-yet-submitted launches.
+- Added `packages/indexer` as `@singularity/indexer-core`.
+- Added `GET /api/indexer/run` for Vercel cron indexing.
+- Added `vercel.json` cron schedule for `/api/indexer/run` every 5 minutes.
+- Updated `apps/indexer` so local/manual runs use the same indexer core as production.
+
+Verification completed:
+
+- `npm run db:migrate`
+- `npm run typecheck --workspace @singularity/indexer-core`
+- `npm run typecheck --workspace @singularity/indexer`
+- `npm run build:app`
+- Local cron route smoke test with `batchSize=1&maxPages=1`
+
+Known remaining blockers:
+
+- The indexer stores raw events and queues Meteora migration reconciliation jobs, but full DBC event decoding and automatic DAMM pool resolution still need implementation.
+- The app currently records mission launch after transaction submission, not after final on-chain semantic verification of the created pool.
+- If the Singularity registry program is still needed for long-term on-chain bookkeeping, it should be initialized by a backend keeper/indexer follow-up rather than by the user's launch transaction.
 
 Verification completed:
 
@@ -522,6 +596,8 @@ NEXT_PUBLIC_PRIVY_APP_ID
 SINGULARITY_SESSION_SECRET
 SINGULARITY_REGISTRY_PROGRAM_ID
 SINGULARITY_COUNCIL_PROGRAM_ID
+SINGULARITY_METEORA_DBC_PROGRAM_ID
+CRON_SECRET
 BLOB_READ_WRITE_TOKEN
 ```
 
@@ -545,25 +621,32 @@ CI_PRODUCTION_GATE=true npm run security:gate
 
 If this fails, it means one or more production variables are missing or unsafe.
 
-### 10. Start The Indexer
+### 10. Configure The Vercel Indexer
 
-After Postgres, Solana RPC, and program IDs are configured, run:
+The production indexer runs as a Vercel cron job against:
+
+```text
+/api/indexer/run
+```
+
+To make it work:
+
+1. Add `CRON_SECRET` to Vercel environment variables.
+2. Add `SINGULARITY_METEORA_DBC_PROGRAM_ID` if you want Meteora DBC activity indexed.
+3. Ensure `SOLANA_RPC_URL`, `DATABASE_URL`, `SINGULARITY_REGISTRY_PROGRAM_ID`, and `SINGULARITY_COUNCIL_PROGRAM_ID` are set in production.
+4. Redeploy after changing environment variables or `vercel.json`.
+5. Check Vercel cron/function logs for `/api/indexer/run`.
+
+For local/manual indexing, run:
 
 ```bash
 npm run dev --workspace @singularity/indexer
 ```
 
+For a tiny local route smoke test, run:
+
+```bash
+curl "http://127.0.0.1:8094/api/indexer/run?batchSize=1&maxPages=1"
+```
+
 The indexer reads Solana program activity and stores raw chain events in Postgres.
-
-### 11. What Not To Enable Yet
-
-Do not enable real treasury movement or real mainnet user funds until these are done:
-
-- Anchor tests pass.
-- Registry and council programs are audited.
-- Program IDs are real deployed IDs, not placeholders.
-- Upgrade authorities are controlled by multisig.
-- Jupiter DBC/DAMM quote and swap routing is validated against real markets.
-- Indexer replay and reconciliation are tested.
-
-Use `docs/security/launch-audit-gates.md` as the launch checklist.

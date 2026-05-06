@@ -33,6 +33,26 @@ create table if not exists missions (
   created_at timestamptz not null default now()
 );
 
+create table if not exists pending_mission_launches (
+  id text primary key,
+  creator_wallet text not null,
+  metadata_hash text not null,
+  metadata_uri text not null,
+  statement text not null,
+  description text not null,
+  image_url text not null,
+  token_image_url text not null,
+  token_symbol text not null,
+  total_supply numeric(40, 0) not null,
+  treasury_supply_percent numeric(8, 4) not null default 20,
+  initial_purchase_usdc numeric(40, 6) not null default 0,
+  launch_accounts jsonb not null default '{}'::jsonb,
+  status text not null default 'prepared' check (status in ('prepared', 'submitted', 'confirmed', 'failed')),
+  signature text,
+  created_at timestamptz not null default now(),
+  confirmed_at timestamptz
+);
+
 create table if not exists mission_metrics (
   mission_id text primary key references missions(id),
   token_price_usdc numeric(40, 12) not null default 0,
@@ -180,6 +200,7 @@ create index if not exists funding_requests_mission_status_idx on funding_reques
 create index if not exists auth_nonces_expires_at_idx on auth_nonces (expires_at);
 create index if not exists raw_chain_events_program_slot_idx on raw_chain_events (program_id, slot desc);
 create index if not exists migration_reconciliation_jobs_status_idx on migration_reconciliation_jobs (status, updated_at);
+create index if not exists pending_mission_launches_creator_status_idx on pending_mission_launches (creator_wallet, status);
 
 alter table profiles add column if not exists balances jsonb not null default '{}'::jsonb;
 alter table profiles add column if not exists token_balances jsonb not null default '[]'::jsonb;

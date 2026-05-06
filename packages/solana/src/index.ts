@@ -29,6 +29,9 @@ export type SolanaProgramConfig = {
   councilProgramId: string;
 };
 
+export const DEFAULT_REGISTRY_PROGRAM_ID = "7CxZRBgnYwi5MtSKebmaSh7XTRVXk3QgzjXRUgLzcXT5";
+export const DEFAULT_COUNCIL_PROGRAM_ID = "4k7JhCHjs2uoiP1hmvYDawnwJuXMt5ZhUJotvMRqedKS";
+
 export type PreparedSolanaTransaction = {
   kind: string;
   status: "ready";
@@ -36,6 +39,11 @@ export type PreparedSolanaTransaction = {
   feePayer: string;
   blockhash: string;
   transactionBase64: string;
+  transactions?: Array<{
+    label?: string;
+    transactionBase64: string;
+    requiredSigners: string[];
+  }>;
   accounts?: Record<string, string>;
   instructions: Array<{
     programId: string;
@@ -53,6 +61,13 @@ export type TransactionBuildInput = {
   requiredSigners?: string[];
   signerKeypairs?: Keypair[];
   accounts?: Record<string, string>;
+};
+
+export type TransactionBuildStep = {
+  label?: string;
+  instructions: TransactionInstruction[];
+  requiredSigners?: string[];
+  signerKeypairs?: Keypair[];
 };
 
 export type MeteoraDbcLaunchInput = {
@@ -74,12 +89,10 @@ export type MeteoraDbcLaunchInput = {
 
 export function requireProgramConfig(env: NodeJS.ProcessEnv): SolanaProgramConfig {
   const rpcUrl = env.SOLANA_RPC_URL;
-  const registryProgramId = env.SINGULARITY_REGISTRY_PROGRAM_ID;
-  const councilProgramId = env.SINGULARITY_COUNCIL_PROGRAM_ID;
+  const registryProgramId = env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID;
+  const councilProgramId = env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID;
 
   if (!rpcUrl) throw new Error("SOLANA_RPC_URL is required for Solana transaction preparation.");
-  if (!registryProgramId) throw new Error("SINGULARITY_REGISTRY_PROGRAM_ID is required for mission transaction preparation.");
-  if (!councilProgramId) throw new Error("SINGULARITY_COUNCIL_PROGRAM_ID is required for council transaction preparation.");
 
   return { rpcUrl, registryProgramId, councilProgramId };
 }
@@ -119,6 +132,52 @@ export function buildPreparedTransaction(input: TransactionBuildInput): Prepared
       dataBase64: Buffer.from(instruction.data).toString("base64"),
     })),
     requiredSigners: input.requiredSigners || [feePayer.toBase58()],
+  };
+}
+
+export function buildPreparedTransactionSteps(input: {
+  feePayer: string;
+  recentBlockhash: string;
+  kind: string;
+  steps: TransactionBuildStep[];
+  accounts?: Record<string, string>;
+}): PreparedSolanaTransaction {
+  if (input.steps.length === 0) throw new Error("At least one transaction step is required.");
+
+  const feePayer = new PublicKey(input.feePayer);
+  const steps = input.steps.map((step) => {
+    const message = new TransactionMessage({
+      payerKey: feePayer,
+      recentBlockhash: input.recentBlockhash,
+      instructions: step.instructions,
+    }).compileToV0Message();
+    const transaction = new VersionedTransaction(message);
+    if (step.signerKeypairs?.length) transaction.sign(step.signerKeypairs);
+
+    return {
+      label: step.label,
+      transactionBase64: Buffer.from(transaction.serialize()).toString("base64"),
+      requiredSigners: step.requiredSigners || [feePayer.toBase58()],
+    };
+  });
+
+  return {
+    kind: input.kind,
+    status: "ready",
+    network: "mainnet-beta",
+    feePayer: feePayer.toBase58(),
+    blockhash: input.recentBlockhash,
+    transactionBase64: steps[0].transactionBase64,
+    transactions: steps,
+    accounts: input.accounts,
+    instructions: input.steps.flatMap((step) =>
+      step.instructions.map((instruction) => ({
+        programId: instruction.programId.toBase58(),
+        accounts: instruction.keys.map((key) => key.pubkey.toBase58()),
+        dataBase64: Buffer.from(instruction.data).toString("base64"),
+      })),
+    ),
+    requiredSigners: Array.from(new Set(input.steps.flatMap((step) => step.requiredSigners || [feePayer.toBase58()]))),
   };
 }
 
@@ -222,10 +281,18 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
       });
   const transactions = "createConfigTx" in result ? [result.createConfigTx, result.createPoolWithFirstBuyTx] : [result];
   const dbcPool = deriveDbcPoolAddress(quoteMint, baseMint.publicKey, config.publicKey);
+  const signerKeypairs = [config, baseMint];
 
   return {
     instructions: transactions.flatMap((transaction) => transaction.instructions),
-    signerKeypairs: [config, baseMint],
+    transactionSteps: transactions.map((transaction, index) => ({
+      label: index === 0 ? "Create Meteora DBC config" : "Create Meteora DBC pool",
+      instructions: transaction.instructions,
+      signerKeypairs: signerKeypairs.filter((signer) =>
+        transaction.instructions.some((instruction) => instruction.keys.some((key) => key.isSigner && key.pubkey.equals(signer.publicKey))),
+      ),
+    })),
+    signerKeypairs,
     accounts: {
       meteoraConfig: config.publicKey.toBase58(),
       tokenMint: baseMint.publicKey.toBase58(),

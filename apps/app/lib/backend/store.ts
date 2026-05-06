@@ -5,6 +5,7 @@ import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
 import {
   backendHealthFromPostgres,
+  confirmMissionLaunchInPostgres,
   createAuthNonceInPostgres,
   executeFundingRequestInPostgres,
   getMissionByIdFromPostgres,
@@ -317,6 +318,15 @@ export async function prepareMissionLaunch(input: {
       transaction,
     };
   });
+}
+
+export async function confirmMissionLaunch(input: { launchId?: string; signature?: string; wallet?: string }) {
+  if (storageMode() === "postgres") return confirmMissionLaunchInPostgres(input);
+  if (!input.launchId) throw new Error("launchId is required.");
+  const state = await readState();
+  const mission = state.missions.find((entry) => entry.id === input.launchId);
+  if (!mission) throw new Error(`Mission not found: ${input.launchId}`);
+  return { mission };
 }
 
 export async function quoteMissionTrade(missionId: string, input: { side?: string; amount?: number; wallet?: string; slippageBps?: number }) {

@@ -1,19 +1,19 @@
 {
-  "name": "@singularity/indexer",
+  "name": "@singularity/indexer-core",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "scripts": {
-    "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@singularity/indexer-core": "*",
     "@solana/web3.js": "^1.98.4",
     "pg": "^8.20.0"
   },
   "devDependencies": {
-    "tsx": "latest",
+    "@types/pg": "^8.20.0",
     "typescript": "latest"
   }
 }

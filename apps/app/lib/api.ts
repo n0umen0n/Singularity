@@ -79,7 +79,14 @@ export function prepareMissionLaunch(input: {
   tokenImage?: string;
   initialPurchaseUsdc?: number;
 }) {
-  return api<{ mission: Mission; transaction: PreparedTransaction }>("/api/missions/prepare-launch", {
+  return api<{ launchId: string | null; mission: Mission; transaction: PreparedTransaction }>("/api/missions/prepare-launch", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function confirmMissionLaunch(input: { launchId: string; signature: string }) {
+  return api<{ mission: Mission }>("/api/missions/confirm-launch", {
     method: "POST",
     body: JSON.stringify(input),
   });

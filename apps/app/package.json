@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@privy-io/react-auth": "^3.23.1",
+    "@singularity/indexer-core": "*",
     "@singularity/solana": "^0.1.0",
     "@singularity/storage": "^0.1.0",
     "@singularity/ui": "*",

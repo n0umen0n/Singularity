@@ -1,0 +1,13 @@
+{
+  "crons": [
+    {
+      "path": "/api/indexer/run",
+      "schedule": "*/5 * * * *"
+    }
+  ],
+  "functions": {
+    "apps/app/app/api/indexer/run/route.ts": {
+      "maxDuration": 300
+    }
+  }
+}

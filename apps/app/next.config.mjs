@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ["@singularity/ui"],
+  transpilePackages: ["@singularity/indexer-core", "@singularity/ui"],
 };
 
 export default nextConfig;

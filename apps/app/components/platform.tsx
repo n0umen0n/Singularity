@@ -873,9 +873,24 @@ export function LaunchMissionPage() {
         tokenImage: uploadedTokenImage,
         initialPurchaseUsdc: Number(initialPurchaseUsdc) || 0,
       });
+      if (result.transaction.status !== "ready") {
+        setStatus(result.transaction.message);
+        return;
+      }
+      if (!result.launchId) {
+        setStatus("Mission launch was prepared but no launch id was returned.");
+        return;
+      }
+      setStatus("Approve the launch transaction in your wallet...");
       const signature = await wallet.sendPreparedTransaction(result.transaction);
-      setStatus(signature ? `Launch submitted: ${shortAddress(signature)}` : result.transaction.status === "not_configured" ? result.transaction.message : "Mission created.");
-      router.push(`/missions/${result.mission.id}`);
+      if (!signature) {
+        setStatus("Mission launch transaction was not submitted.");
+        return;
+      }
+      setStatus(`Launch submitted: ${shortAddress(signature)}. Confirming mission...`);
+      const confirmed = await api.confirmMissionLaunch({ launchId: result.launchId, signature });
+      setStatus("Mission launch submitted and recorded.");
+      router.push(`/missions/${confirmed.mission.id}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Mission launch failed.");
     }
