@@ -2,7 +2,6 @@
   "name": "@singularity/app",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
   "scripts": {
     "dev": "WATCHPACK_POLLING=true WATCHPACK_POLLING_INTERVAL=1000 next dev --hostname 127.0.0.1 --port 8094",
     "build": "next build",

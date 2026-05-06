@@ -39,8 +39,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Request failed.");
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : null;
+  if (!response.ok) throw new Error(data?.error || `Request failed with status ${response.status}.`);
   return data as T;
 }
 
