@@ -18,6 +18,7 @@ import {
   prepareLaunchTransaction,
   prepareMeteoraDbcTradeTransaction,
   prepareMissionGraduationTransaction,
+  prepareClaimMissionFeesTransaction,
   submitFinalizeEpochCouncilTransaction,
 } from "@/lib/backend/transactions";
 import type { MissionSort } from "@/lib/backend/store";
@@ -506,6 +507,7 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
     dbcPool: mission.dbcPool,
     tokenMint: mission.tokenMint,
     treasuryVault: mission.treasuryVault,
+    treasurySupplyPercent: mission.treasurySupplyPercent,
     totalSupply: mission.totalSupply,
   }).catch(() => null);
   if (!snapshot) return mission;
@@ -987,6 +989,27 @@ export async function prepareMissionGraduationInPostgres(
       dammPool: input.dammPool,
     }),
   };
+}
+
+export async function prepareMissionFeeClaimInPostgres(missionId: string, input: { wallet?: string }) {
+  const mission = await getMissionByIdFromPostgres(missionId);
+  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+
+  return {
+    transaction: await prepareClaimMissionFeesTransaction({
+      wallet: input.wallet,
+      missionId,
+      creatorWallet: await getMissionCreatorWallet(missionId),
+      tokenMint: mission.tokenMint,
+      dbcPool: mission.dbcPool,
+      treasuryVault: mission.treasuryVault,
+    }),
+  };
+}
+
+async function getMissionCreatorWallet(missionId: string) {
+  const result = await query<{ creator_wallet: string }>("select creator_wallet from missions where id = $1", [missionId]);
+  return result.rows[0]?.creator_wallet || null;
 }
 
 export async function prepareFundingRequestInPostgres(input: {

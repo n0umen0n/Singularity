@@ -165,6 +165,16 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
     };
   }, [query, sort]);
 
+  if (loading && !missions.length && !error) {
+    return (
+      <AppShell>
+        <section className="page-container">
+          <PageLoader />
+        </section>
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell>
       <section className="page-container">
@@ -193,7 +203,6 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
         </div>
         <div className="mission-grid">
           {error ? <GlassCard className="section-card">{error}</GlassCard> : null}
-          {loading && !missions.length && !error ? <PageLoader className="mission-grid-loader" /> : null}
           {missions.map((mission, index) => (
             <MissionCard key={mission.id} mission={mission} priority={index < 2} />
           ))}
@@ -387,9 +396,57 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
         <aside className="right-rail">
           <TreasuryPanel mission={mission} />
           <TradePanel mission={mission} onMissionChange={setMission} />
+          <ClaimFeesPanel mission={mission} />
         </aside>
       </section>
     </AppShell>
+  );
+}
+
+function ClaimFeesPanel({ mission }: { mission: Mission }) {
+  const wallet = useSingularityWallet();
+  const [status, setStatus] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState(false);
+
+  const claim = async () => {
+    if (!wallet.address) {
+      await wallet.signIn();
+      return;
+    }
+    try {
+      setClaiming(true);
+      setStatus("Preparing fee claim...");
+      const result = await api.prepareMissionFeeClaim(mission.id);
+      if (result.transaction.status !== "ready") {
+        setStatus(result.transaction.message);
+        return;
+      }
+      setStatus("Approve the fee claim in your wallet...");
+      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      setStatus(signature ? `Fees claimed and routed: ${shortAddress(signature)}` : "Fee claim was not submitted.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Fee claim failed.");
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  return (
+    <GlassCard className="section-card">
+      <div className="section-heading">
+        <div>
+          <span className="stat-label">Fees</span>
+          <h2>Claim trading fees</h2>
+        </div>
+      </div>
+      <p className="stat-note">
+        Claims mission-token bonding curve fees into the router and splits them 50% treasury, 25% creator, and 25% Singularity.
+      </p>
+      {status ? <p className="stat-note">{status}</p> : null}
+      <button className="button button-primary" type="button" disabled={claiming} style={{ width: "100%" }} onClick={() => void claim()}>
+        {claiming ? <InlineLoader /> : wallet.address ? "Claim fees" : "Sign in to claim fees"}
+      </button>
+    </GlassCard>
   );
 }
 
@@ -507,7 +564,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
   const candidateRankLabel = mission.council.length === 0 ? "TOP 6" : `#${candidateRank}`;
   const candidateRankDetail =
     mission.council.length === 0
-      ? "You'd be ranked TOP 6 as the first registered candidate."
+      ? ""
       : openCouncilSlots > 0
         ? `You'd be ranked #${candidateRank} because there ${openCouncilSlots === 1 ? "is" : "are"} still ${
             openCouncilSlots
@@ -642,9 +699,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
           <div>
             <p className="eyebrow">Council candidacy</p>
             <h2 id="candidate-modal-title">Become councillor</h2>
-            <p>
-              Register as a council candidate. Your current balance determines where you would rank among registered members.
-            </p>
+            <p>Your current balance determines where you would rank among registered members.</p>
           </div>
         </div>
         <div className="candidate-metric-grid">
@@ -657,18 +712,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
           <div className="candidate-metric-card">
             <span className="stat-label">Rank if you register</span>
             <strong>{candidateRankLabel}</strong>
-            <small>{candidateRankDetail}</small>
-          </div>
-        </div>
-        <div className="candidate-rewards-panel">
-          <span className="stat-label">Fee rewards</span>
-          <div className="candidate-reward-row">
-            <span>Top 6 councillors</span>
-            <strong>60% of fees</strong>
-          </div>
-          <div className="candidate-reward-row">
-            <span>Other registered members</span>
-            <strong>10% of fees</strong>
+            {candidateRankDetail ? <small>{candidateRankDetail}</small> : null}
           </div>
         </div>
         <div className="modal-actions">
@@ -1085,12 +1129,14 @@ function InlineLoader() {
 export function PageLoader({ className }: { className?: string }) {
   return (
     <GlassCard className={cx("section-card page-loader-card", className)} aria-busy="true" aria-live="polite">
-      <div className="singularity-loader" aria-hidden="true">
-        <span className="loader-orbit loader-orbit-one" />
-        <span className="loader-orbit loader-orbit-two" />
-        <span className="loader-core" />
+      <div className="page-loader-content">
+        <div className="singularity-loader" aria-hidden="true">
+          <span className="loader-orbit loader-orbit-one" />
+          <span className="loader-orbit loader-orbit-two" />
+          <span className="loader-core" />
+        </div>
+        <strong className="page-loader-title">Loading</strong>
       </div>
-      <strong>Loading</strong>
     </GlassCard>
   );
 }
@@ -1258,7 +1304,7 @@ export function LaunchMissionPage() {
   const [symbol, setSymbol] = useState("");
   const [statement, setStatement] = useState("");
   const [description, setDescription] = useState("");
-  const [initialPurchaseUsdc, setInitialPurchaseUsdc] = useState("100");
+  const [initialPurchaseUsdc, setInitialPurchaseUsdc] = useState("0");
   const [missionImage, setMissionImage] = useState(defaultMissionImage);
   const [tokenImage, setTokenImage] = useState(defaultTokenImage);
   const [missionImageFile, setMissionImageFile] = useState<File | null>(null);
@@ -1438,7 +1484,7 @@ export function LaunchMissionPage() {
               />
               <label>
                 <span className="form-label">Initial purchase in USDC (optional)</span>
-                <input className="field" placeholder="100" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
+                <input className="field" placeholder="0" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
               </label>
               {status ? <p className="stat-note">{status}</p> : null}
               <button className="button button-primary" onClick={() => void launch()}>

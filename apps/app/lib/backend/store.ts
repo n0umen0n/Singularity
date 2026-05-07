@@ -15,6 +15,7 @@ import {
   listMissionsFromPostgres,
   prepareCouncilCheckpointInPostgres,
   prepareFundingRequestInPostgres,
+  prepareMissionFeeClaimInPostgres,
   prepareMissionGraduationInPostgres,
   prepareMissionLaunchInPostgres,
   quoteMissionTradeFromPostgres,
@@ -32,6 +33,7 @@ import {
   prepareFundingRequestTransaction,
   prepareJupiterTradeTransaction,
   prepareLaunchTransaction,
+  prepareClaimMissionFeesTransaction,
   prepareMissionGraduationTransaction,
 } from "@/lib/backend/transactions";
 import { currentUser, missions, type FundingRequest, type Mission, type RequestStatus } from "@/lib/mock-data";
@@ -446,6 +448,23 @@ export async function prepareMissionGraduation(
       }),
     };
   });
+}
+
+export async function prepareMissionFeeClaim(missionId: string, input: { wallet?: string }) {
+  if (storageMode() === "postgres") return prepareMissionFeeClaimInPostgres(missionId, input);
+
+  const state = await readState();
+  const mission = findMissionOrThrow(state, missionId);
+  return {
+    transaction: await prepareClaimMissionFeesTransaction({
+      wallet: input.wallet,
+      missionId,
+      creatorWallet: state.currentUser.address,
+      tokenMint: mission.tokenMint,
+      dbcPool: mission.dbcPool,
+      treasuryVault: mission.treasuryVault,
+    }),
+  };
 }
 
 export async function prepareFundingRequest(input: {

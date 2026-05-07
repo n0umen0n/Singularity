@@ -1,4 +1,8 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+};
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
 use std::str::FromStr;
 
@@ -9,6 +13,7 @@ const APPROVAL_THRESHOLD: u8 = 4;
 const REJECTION_THRESHOLD: u8 = 3;
 const MIN_VOTING_SECONDS: i64 = 3 * 24 * 60 * 60;
 const DEFAULT_COUNCIL_AUTHORITY: &str = "11111111111111111111111111111111";
+const DEFAULT_PLATFORM_FEE_RECIPIENT: &str = "11111111111111111111111111111111";
 
 #[program]
 pub mod singularity_council {
@@ -206,6 +211,193 @@ pub mod singularity_council {
 
         Ok(())
     }
+
+    pub fn route_collected_fees(ctx: Context<RouteCollectedFees>, amount: u64) -> Result<()> {
+        require!(amount > 0, CouncilError::InvalidAmount);
+        require_keys_eq!(
+            ctx.accounts.platform.key(),
+            configured_platform_fee_recipient()?,
+            CouncilError::UnauthorizedPlatformRecipient
+        );
+
+        let mission = ctx.accounts.mission.key();
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            b"fee_router",
+            mission.as_ref(),
+            &[ctx.bumps.fee_router_authority],
+        ]];
+        let treasury_amount = amount / 2;
+        let creator_amount = amount / 4;
+        let platform_amount = amount
+            .saturating_sub(treasury_amount)
+            .saturating_sub(creator_amount);
+        let decimals = ctx.accounts.mint.decimals;
+
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.router_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.treasury_fee_account.to_account_info(),
+                    authority: ctx.accounts.fee_router_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            treasury_amount,
+            decimals,
+        )?;
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.router_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.creator_fee_account.to_account_info(),
+                    authority: ctx.accounts.fee_router_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            creator_amount,
+            decimals,
+        )?;
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.router_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.platform_fee_account.to_account_info(),
+                    authority: ctx.accounts.fee_router_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            platform_amount,
+            decimals,
+        )?;
+
+        emit!(CollectedFeesRouted {
+            mission,
+            mint: ctx.accounts.mint.key(),
+            treasury_amount,
+            creator_amount,
+            platform_amount,
+        });
+
+        Ok(())
+    }
+
+    pub fn claim_dbc_fees_and_route(
+        ctx: Context<ClaimDbcFeesAndRoute>,
+        claim_instruction_data: Vec<u8>,
+    ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.platform.key(),
+            configured_platform_fee_recipient()?,
+            CouncilError::UnauthorizedPlatformRecipient
+        );
+
+        let mission = ctx.accounts.mission.key();
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            b"fee_router",
+            mission.as_ref(),
+            &[ctx.bumps.fee_router_authority],
+        ]];
+        let router_key = ctx.accounts.fee_router_authority.key();
+        let account_metas = ctx
+            .remaining_accounts
+            .iter()
+            .map(|account| {
+                let is_signer = account.is_signer || account.key() == router_key;
+                if account.is_writable {
+                    AccountMeta::new(account.key(), is_signer)
+                } else {
+                    AccountMeta::new_readonly(account.key(), is_signer)
+                }
+            })
+            .collect::<Vec<_>>();
+        let before_amount = ctx.accounts.router_vault.amount;
+        let claim_instruction = Instruction {
+            program_id: ctx.accounts.dbc_program.key(),
+            accounts: account_metas,
+            data: claim_instruction_data,
+        };
+
+        invoke_signed(
+            &claim_instruction,
+            ctx.remaining_accounts,
+            signer_seeds,
+        )?;
+
+        ctx.accounts.router_vault.reload()?;
+        let claimed_amount = ctx
+            .accounts
+            .router_vault
+            .amount
+            .checked_sub(before_amount)
+            .ok_or(error!(CouncilError::NoFeesClaimed))?;
+        require!(claimed_amount > 0, CouncilError::NoFeesClaimed);
+
+        let treasury_amount = claimed_amount / 2;
+        let creator_amount = claimed_amount / 4;
+        let platform_amount = claimed_amount
+            .saturating_sub(treasury_amount)
+            .saturating_sub(creator_amount);
+        let decimals = ctx.accounts.mint.decimals;
+
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.router_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.treasury_fee_account.to_account_info(),
+                    authority: ctx.accounts.fee_router_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            treasury_amount,
+            decimals,
+        )?;
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.router_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.creator_fee_account.to_account_info(),
+                    authority: ctx.accounts.fee_router_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            creator_amount,
+            decimals,
+        )?;
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.router_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.platform_fee_account.to_account_info(),
+                    authority: ctx.accounts.fee_router_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            platform_amount,
+            decimals,
+        )?;
+
+        emit!(CollectedFeesRouted {
+            mission,
+            mint: ctx.accounts.mint.key(),
+            treasury_amount,
+            creator_amount,
+            platform_amount,
+        });
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -327,6 +519,106 @@ pub struct ExecuteRequest<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+#[derive(Accounts)]
+pub struct RouteCollectedFees<'info> {
+    pub payer: Signer<'info>,
+    /// CHECK: mission account is owned by registry program and indexed off-chain in MVP tests
+    pub mission: UncheckedAccount<'info>,
+    /// CHECK: PDA authority that owns the fee router token account.
+    #[account(
+        seeds = [b"fee_router", mission.key().as_ref()],
+        bump
+    )]
+    pub fee_router_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = fee_router_authority
+    )]
+    pub router_vault: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: PDA authority that owns the mission treasury token account.
+    #[account(
+        seeds = [b"treasury_authority", mission.key().as_ref()],
+        bump
+    )]
+    pub treasury_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = treasury_authority
+    )]
+    pub treasury_fee_account: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: token account authority is checked by constraint below.
+    pub creator: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = creator
+    )]
+    pub creator_fee_account: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: compared with configured platform recipient.
+    pub platform: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = platform
+    )]
+    pub platform_fee_account: InterfaceAccount<'info, TokenAccount>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct ClaimDbcFeesAndRoute<'info> {
+    pub payer: Signer<'info>,
+    /// CHECK: mission account is owned by registry program and indexed off-chain in MVP tests
+    pub mission: UncheckedAccount<'info>,
+    /// CHECK: PDA authority that owns the fee router token account and signs the Meteora claim CPI.
+    #[account(
+        seeds = [b"fee_router", mission.key().as_ref()],
+        bump
+    )]
+    pub fee_router_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = fee_router_authority
+    )]
+    pub router_vault: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: PDA authority that owns the mission treasury token account.
+    #[account(
+        seeds = [b"treasury_authority", mission.key().as_ref()],
+        bump
+    )]
+    pub treasury_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = treasury_authority
+    )]
+    pub treasury_fee_account: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: token account authority is checked by constraint below.
+    pub creator: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = creator
+    )]
+    pub creator_fee_account: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: compared with configured platform recipient.
+    pub platform: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = platform
+    )]
+    pub platform_fee_account: InterfaceAccount<'info, TokenAccount>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    /// CHECK: invoked with router PDA signer seeds and SDK-built remaining accounts.
+    pub dbc_program: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct Candidate {
@@ -425,6 +717,15 @@ pub struct FundingRequestExecuted {
     pub recipient_token_account: Pubkey,
 }
 
+#[event]
+pub struct CollectedFeesRouted {
+    pub mission: Pubkey,
+    pub mint: Pubkey,
+    pub treasury_amount: u64,
+    pub creator_amount: u64,
+    pub platform_amount: u64,
+}
+
 #[error_code]
 pub enum CouncilError {
     #[msg("Funding request amount must be greater than zero.")]
@@ -445,6 +746,12 @@ pub enum CouncilError {
     UnauthorizedAuthority,
     #[msg("Configured council authority public key is invalid.")]
     InvalidAuthorityConfig,
+    #[msg("Platform fee recipient does not match configured recipient.")]
+    UnauthorizedPlatformRecipient,
+    #[msg("Configured platform fee recipient public key is invalid.")]
+    InvalidPlatformRecipientConfig,
+    #[msg("No mission token fees were claimed from Meteora.")]
+    NoFeesClaimed,
 }
 
 fn is_accepted(status: u8) -> bool {
@@ -465,6 +772,14 @@ fn configured_council_authority() -> Result<Pubkey> {
             .unwrap_or(DEFAULT_COUNCIL_AUTHORITY),
     )
     .map_err(|_| error!(CouncilError::InvalidAuthorityConfig))
+}
+
+fn configured_platform_fee_recipient() -> Result<Pubkey> {
+    Pubkey::from_str(
+        option_env!("SINGULARITY_PLATFORM_FEE_RECIPIENT")
+            .unwrap_or(DEFAULT_PLATFORM_FEE_RECIPIENT),
+    )
+    .map_err(|_| error!(CouncilError::InvalidPlatformRecipientConfig))
 }
 
 fn council_member_index(members: &[Pubkey; COUNCIL_SIZE], voter: &Pubkey) -> Result<usize> {

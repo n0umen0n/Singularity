@@ -148,6 +148,13 @@ export function getMissionBalances(missionId: string, wallet: string) {
   return api<MissionBalances>(`/api/missions/${missionId}/balances?${search}`);
 }
 
+export function prepareMissionFeeClaim(missionId: string) {
+  return api<{ transaction: PreparedTransaction }>(`/api/missions/${missionId}/claim-fees`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export function prepareFundingRequest(input: { missionId: string; name: string; description: string; amountUsd: number }) {
   return api<{ request: FundingRequest; transaction: PreparedTransaction }>("/api/funding-requests/prepare", {
     method: "POST",

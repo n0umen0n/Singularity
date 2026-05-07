@@ -18,6 +18,7 @@ import {
   buildCurveWithMarketCap,
   CollectFeeMode,
   deriveDbcPoolAddress,
+  DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   DynamicBondingCurveClient,
   getCurrentPoint,
   getPriceFromSqrtPrice,
@@ -35,15 +36,15 @@ import { BN } from "@coral-xyz/anchor";
 
 export const DEFAULT_DBC_TOTAL_SUPPLY = 50_000_000;
 export const DEFAULT_DBC_TREASURY_SUPPLY_PERCENT = 20;
-export const DEFAULT_DBC_INITIAL_MARKET_CAP = 10_000;
-export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 65_000;
+export const DEFAULT_DBC_INITIAL_MARKET_CAP = 25;
+export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 50;
 
 const DEFAULT_DBC_BUY_AMOUNTS_USDC = [5, 10, 25, 100, 1_000];
 const DBC_GUARDRAILS = {
-  maxTenUsdcTotalSupplyPercent: 0.5,
-  maxHundredUsdcTotalSupplyPercent: 3,
-  maxInitialPurchaseTotalSupplyPercent: 3,
-  minMigrationMarketCapMultiple: 3,
+  maxTenUsdcTotalSupplyPercent: 100,
+  maxHundredUsdcTotalSupplyPercent: 1_000,
+  maxInitialPurchaseTotalSupplyPercent: 100,
+  minMigrationMarketCapMultiple: 2,
 };
 
 export type SolanaProgramConfig = {
@@ -262,8 +263,8 @@ function buildMeteoraDbcCurveConfig(input: Partial<MeteoraDbcLaunchConfig>) {
         },
       },
       dynamicFeeEnabled: true,
-      collectFeeMode: CollectFeeMode.QuoteToken,
-      creatorTradingFeePercentage: 50,
+      collectFeeMode: CollectFeeMode.OutputToken,
+      creatorTradingFeePercentage: 0,
       poolCreationFee: 0,
       enableFirstSwapWithMinFee: launchConfig.initialPurchaseUsdc > 0,
     },
@@ -373,9 +374,9 @@ export function simulateMeteoraDbcLaunch(input: MeteoraDbcLaunchSimulationInput 
 }
 
 export function requireProgramConfig(env: NodeJS.ProcessEnv): SolanaProgramConfig {
-  const rpcUrl = env.SOLANA_RPC_URL;
-  const registryProgramId = env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID;
-  const councilProgramId = env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID;
+  const rpcUrl = env.SOLANA_RPC_URL?.trim();
+  const registryProgramId = (env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID).trim();
+  const councilProgramId = (env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID).trim();
 
   if (!rpcUrl) throw new Error("SOLANA_RPC_URL is required for Solana transaction preparation.");
 
@@ -625,7 +626,7 @@ function dbcQuoteFromResult(input: {
     dbcPool: input.pool,
     baseReserve,
     quoteReserve,
-    liquidityUsd: quoteReserve + baseReserve * currentPrice,
+    liquidityUsd: quoteReserve,
     poolProgressPercent: 0,
     baseDecimals: 6,
     quoteDecimals: 6,
@@ -697,11 +698,37 @@ export async function prepareMeteoraDbcTrade(input: {
   };
 }
 
+export async function meteoraDbcPartnerFeeClaimInstruction(input: {
+  rpcUrl: string;
+  pool: string;
+  feeClaimer: string;
+  payer: string;
+  receiver: string;
+  maxBaseAmount?: bigint;
+  maxQuoteAmount?: bigint;
+}) {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const client = new DynamicBondingCurveClient(connection, "confirmed");
+  const transaction = await client.partner.claimPartnerTradingFee({
+    pool: new PublicKey(input.pool),
+    feeClaimer: new PublicKey(input.feeClaimer),
+    payer: new PublicKey(input.payer),
+    receiver: new PublicKey(input.receiver),
+    maxBaseAmount: new BN((input.maxBaseAmount ?? 9_000_000_000_000_000n).toString()),
+    maxQuoteAmount: new BN((input.maxQuoteAmount ?? 0n).toString()),
+  });
+  const claimInstruction = transaction.instructions.find((instruction) => instruction.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID));
+  if (!claimInstruction) throw new Error("Meteora DBC fee claim instruction was not built.");
+
+  return claimInstruction;
+}
+
 export async function fetchMeteoraDbcMarketSnapshot(input: {
   rpcUrl: string;
   pool: string;
   tokenMint?: string | null;
   treasuryVault?: string | null;
+  treasurySupplyPercent?: number | null;
   totalSupply?: number;
 }) {
   const { connection, client, virtualPool, config } = await dbcPoolState(input);
@@ -711,9 +738,12 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
   const baseReserve = reserveAmount((virtualPool as { baseReserve?: unknown }).baseReserve);
   const quoteReserve = reserveAmount((virtualPool as { quoteReserve?: unknown }).quoteReserve);
   const supply = input.totalSupply ?? (await connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0));
-  const treasuryTokens = input.treasuryVault
+  const treasuryVaultTokens = input.treasuryVault
     ? await connection.getTokenAccountBalance(new PublicKey(input.treasuryVault)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0)
     : 0;
+  const configuredTreasuryTokens =
+    input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
+  const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
   const holders = await connection
     .getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
       filters: [{ memcmp: { offset: 0, bytes: baseMint } }],
@@ -732,7 +762,7 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     currentPrice,
     baseReserve,
     quoteReserve,
-    liquidityUsd: quoteReserve + baseReserve * currentPrice,
+    liquidityUsd: quoteReserve,
     poolProgressPercent: Math.max(0, Math.min(progress * 100, 100)),
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,

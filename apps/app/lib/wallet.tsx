@@ -101,7 +101,9 @@ async function formatSendTransactionError(error: unknown, connection: Connection
     return new Error("This wallet is already registered as a council candidate for this mission.");
   }
   if (details.includes("InstructionFallbackNotFound")) {
-    return new Error("This transaction is using an outdated on-chain instruction. Refresh the page and try again.");
+    return new Error(
+      "Simulation failed (InstructionFallbackNotFound): the chain rejected this instruction's header bytes—often a stale API deployment or RPC/cluster mismatch between the backend (SOLANA_RPC_URL) and your wallet RPC. The council program on mainnet matches this repo’s deploy artifact; redeploy the app if production might lag git.",
+    );
   }
   if (details.includes("AccountNotInitialized") || details.includes("expected this account to be already initialized")) {
     return new Error("This mission does not have 6 finalized councillors on-chain yet. Finalize the top 6 holders before submitting funding requests.");
@@ -128,7 +130,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
   const [restoringSession, setRestoringSession] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
 
-  const wallet = wallets[0] ?? null;
+  const wallet = sessionAddress ? (wallets.find((entry) => entry.address === sessionAddress) ?? null) : (wallets[0] ?? null);
   const address = sessionAddress;
   const ready = privyReady && !restoringSession;
   const authenticated = Boolean(sessionAddress);
@@ -204,8 +206,14 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
         return null;
       }
       if (!wallet) {
+        if (sessionAddress) {
+          throw new Error("Your signed-in wallet is not currently connected in Privy. Sign out, reconnect that Solana wallet, and try again.");
+        }
         await signIn();
         return null;
+      }
+      if (sessionAddress && wallet.address !== sessionAddress) {
+        throw new Error("The connected wallet does not match your signed-in wallet. Sign out, reconnect the correct wallet, and try again.");
       }
 
       const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_MAINNET_RPC_URL || "https://api.mainnet-beta.solana.com";
@@ -231,7 +239,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       setStatus(signature ? `Transaction submitted: ${signature}` : "Transaction was not submitted.");
       return signature;
     },
-    [signIn, signTransaction, wallet],
+    [sessionAddress, signIn, signTransaction, wallet],
   );
 
   const value = useMemo<WalletContextValue>(

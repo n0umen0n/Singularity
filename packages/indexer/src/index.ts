@@ -71,10 +71,11 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
     token_mint: string | null;
     dbc_pool: string | null;
     treasury_vault: string | null;
+    treasury_supply_percent: string;
     total_supply: string;
   }>(
     `
-      select id, token_mint, dbc_pool, treasury_vault, total_supply
+      select id, token_mint, dbc_pool, treasury_vault, treasury_supply_percent, total_supply
       from missions
       where lifecycle_state = 'bonding' and dbc_pool is not null
     `,
@@ -86,6 +87,7 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
       pool: mission.dbc_pool!,
       tokenMint: mission.token_mint,
       treasuryVault: mission.treasury_vault,
+      treasurySupplyPercent: Number(mission.treasury_supply_percent || 0),
       totalSupply: Number(mission.total_supply || 0),
     }).catch(() => null);
     if (!snapshot) continue;

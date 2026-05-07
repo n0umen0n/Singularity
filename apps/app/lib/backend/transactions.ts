@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
 import {
   buildPreparedTransaction,
@@ -12,6 +12,7 @@ import {
   DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
   fetchMeteoraDbcMarketSnapshot,
   latestBlockhash,
+  meteoraDbcPartnerFeeClaimInstruction,
   prepareMeteoraDbcLaunchInstructions,
   prepareMeteoraDbcTrade,
   quoteMeteoraDbcTrade,
@@ -127,6 +128,15 @@ function treasuryAuthorityPda(programId: string, mission: string) {
   return address.toBase58();
 }
 
+function feeRouterAuthorityPda(programId: string, mission: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("fee_router"), new PublicKey(mission).toBuffer()],
+    new PublicKey(programId),
+  );
+
+  return address.toBase58();
+}
+
 function anchorDiscriminator(name: string) {
   return createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
 }
@@ -141,6 +151,12 @@ function u16Buffer(value: number) {
   const buffer = Buffer.alloc(2);
   buffer.writeUInt16LE(value);
   return buffer;
+}
+
+function bytesVecBuffer(value: Uint8Array | Buffer) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(value.length);
+  return Buffer.concat([length, Buffer.from(value)]);
 }
 
 function keypairFromEnv(name: string) {
@@ -328,6 +344,7 @@ export async function prepareLaunchTransaction(input: {
     const blockhash = await latestBlockhash(config);
     const missionAccount = missionPda(config.registryProgramId, input.missionId);
     const treasuryAuthority = treasuryAuthorityPda(config.councilProgramId, missionAccount);
+    const feeRouterAuthority = feeRouterAuthorityPda(config.councilProgramId, missionAccount);
     const launchConfig = resolveMeteoraDbcLaunchConfig({
       totalSupply: input.totalSupply ?? DEFAULT_DBC_TOTAL_SUPPLY,
       treasurySupplyPercent: DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
@@ -343,7 +360,7 @@ export async function prepareLaunchTransaction(input: {
       symbol: input.tokenSymbol || "MISSION",
       uri: input.metadataUri || `https://metadata.singularity.diy/${input.metadataHash}.json`,
       quoteMint: process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT,
-      feeClaimer: process.env.SINGULARITY_METEORA_FEE_CLAIMER || input.creatorWallet,
+      feeClaimer: feeRouterAuthority,
       leftoverReceiver: treasuryAuthority,
       totalSupply: launchConfig.totalSupply,
       treasurySupplyPercent: launchConfig.treasurySupplyPercent,
@@ -362,6 +379,7 @@ export async function prepareLaunchTransaction(input: {
       accounts: {
         mission: "",
         treasuryAuthority,
+        feeRouterAuthority,
         ...meteoraLaunch.accounts,
       },
     });
@@ -525,6 +543,7 @@ export async function fetchMeteoraDbcMissionSnapshot(input: {
   dbcPool?: string | null;
   tokenMint?: string | null;
   treasuryVault?: string | null;
+  treasurySupplyPercent?: number | null;
   totalSupply?: number;
 }): Promise<MeteoraDbcMarketSnapshot | null> {
   if (!input.dbcPool) return null;
@@ -534,6 +553,7 @@ export async function fetchMeteoraDbcMissionSnapshot(input: {
     pool: input.dbcPool,
     tokenMint: input.tokenMint,
     treasuryVault: input.treasuryVault,
+    treasurySupplyPercent: input.treasurySupplyPercent,
     totalSupply: input.totalSupply,
   });
 }
@@ -835,6 +855,103 @@ export async function prepareMissionGraduationTransaction(input: {
       accounts: {
         mission,
         dammPool: input.dammPool,
+      },
+    });
+  } catch (error) {
+    return notConfigured(kind, error);
+  }
+}
+
+export async function prepareClaimMissionFeesTransaction(input: {
+  wallet?: string;
+  missionId: string;
+  creatorWallet?: string | null;
+  tokenMint?: string | null;
+  dbcPool?: string | null;
+  treasuryVault?: string | null;
+}) {
+  const kind = "mission-fee-claim";
+
+  try {
+    if (!input.wallet) throw new Error("wallet is required to claim mission fees.");
+    if (!input.creatorWallet) throw new Error("creatorWallet is required to claim mission fees.");
+    if (!input.tokenMint) throw new Error("tokenMint is required to claim mission fees.");
+    if (!input.dbcPool) throw new Error("dbcPool is required to claim mission fees.");
+    if (!input.treasuryVault) throw new Error("treasuryVault is required to claim mission fees.");
+
+    const platformWallet = process.env.SINGULARITY_PLATFORM_FEE_RECIPIENT;
+    if (!platformWallet) throw new Error("SINGULARITY_PLATFORM_FEE_RECIPIENT is required to claim mission fees.");
+
+    const config = requireProgramConfig(process.env);
+    const blockhash = await latestBlockhash(config);
+    const mission = missionPda(config.registryProgramId, input.missionId);
+    const feeRouterAuthority = feeRouterAuthorityPda(config.councilProgramId, mission);
+    const treasuryAuthority = treasuryAuthorityPda(config.councilProgramId, mission);
+    const mint = new PublicKey(input.tokenMint);
+    const payer = new PublicKey(input.wallet);
+    const creator = new PublicKey(input.creatorWallet);
+    const platform = new PublicKey(platformWallet);
+    const routerVault = getAssociatedTokenAddressSync(mint, new PublicKey(feeRouterAuthority), true, TOKEN_2022_PROGRAM_ID);
+    const creatorFeeAccount = getAssociatedTokenAddressSync(mint, creator, true, TOKEN_2022_PROGRAM_ID);
+    const platformFeeAccount = getAssociatedTokenAddressSync(mint, platform, true, TOKEN_2022_PROGRAM_ID);
+    const treasuryFeeAccount = new PublicKey(input.treasuryVault);
+    const claimInstruction = await meteoraDbcPartnerFeeClaimInstruction({
+      rpcUrl: config.rpcUrl,
+      pool: input.dbcPool,
+      feeClaimer: feeRouterAuthority,
+      payer: input.wallet,
+      receiver: feeRouterAuthority,
+      maxBaseAmount: 9_000_000_000_000_000n,
+      maxQuoteAmount: 0n,
+    });
+    const claimData = Buffer.concat([anchorDiscriminator("claim_dbc_fees_and_route"), bytesVecBuffer(claimInstruction.data)]);
+    const claimAccounts = claimInstruction.keys.map((account) => ({
+      pubkey: account.pubkey,
+      isSigner: false,
+      isWritable: account.isWritable,
+    }));
+    const routeInstruction = new TransactionInstruction({
+      programId: new PublicKey(config.councilProgramId),
+      keys: [
+        { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: new PublicKey(mission), isSigner: false, isWritable: false },
+        { pubkey: new PublicKey(feeRouterAuthority), isSigner: false, isWritable: false },
+        { pubkey: routerVault, isSigner: false, isWritable: true },
+        { pubkey: new PublicKey(treasuryAuthority), isSigner: false, isWritable: false },
+        { pubkey: treasuryFeeAccount, isSigner: false, isWritable: true },
+        { pubkey: creator, isSigner: false, isWritable: false },
+        { pubkey: creatorFeeAccount, isSigner: false, isWritable: true },
+        { pubkey: platform, isSigner: false, isWritable: false },
+        { pubkey: platformFeeAccount, isSigner: false, isWritable: true },
+        { pubkey: mint, isSigner: false, isWritable: false },
+        { pubkey: claimInstruction.programId, isSigner: false, isWritable: false },
+        { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+        ...claimAccounts,
+      ],
+      data: claimData,
+    });
+    const setupInstructions = [
+      createAssociatedTokenAccountIdempotentInstruction(payer, routerVault, new PublicKey(feeRouterAuthority), mint, TOKEN_2022_PROGRAM_ID),
+      createAssociatedTokenAccountIdempotentInstruction(payer, treasuryFeeAccount, new PublicKey(treasuryAuthority), mint, TOKEN_2022_PROGRAM_ID),
+      createAssociatedTokenAccountIdempotentInstruction(payer, creatorFeeAccount, creator, mint, TOKEN_2022_PROGRAM_ID),
+      createAssociatedTokenAccountIdempotentInstruction(payer, platformFeeAccount, platform, mint, TOKEN_2022_PROGRAM_ID),
+    ];
+
+    return buildPreparedTransaction({
+      kind,
+      feePayer: input.wallet,
+      recentBlockhash: blockhash.blockhash,
+      instructions: [...setupInstructions, routeInstruction],
+      requiredSigners: [input.wallet],
+      accounts: {
+        mission,
+        dbcPool: input.dbcPool,
+        tokenMint: input.tokenMint,
+        feeRouterAuthority,
+        routerVault: routerVault.toBase58(),
+        treasuryVault: treasuryFeeAccount.toBase58(),
+        creatorFeeAccount: creatorFeeAccount.toBase58(),
+        platformFeeAccount: platformFeeAccount.toBase58(),
       },
     });
   } catch (error) {
