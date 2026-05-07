@@ -58,6 +58,9 @@ export type JupiterTradeResult = {
   inputMint: string;
   outputMint: string;
   inputAmount: number;
+  requestedInputAmount?: number;
+  partialFill?: boolean;
+  willGraduate?: boolean;
   estimatedOutput: number;
   priceImpactPercent: number;
   transaction: TransactionResult;
@@ -69,6 +72,9 @@ export type MeteoraDbcTradeQuoteResult = {
   inputMint: string;
   outputMint: string;
   inputAmount: number;
+  requestedInputAmount?: number;
+  partialFill?: boolean;
+  willGraduate?: boolean;
   estimatedOutput: number;
   minimumAmountOut: number;
   priceImpactPercent: number;
@@ -93,6 +99,16 @@ function notConfigured(kind: string, error: unknown): TransactionResult {
     message,
     instructions: [],
   };
+}
+
+function meteoraDbcTradeErrorMessage(input: { side: "buy" | "sell"; error: unknown }) {
+  const message = input.error instanceof Error ? input.error.message : "Meteora DBC trade preparation failed.";
+  if (message.toLowerCase().includes("insufficient liquidity")) {
+    return input.side === "buy"
+      ? "This buy is larger than the remaining bonding-curve capacity before graduation. Try a smaller USDC amount or wait for the market to graduate."
+      : "This sell is larger than the available bonding-curve liquidity. Try a smaller token amount.";
+  }
+  return message;
 }
 
 function pda(programId: string, namespace: string, id: string) {
@@ -553,6 +569,9 @@ export async function prepareMeteoraDbcTradeTransaction(input: {
       inputMint: quoteOnly.inputMint,
       outputMint: quoteOnly.outputMint,
       inputAmount: quoteOnly.inputAmount,
+      requestedInputAmount: quoteOnly.requestedInputAmount,
+      partialFill: quoteOnly.partialFill,
+      willGraduate: quoteOnly.willGraduate,
       estimatedOutput: quoteOnly.estimatedOutput,
       minimumAmountOut: quoteOnly.minimumAmountOut,
       priceImpactPercent: quoteOnly.priceImpactPercent,
@@ -569,7 +588,7 @@ export async function prepareMeteoraDbcTradeTransaction(input: {
       transaction,
     };
   } catch (error) {
-    return notConfigured(kind, error) as NotConfiguredTransaction;
+    return notConfigured(kind, new Error(meteoraDbcTradeErrorMessage({ side: input.side, error }))) as NotConfiguredTransaction;
   }
 }
 

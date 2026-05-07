@@ -24,6 +24,9 @@ export type MissionQuote = {
   missionId: string;
   side: "buy" | "sell";
   inputAmount: number;
+  requestedInputAmount?: number;
+  partialFill?: boolean;
+  willGraduate?: boolean;
   estimatedOutput: number;
   minimumAmountOut?: number | null;
   priceImpactPercent?: number | null;

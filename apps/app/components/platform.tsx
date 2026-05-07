@@ -1114,9 +1114,18 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       setQuoteLoading(true);
       const next = await api.getMissionQuote(mission.id, { side: mode, amount: numeric, wallet: wallet.address });
       setQuote(next);
-      setStatus(null);
+      if (next.transaction.status !== "ready") {
+        setStatus(next.transaction.message);
+        return null;
+      }
+      setStatus(
+        next.partialFill && next.requestedInputAmount && next.inputAmount < next.requestedInputAmount
+          ? `This purchase will use ${money(next.inputAmount)} USDC, the remaining bonding-curve capacity, and should trigger graduation.`
+          : null,
+      );
       return next;
     } catch (error) {
+      setQuote(null);
       setStatus(error instanceof Error ? error.message : "Quote failed.");
       return null;
     } finally {
@@ -1133,6 +1142,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       setTradeSucceeded(false);
       setTradePending(true);
       const nextQuote = await requestQuote();
+      if (nextQuote?.transaction.status !== "ready") return;
       const signature = await wallet.sendPreparedTransaction(nextQuote?.transaction);
       if (signature) {
         setQuote(null);
@@ -1170,6 +1180,14 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       : mode === "buy"
         ? `${number(quote.minimumAmountOut)} ${mission.tokenSymbol}`
         : `${money(quote.minimumAmountOut)} USDC`;
+  const quoteUnavailable = hasAmount && !quoteLoading && quote?.transaction.status === "not_configured";
+  const minimumReceivedLabel = quoteLoading ? <InlineLoader /> : quoteUnavailable || !minimumReceived ? "Unavailable" : minimumReceived;
+  const priceImpactLabel =
+    quoteLoading ? <InlineLoader /> : quoteUnavailable || quote?.priceImpactPercent === null || quote?.priceImpactPercent === undefined ? "Unavailable" : `${number(quote.priceImpactPercent)}%`;
+  const cappedBuyLabel =
+    mode === "buy" && quote?.partialFill && quote.requestedInputAmount && quote.inputAmount < quote.requestedInputAmount
+      ? `${money(quote.inputAmount)} USDC of ${money(quote.requestedInputAmount)} requested`
+      : null;
 
   return (
     <GlassCard className="section-card">
@@ -1203,8 +1221,9 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       </p>
       {hasAmount ? (
         <>
-          <p className="stat-note">Minimum received: {quoteLoading || !minimumReceived ? <InlineLoader /> : minimumReceived}</p>
-          <p className="stat-note">Price impact: {quoteLoading || quote?.priceImpactPercent === null || quote?.priceImpactPercent === undefined ? <InlineLoader /> : `${number(quote.priceImpactPercent)}%`}</p>
+          {cappedBuyLabel ? <p className="stat-note">Available purchase: {cappedBuyLabel}</p> : null}
+          <p className="stat-note">Minimum received: {minimumReceivedLabel}</p>
+          <p className="stat-note">Price impact: {priceImpactLabel}</p>
         </>
       ) : null}
       {tradePending ? null : tradeSucceeded ? (
@@ -1212,7 +1231,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       ) : status ? (
         <p className="stat-note">{status}</p>
       ) : null}
-      <button className={cx("button", mode === "buy" ? "button-primary" : "button-danger")} disabled={tradePending} style={{ width: "100%" }} onClick={() => void trade()}>
+      <button className={cx("button", mode === "buy" ? "button-primary" : "button-danger")} disabled={tradePending || (hasAmount && quote?.transaction.status === "not_configured")} style={{ width: "100%" }} onClick={() => void trade()}>
         {tradePending ? <InlineLoader /> : wallet.address ? (mode === "buy" ? "Buy tokens" : "Sell tokens") : "Sign in to trade"}
       </button>
     </GlassCard>

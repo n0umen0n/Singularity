@@ -25,7 +25,9 @@ import {
   MigrationFeeOption,
   MigrationOption,
   swapQuote,
+  SwapMode,
   type PoolConfig,
+  type SwapQuote2Result,
   type SwapQuoteResult,
   TokenDecimal,
   TokenType,
@@ -155,6 +157,9 @@ export type MeteoraDbcQuote = {
   route: "meteora-dbc";
   side: MeteoraDbcTradeSide;
   inputAmount: number;
+  requestedInputAmount?: number;
+  partialFill?: boolean;
+  willGraduate?: boolean;
   estimatedOutput: number;
   minimumAmountOut: number;
   priceImpactPercent: number;
@@ -590,6 +595,16 @@ function priceImpact(input: { side: MeteoraDbcTradeSide; inputAmount: number; es
   return Math.max(((spotOutput - input.estimatedOutput) / spotOutput) * 100, 0);
 }
 
+function isPartialFillQuote(quote: SwapQuoteResult | SwapQuote2Result) {
+  const partial = quote as { amountLeft?: BN };
+  return BN.isBN(partial.amountLeft) && !partial.amountLeft.isZero();
+}
+
+function actualInputAmount(input: { requestedAmount: number; quote: SwapQuoteResult | SwapQuote2Result }) {
+  const partial = input.quote as { includedFeeInputAmount?: BN };
+  return BN.isBN(partial.includedFeeInputAmount) ? amountFromBaseUnits(partial.includedFeeInputAmount) : input.requestedAmount;
+}
+
 async function dbcPoolState(input: { rpcUrl: string; pool: string }) {
   const connection = new Connection(input.rpcUrl, "confirmed");
   const client = new DynamicBondingCurveClient(connection, "confirmed");
@@ -606,12 +621,15 @@ function dbcQuoteFromResult(input: {
   amount: number;
   virtualPool: VirtualPool;
   config: PoolConfig;
-  quote: SwapQuoteResult;
+  quote: SwapQuoteResult | SwapQuote2Result;
 }) {
   const currentPrice = spotPrice(input.virtualPool);
   const baseMint = (input.virtualPool as { baseMint: PublicKey }).baseMint.toBase58();
   const quoteMint = (input.config as { quoteMint: PublicKey }).quoteMint.toBase58();
   const quote = input.quote as { outputAmount?: BN; minimumAmountOut?: BN };
+  const requestedInputAmount = input.amount;
+  const inputAmount = actualInputAmount({ requestedAmount: requestedInputAmount, quote: input.quote });
+  const partialFill = isPartialFillQuote(input.quote);
   const estimatedOutput = amountFromBaseUnits(quote.outputAmount || new BN(0));
   const minimumAmountOut = amountFromBaseUnits(quote.minimumAmountOut || new BN(0));
   const baseReserve = reserveAmount((input.virtualPool as { baseReserve?: unknown }).baseReserve);
@@ -620,10 +638,13 @@ function dbcQuoteFromResult(input: {
   return {
     route: "meteora-dbc" as const,
     side: input.side,
-    inputAmount: input.amount,
+    inputAmount,
+    requestedInputAmount: partialFill ? requestedInputAmount : undefined,
+    partialFill,
+    willGraduate: partialFill && input.side === "buy",
     estimatedOutput,
     minimumAmountOut,
-    priceImpactPercent: priceImpact({ side: input.side, inputAmount: input.amount, estimatedOutput, currentPrice }),
+    priceImpactPercent: priceImpact({ side: input.side, inputAmount, estimatedOutput, currentPrice }),
     currentPrice,
     inputMint: input.side === "buy" ? quoteMint : baseMint,
     outputMint: input.side === "buy" ? baseMint : quoteMint,
@@ -648,16 +669,30 @@ export async function quoteMeteoraDbcTrade(input: {
 }) {
   if (input.amount <= 0) throw new Error("amount must be greater than zero.");
   const { client, virtualPool, config, currentPoint } = await dbcPoolState(input);
-  const quote = client.pool.swapQuote({
-    virtualPool,
-    config,
-    swapBaseForQuote: input.side === "sell",
-    amountIn: tokenAmount(input.amount),
-    slippageBps: input.slippageBps ?? 100,
-    hasReferral: false,
-    eligibleForFirstSwapWithMinFee: false,
-    currentPoint,
-  });
+  const amountIn = tokenAmount(input.amount);
+  const quote =
+    input.side === "buy"
+      ? client.pool.swapQuote2({
+          virtualPool,
+          config,
+          swapBaseForQuote: false,
+          swapMode: SwapMode.PartialFill,
+          amountIn,
+          slippageBps: input.slippageBps ?? 100,
+          hasReferral: false,
+          eligibleForFirstSwapWithMinFee: false,
+          currentPoint,
+        })
+      : client.pool.swapQuote({
+          virtualPool,
+          config,
+          swapBaseForQuote: true,
+          amountIn,
+          slippageBps: input.slippageBps ?? 100,
+          hasReferral: false,
+          eligibleForFirstSwapWithMinFee: false,
+          currentPoint,
+        });
   const result = dbcQuoteFromResult({ pool: input.pool, side: input.side, amount: input.amount, virtualPool, config, quote });
   const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
 
@@ -677,15 +712,28 @@ export async function prepareMeteoraDbcTrade(input: {
   const owner = new PublicKey(input.wallet);
   const connection = new Connection(input.rpcUrl, "confirmed");
   const client = new DynamicBondingCurveClient(connection, "confirmed");
-  const transaction = await client.pool.swap({
-    owner,
-    payer: owner,
-    pool: new PublicKey(input.pool),
-    amountIn: tokenAmount(input.amount),
-    minimumAmountOut: tokenAmount(quote.minimumAmountOut),
-    swapBaseForQuote: input.side === "sell",
-    referralTokenAccount: null,
-  });
+  const pool = new PublicKey(input.pool);
+  const transaction =
+    input.side === "buy"
+      ? await client.pool.swap2({
+          owner,
+          payer: owner,
+          pool,
+          swapBaseForQuote: false,
+          swapMode: SwapMode.PartialFill,
+          amountIn: tokenAmount(input.amount),
+          minimumAmountOut: tokenAmount(quote.minimumAmountOut),
+          referralTokenAccount: null,
+        })
+      : await client.pool.swap({
+          owner,
+          payer: owner,
+          pool,
+          amountIn: tokenAmount(input.amount),
+          minimumAmountOut: tokenAmount(quote.minimumAmountOut),
+          swapBaseForQuote: true,
+          referralTokenAccount: null,
+        });
 
   return {
     ...quote,
