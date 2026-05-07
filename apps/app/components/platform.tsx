@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { createPortal } from "react-dom";
+import Cropper, { type Area, type MediaSize } from "react-easy-crop";
 import { ArrowRight, ChevronDown, Copy, Sparkles, Upload, Zap } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
@@ -28,8 +29,34 @@ type CropRequest = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
+  const pathname = usePathname();
+  const [navigationLoading, setNavigationLoading] = useState(false);
+
+  useEffect(() => {
+    setNavigationLoading(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!navigationLoading) return;
+    const timer = window.setTimeout(() => setNavigationLoading(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [navigationLoading]);
+
+  const showNavigationLoader = (event: React.MouseEvent<HTMLElement>) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+    const anchor = (event.target as Element | null)?.closest("a[href]");
+    if (!(anchor instanceof HTMLAnchorElement) || anchor.target || anchor.hasAttribute("download")) return;
+
+    const nextUrl = new URL(anchor.href);
+    if (nextUrl.origin !== window.location.origin) return;
+    if (`${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}` === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
+
+    setNavigationLoading(true);
+  };
+
   return (
-    <main className="app-shell">
+    <main className="app-shell" onClickCapture={showNavigationLoader}>
       <header className="top-nav">
         <Link href="/missions">
           <BrandWordmark />
@@ -57,6 +84,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <Link href="/missions/new">Create</Link>
         <Link href="/profile">Profile</Link>
       </nav>
+      {navigationLoading ? (
+        <div className="navigation-loader-overlay">
+          <PageLoader className="navigation-loader-card" />
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -94,14 +126,20 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
   const [filter, setFilter] = useState("Highest liquidity");
   const [missions, setMissions] = useState<Mission[]>(initialMissions ?? []);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(!initialMissions);
   const sort = filter === "Newest" ? "newest" : filter === "Most holders" ? "most-holders" : "highest-liquidity";
   const loadedKey = useRef<string | null>(initialMissions ? missionListKey("", sort) : null);
 
   useEffect(() => {
     const key = missionListKey(query, sort);
-    if (loadedKey.current === key) return;
+    if (loadedKey.current === key) {
+      setLoading(false);
+      return;
+    }
 
     const controller = new AbortController();
+    setLoading(true);
+    setError(null);
     const timer = window.setTimeout(() => {
       api
         .listMissions({ q: query, sort }, { signal: controller.signal })
@@ -110,10 +148,14 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
             setMissions(missions);
             setError(null);
             loadedKey.current = key;
+            setLoading(false);
           }
         })
         .catch((error: Error) => {
-          if (error.name !== "AbortError") setError(error.message);
+          if (error.name !== "AbortError") {
+            setError(error.message);
+            setLoading(false);
+          }
         });
     }, query.trim() ? 180 : 0);
 
@@ -151,6 +193,7 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
         </div>
         <div className="mission-grid">
           {error ? <GlassCard className="section-card">{error}</GlassCard> : null}
+          {loading && !missions.length && !error ? <PageLoader className="mission-grid-loader" /> : null}
           {missions.map((mission, index) => (
             <MissionCard key={mission.id} mission={mission} priority={index < 2} />
           ))}
@@ -193,7 +236,7 @@ export function MissionCard({ mission, preview = false, priority = false }: { mi
   }
 
   return (
-    <Link href={`/missions/${mission.id}`} className={className} prefetch={false}>
+    <Link href={`/missions/${mission.id}`} className={className}>
       {content}
     </Link>
   );
@@ -254,7 +297,7 @@ function CouncilMemberFlipCard({
               </a>
             </div>
           )}
-          <Link className="button button-primary flip-profile-button" href={profileHref} prefetch={false}>
+          <Link className="button button-primary flip-profile-button" href={profileHref}>
             Open profile
           </Link>
         </article>
@@ -696,7 +739,7 @@ function FundingRequests({ mission, onMissionChange }: { mission: Mission; onMis
           <h2>Funding Requests</h2>
           <p>Builders can request treasury funds for work that advances the mission.</p>
         </div>
-        <Link className="button button-primary" href={`/missions/${mission.id}/request-funding`} prefetch={false}>
+        <Link className="button button-primary" href={`/missions/${mission.id}/request-funding`}>
           Create funding request
         </Link>
       </div>
@@ -955,6 +998,80 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
   );
 }
 
+function LaunchTokenomicsDonut() {
+  const [active, setActive] = useState<"market" | "treasury">("market");
+  const chartData = [
+    { key: "market" as const, name: "Market", value: 80, gradient: "url(#launchMarketGradient)" },
+    { key: "treasury" as const, name: "Treasury", value: 20, gradient: "url(#launchTreasuryGradient)" },
+  ];
+  const activeEntry = chartData.find((entry) => entry.key === active) ?? chartData[0];
+
+  return (
+    <div className={`treasury-donut-card active-${active}`}>
+      <div className="donut-heading">
+        <h3>Token allocation</h3>
+        <p>(launch supply)</p>
+      </div>
+      <div className="donut-visual">
+        <ResponsiveContainer width="100%" height={238}>
+          <PieChart>
+            <defs>
+              <linearGradient id="launchMarketGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#9c8cff" />
+                <stop offset="100%" stopColor="#6258ff" />
+              </linearGradient>
+              <linearGradient id="launchTreasuryGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#ff876d" />
+                <stop offset="100%" stopColor="#ff5d3d" />
+              </linearGradient>
+            </defs>
+            <Pie
+              data={chartData}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              innerRadius={64}
+              outerRadius={94}
+              paddingAngle={2}
+              cornerRadius={9}
+              stroke="rgba(255,247,237,0.16)"
+              strokeWidth={1}
+              isAnimationActive
+              animationDuration={700}
+              onClick={(_, index) => setActive(chartData[index]?.key ?? "market")}
+              onMouseEnter={(_, index) => setActive(chartData[index]?.key ?? "market")}
+            >
+              {chartData.map((entry) => (
+                <Cell
+                  className={cx("capitalization-slice", active === entry.key && "active")}
+                  fill={entry.gradient}
+                  key={entry.key}
+                  opacity={active === entry.key ? 1 : 0.54}
+                />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="donut-center">
+          <span>{activeEntry.name}</span>
+          <strong>{activeEntry.value}%</strong>
+        </div>
+      </div>
+      <div className="donut-legend">
+        <button className={cx("legend-item", active === "market" && "active")} type="button" onMouseEnter={() => setActive("market")} onFocus={() => setActive("market")}>
+          <span className="legend-dot market-dot" />
+          Market
+        </button>
+        <button className={cx("legend-item", active === "treasury" && "active")} type="button" onMouseEnter={() => setActive("treasury")} onFocus={() => setActive("treasury")}>
+          <span className="legend-dot treasury-dot" />
+          Treasury
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function InlineLoader() {
   return (
     <span className="inline-loader" aria-label="Loading">
@@ -965,9 +1082,9 @@ function InlineLoader() {
   );
 }
 
-function PageLoader() {
+export function PageLoader({ className }: { className?: string }) {
   return (
-    <GlassCard className="section-card page-loader-card" aria-busy="true" aria-live="polite">
+    <GlassCard className={cx("section-card page-loader-card", className)} aria-busy="true" aria-live="polite">
       <div className="singularity-loader" aria-hidden="true">
         <span className="loader-orbit loader-orbit-one" />
         <span className="loader-orbit loader-orbit-two" />
@@ -1260,14 +1377,10 @@ export function LaunchMissionPage() {
               <div className="section-heading">
                 <div>
                   <h2>Tokenomics</h2>
-                  <p>A bonding curve is created for every mission, where investors buy and sell mission tokens before the market graduates to an AMM. 20% of supply goes to the treasury and 80% becomes bonding-curve token inventory.</p>
+                  <p>New token is created for each mission. 80% tokens go to the market for investors to purchase. 20% is kept in mission&apos;s treasury to fund mission related work.</p>
                 </div>
               </div>
-              <div className="treasury-ring" />
-              <div className="info-grid">
-                <InfoCard title="80% Bonding curve inventory" body="Assigned to the Meteora DBC virtual pool so tokens are available for trading." />
-                <InfoCard title="20% Mission treasury" body="Reserved for funding mission-related work." />
-              </div>
+              <LaunchTokenomicsDonut />
             </GlassCard>
             <div className="live-preview-stack">
               <span className="preview-label">Preview</span>
@@ -1324,10 +1437,9 @@ export function LaunchMissionPage() {
                 }}
               />
               <label>
-                <span className="form-label">Initial purchase in USDC</span>
+                <span className="form-label">Initial purchase in USDC (optional)</span>
                 <input className="field" placeholder="100" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
               </label>
-              <StatusPill tone="warning">Minimum is 5 USDC</StatusPill>
               {status ? <p className="stat-note">{status}</p> : null}
               <button className="button button-primary" onClick={() => void launch()}>
                 {wallet.address ? "Launch mission" : "Sign in to launch"}
@@ -1365,7 +1477,7 @@ function croppedFileName(file: File, type: string) {
   return `${base}-cropped.${extension}`;
 }
 
-async function cropImage(request: CropRequest, zoom: number, x: number, y: number) {
+async function cropImage(request: CropRequest, cropArea: Area) {
   const image = new Image();
   image.decoding = "async";
   image.src = request.sourceUrl;
@@ -1377,24 +1489,6 @@ async function cropImage(request: CropRequest, zoom: number, x: number, y: numbe
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Image crop failed because canvas is unavailable.");
 
-  const imageRatio = image.naturalWidth / image.naturalHeight;
-  let sourceWidth: number;
-  let sourceHeight: number;
-  if (imageRatio > request.aspectRatio) {
-    sourceHeight = image.naturalHeight / zoom;
-    sourceWidth = sourceHeight * request.aspectRatio;
-  } else {
-    sourceWidth = image.naturalWidth / zoom;
-    sourceHeight = sourceWidth / request.aspectRatio;
-  }
-
-  sourceWidth = Math.min(sourceWidth, image.naturalWidth);
-  sourceHeight = Math.min(sourceHeight, image.naturalHeight);
-  const focusX = Math.min(Math.max(0.5 + x / 200, 0), 1);
-  const focusY = Math.min(Math.max(0.5 + y / 200, 0), 1);
-  const sourceX = (image.naturalWidth - sourceWidth) * focusX;
-  const sourceY = (image.naturalHeight - sourceHeight) * focusY;
-
   if (request.shape === "circle") {
     context.save();
     context.beginPath();
@@ -1402,7 +1496,7 @@ async function cropImage(request: CropRequest, zoom: number, x: number, y: numbe
     context.clip();
   }
 
-  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, request.outputWidth, request.outputHeight);
+  context.drawImage(image, cropArea.x, cropArea.y, cropArea.width, cropArea.height, 0, 0, request.outputWidth, request.outputHeight);
   if (request.shape === "circle") context.restore();
 
   const type = imageOutputType(request.file, request.shape);
@@ -1424,9 +1518,17 @@ function ImageCropper({
   onError: (message: string) => void;
 }) {
   const [zoom, setZoom] = useState(1);
-  const [x, setX] = useState(0);
-  const [y, setY] = useState(0);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [objectFit, setObjectFit] = useState<"cover" | "horizontal-cover" | "vertical-cover">("cover");
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
   const [isCropping, setIsCropping] = useState(false);
+
+  useEffect(() => {
+    setZoom(1);
+    setCrop({ x: 0, y: 0 });
+    setObjectFit("cover");
+    setCroppedAreaPixels(null);
+  }, [request.sourceUrl]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -1443,10 +1545,27 @@ function ImageCropper({
     };
   }, [isCropping, onCancel]);
 
+  const handleCropComplete = useCallback((_croppedArea: Area, nextCroppedAreaPixels: Area) => {
+    setCroppedAreaPixels(nextCroppedAreaPixels);
+  }, []);
+
+  const handleMediaLoaded = useCallback(
+    (mediaSize: MediaSize) => {
+      const mediaAspect = mediaSize.naturalWidth / mediaSize.naturalHeight;
+      setObjectFit(mediaAspect > request.aspectRatio ? "vertical-cover" : "horizontal-cover");
+    },
+    [request.aspectRatio],
+  );
+
   const apply = async () => {
+    if (!croppedAreaPixels) {
+      onError("Image crop is still loading. Try again in a moment.");
+      return;
+    }
+
     try {
       setIsCropping(true);
-      const cropped = await cropImage(request, zoom, x, y);
+      const cropped = await cropImage(request, croppedAreaPixels);
       URL.revokeObjectURL(request.sourceUrl);
       onCropped({ ...cropped, kind: request.kind });
     } catch (error) {
@@ -1466,31 +1585,29 @@ function ImageCropper({
             <p>{request.kind === "mission" ? "Frame the image exactly as it will appear on mission cards and the mission page." : "Frame the token art inside the circular avatar."}</p>
           </div>
         </div>
-        <div className={cx("crop-preview-frame", request.shape === "circle" && "crop-preview-round")} style={{ aspectRatio: `${request.outputWidth} / ${request.outputHeight}` }}>
-          <img
-            src={request.sourceUrl}
-            alt=""
-            decoding="async"
-            style={{
-              objectPosition: `${50 + x / 2}% ${50 + y / 2}%`,
-              transform: `scale(${zoom})`,
-            }}
+        <div
+          className={cx("crop-preview-frame", request.shape === "circle" && "crop-preview-round")}
+          style={{ aspectRatio: `${request.outputWidth} / ${request.outputHeight}` }}
+        >
+          <Cropper
+            image={request.sourceUrl}
+            crop={crop}
+            zoom={zoom}
+            aspect={request.aspectRatio}
+            classes={{ mediaClassName: "cropper-media" }}
+            cropShape={request.shape === "circle" ? "round" : "rect"}
+            maxZoom={3}
+            minZoom={1}
+            objectFit={objectFit}
+            onCropChange={setCrop}
+            onCropComplete={handleCropComplete}
+            onMediaLoaded={handleMediaLoaded}
+            onZoomChange={setZoom}
+            restrictPosition
+            showGrid={false}
           />
         </div>
-        <div className="crop-control-grid">
-          <label>
-            <span className="form-label">Zoom</span>
-            <input className="range-field" min="1" max="3" step="0.01" type="range" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
-          </label>
-          <label>
-            <span className="form-label">Horizontal position</span>
-            <input className="range-field" min="-100" max="100" step="1" type="range" value={x} onChange={(event) => setX(Number(event.target.value))} />
-          </label>
-          <label>
-            <span className="form-label">Vertical position</span>
-            <input className="range-field" min="-100" max="100" step="1" type="range" value={y} onChange={(event) => setY(Number(event.target.value))} />
-          </label>
-        </div>
+        <p className="crop-help">Drag the image to choose the crop. Pinch or scroll over the image to zoom.</p>
         <div className="modal-actions">
           <button className="button" type="button" disabled={isCropping} onClick={onCancel}>
             Cancel
@@ -1558,7 +1675,9 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [descriptionError, setDescriptionError] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const descriptionRef = useRef<HTMLTextAreaElement>(null);
   const loadedMissionId = useRef(initialMission?.id ?? null);
   useEffect(() => {
     if (loadedMissionId.current === missionId) return;
@@ -1609,7 +1728,10 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
       return;
     }
     if (!description.trim()) {
-      setStatus("Enter a request description before submitting.");
+      setStatus(null);
+      setDescriptionError(true);
+      descriptionRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      descriptionRef.current?.focus({ preventScroll: true });
       return;
     }
     if (usd <= 0) {
@@ -1641,8 +1763,8 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
           title="Request mission funding"
           description="Funding requests are reviewed by the mission's treasury council. Four of six council members must approve for the request to pass."
         />
-        <div className="form-two-col">
-          <div>
+        <div className="form-two-col request-funding-layout">
+          <div className="request-funding-summary">
             <GlassCard className="section-card">
               <GlassCard className="conditions-card">Conditions</GlassCard>
               <div className="info-grid funding-rule-grid">
@@ -1652,10 +1774,9 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
             </GlassCard>
             <GlassCard className="section-card">
               <MissionCard mission={mission} />
-              <p className="stat-note">Treasury available: {treasuryValue !== null ? money(treasuryValue) : "Updating"}</p>
             </GlassCard>
           </div>
-          <GlassCard className="section-card">
+          <GlassCard className="section-card request-funding-form-card">
             <div className="form-grid">
               <label>
                 <span className="form-label">Request name</span>
@@ -1663,7 +1784,17 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
               </label>
               <label>
                 <span className="form-label">Request description</span>
-                <textarea className="textarea" placeholder="Describe what will be delivered, who will do the work, why it advances the mission, and what success looks like." value={description} onChange={(event) => setDescription(event.target.value)} />
+                <textarea
+                  ref={descriptionRef}
+                  aria-invalid={descriptionError}
+                  className={cx("textarea", descriptionError && "field-error")}
+                  placeholder="Describe what will be delivered, who will do the work, why it advances the mission, and what success looks like."
+                  value={description}
+                  onChange={(event) => {
+                    setDescription(event.target.value);
+                    if (descriptionError && event.target.value.length > 0) setDescriptionError(false);
+                  }}
+                />
               </label>
               <label>
                 <span className="form-label">Request amount in USD</span>
@@ -1674,10 +1805,7 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
                 <div className="stat-value">
                   {money(usd)} = {tokenAmount !== null ? number(tokenAmount) : "Updating"} {mission.tokenSymbol}
                 </div>
-                <div className="stat-note">
-                  Based on current token price: {tokenPrice ? money(tokenPrice) : "updating"}.{" "}
-                  {treasuryPercent === null ? "Treasury share is updating." : `This request equals ${number(treasuryPercent)}% of treasury funds.`}
-                </div>
+                {treasuryPercent !== null ? <div className="stat-note">This request equals {number(treasuryPercent)}% of treasury funds.</div> : null}
               </GlassCard>
               <StatusPill tone="council">Voting lasts at least 3 days · 4/6 approvals required</StatusPill>
               {status ? <p className="stat-note">{status}</p> : null}

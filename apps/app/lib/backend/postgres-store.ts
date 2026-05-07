@@ -1051,10 +1051,31 @@ export async function prepareFundingRequestInPostgres(input: {
 
 export async function voteFundingRequestInPostgres(requestId: string, input: { wallet?: string; vote?: "approve" | "reject" }) {
   const wallet = input.wallet || currentUser.address;
-  if (input.vote !== "approve" && input.vote !== "reject") throw new Error("vote must be approve or reject.");
+  if (input.vote !== "approve" && input.vote !== "reject") throw new Error("Choose approve or reject before submitting your vote.");
   const vote = input.vote;
 
   return transaction(async (client) => {
+    const existing = await client.query<{ request_status: RequestStatus; existing_vote: "approve" | "reject" | null }>(
+      `
+        select fr.status as request_status, frv.vote as existing_vote
+        from funding_requests fr
+        left join funding_request_votes frv
+          on frv.request_id = fr.id
+          and lower(frv.voter_wallet) = lower($2)
+        where fr.id = $1
+      `,
+      [requestId, wallet],
+    );
+    const current = existing.rows[0];
+    if (!current) throw new Error("This funding request could not be found. Refresh the page and try again.");
+    if (current.existing_vote) {
+      const previousVote = current.existing_vote === "approve" ? "approved" : "rejected";
+      throw new Error(`You already ${previousVote} this funding request. Each council wallet can vote only once.`);
+    }
+    if (current.request_status !== "active") {
+      throw new Error(`This funding request is already ${current.request_status}. Only active requests can receive votes.`);
+    }
+
     await client.query(
       "insert into funding_request_votes (request_id, voter_wallet, vote) values ($1, $2, $3)",
       [requestId, wallet, vote],

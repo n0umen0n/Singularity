@@ -45,6 +45,17 @@ function bytesFromBase64(value: string) {
   return bytes;
 }
 
+function requestErrorMessage(status: number, data: unknown) {
+  const serverMessage =
+    typeof data === "object" && data !== null && "error" in data && typeof (data as { error?: unknown }).error === "string"
+      ? (data as { error: string }).error
+      : null;
+  if (serverMessage) return serverMessage;
+  if (status === 401) return "Sign in with your wallet before continuing.";
+  if (status >= 500) return "Wallet authentication is temporarily unavailable. Please try again in a moment.";
+  return "Wallet authentication could not be completed. Please try again.";
+}
+
 async function postJson<T>(url: string, body?: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
@@ -54,7 +65,7 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) throw new Error(data?.error || `Request failed with status ${response.status}.`);
+  if (!response.ok) throw new Error(requestErrorMessage(response.status, data));
   return data as T;
 }
 
@@ -65,7 +76,7 @@ async function getJson<T>(url: string): Promise<T> {
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) throw new Error(data?.error || `Request failed with status ${response.status}.`);
+  if (!response.ok) throw new Error(requestErrorMessage(response.status, data));
   return data as T;
 }
 

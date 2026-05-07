@@ -434,6 +434,14 @@ textarea {
   box-shadow: 0 0 0 4px rgba(118, 108, 255, 0.12);
 }
 
+.field-error,
+.field-error:focus {
+  border-color: rgba(255, 95, 122, 0.78);
+  box-shadow:
+    0 0 0 4px rgba(255, 95, 122, 0.14),
+    0 0 28px rgba(255, 95, 122, 0.12);
+}
+
 .filter-pills {
   display: flex;
   align-items: center;
@@ -873,6 +881,28 @@ textarea {
   overflow: hidden;
   place-items: center;
   text-align: center;
+}
+
+.mission-grid-loader {
+  grid-column: 1 / -1;
+}
+
+.navigation-loader-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  padding: clamp(1.4rem, 4vw, 3rem);
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(118, 108, 255, 0.16), transparent 24rem),
+    rgba(2, 2, 3, 0.54);
+  backdrop-filter: blur(16px);
+}
+
+.navigation-loader-card {
+  width: min(520px, 100%);
+  margin: 0;
 }
 
 .page-loader-card::before,
@@ -1642,16 +1672,6 @@ textarea {
   gap: 1rem;
 }
 
-.treasury-ring {
-  width: 150px;
-  height: 150px;
-  margin: 1rem auto;
-  border-radius: 999px;
-  background: conic-gradient(var(--accent-orange) 0 20%, var(--accent-purple) 20% 100%);
-  box-shadow: 0 0 42px rgba(118, 108, 255, 0.2);
-  mask: radial-gradient(farthest-side, transparent calc(100% - 18px), #000 calc(100% - 17px));
-}
-
 .treasury-market-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -1904,6 +1924,12 @@ textarea {
   text-align: center;
 }
 
+.upload-box-round {
+  width: min(100%, 220px);
+  min-height: 0;
+  aspect-ratio: 1;
+}
+
 .upload-box > div {
   position: relative;
   z-index: 1;
@@ -1955,21 +1981,20 @@ textarea {
   border-radius: 999px;
 }
 
-.crop-preview-frame img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transform-origin: center;
+.crop-preview-frame .reactEasyCrop_Container {
+  border-radius: inherit;
 }
 
-.crop-control-grid {
-  display: grid;
-  gap: 0.85rem;
+.crop-preview-frame .cropper-media {
+  max-width: none;
+  max-height: none;
 }
 
-.range-field {
-  width: 100%;
-  accent-color: var(--accent-orange);
+.crop-help {
+  margin: -0.15rem 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  text-align: center;
 }
 
 .profile-hero {
@@ -2407,6 +2432,26 @@ textarea {
     flex: 1 1 12rem;
   }
 
+  .request-funding-summary {
+    order: 2;
+  }
+
+  .request-funding-form-card {
+    order: 1;
+  }
+
+  .request-funding-form-card .status-pill {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .request-funding-form-card .textarea {
+    min-height: 180px;
+    resize: vertical;
+  }
+
   .profile-hero {
     text-align: left;
   }
@@ -2487,6 +2532,23 @@ textarea {
 
   .stat-card {
     min-height: 0;
+  }
+
+  .request-funding-layout {
+    gap: 0.7rem;
+  }
+
+  .request-funding-form-card {
+    margin-top: 0;
+  }
+
+  .request-funding-form-card .form-grid {
+    gap: 0.86rem;
+  }
+
+  .request-funding-form-card .stat-value {
+    font-size: clamp(1.12rem, 7vw, 1.5rem);
+    line-height: 1.18;
   }
 
   .mission-hero {

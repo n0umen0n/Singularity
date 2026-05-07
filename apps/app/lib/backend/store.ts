@@ -516,7 +516,7 @@ export async function voteFundingRequest(requestId: string, input: { wallet?: st
   return updateState(async (state) => {
     const wallet = input.wallet || state.currentUser.address;
     const vote = input.vote;
-    if (vote !== "approve" && vote !== "reject") throw new Error("vote must be approve or reject.");
+    if (vote !== "approve" && vote !== "reject") throw new Error("Choose approve or reject before submitting your vote.");
 
     const existingVote = state.fundingRequestVotes.find((entry) => entry.requestId === requestId && entry.wallet === wallet);
     if (existingVote) throw new Error("This wallet has already voted on the request.");

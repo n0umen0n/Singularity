@@ -8,7 +8,6 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import {
-  createAssociatedTokenAccountIdempotentInstruction,
   createInitializeMint2Instruction,
   getAssociatedTokenAddressSync,
   TOKEN_2022_PROGRAM_ID,
@@ -40,9 +39,6 @@ export const DEFAULT_DBC_INITIAL_MARKET_CAP = 10_000;
 export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 65_000;
 
 const DEFAULT_DBC_BUY_AMOUNTS_USDC = [5, 10, 25, 100, 1_000];
-const DBC_PROGRAM_ID = new PublicKey("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN");
-const DBC_POOL_AUTHORITY = new PublicKey("FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM");
-const DBC_WITHDRAW_LEFTOVER_DISCRIMINATOR = Buffer.from([20, 198, 202, 237, 235, 243, 183, 66]);
 const DBC_GUARDRAILS = {
   maxTenUsdcTotalSupplyPercent: 0.5,
   maxHundredUsdcTotalSupplyPercent: 3,
@@ -325,53 +321,6 @@ function initialVirtualPool(curveConfig: ReturnType<typeof buildCurveWithMarketC
   } as VirtualPool;
 }
 
-function dbcEventAuthority() {
-  return PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], DBC_PROGRAM_ID)[0];
-}
-
-function dbcTokenVault(pool: PublicKey, mint: PublicKey) {
-  return PublicKey.findProgramAddressSync([Buffer.from("token_vault"), mint.toBuffer(), pool.toBuffer()], DBC_PROGRAM_ID)[0];
-}
-
-function withdrawMeteoraDbcLeftoverInstructions(input: {
-  payer: PublicKey;
-  config: PublicKey;
-  virtualPool: PublicKey;
-  baseMint: PublicKey;
-  leftoverReceiver: PublicKey;
-  treasuryVault: PublicKey;
-}) {
-  const baseVault = dbcTokenVault(input.virtualPool, input.baseMint);
-  return {
-    baseVault,
-    instructions: [
-      createAssociatedTokenAccountIdempotentInstruction(
-        input.payer,
-        input.treasuryVault,
-        input.leftoverReceiver,
-        input.baseMint,
-        TOKEN_2022_PROGRAM_ID,
-      ),
-      new TransactionInstruction({
-        programId: DBC_PROGRAM_ID,
-        keys: [
-          { pubkey: DBC_POOL_AUTHORITY, isSigner: false, isWritable: false },
-          { pubkey: input.config, isSigner: false, isWritable: false },
-          { pubkey: input.virtualPool, isSigner: false, isWritable: true },
-          { pubkey: input.treasuryVault, isSigner: false, isWritable: true },
-          { pubkey: baseVault, isSigner: false, isWritable: true },
-          { pubkey: input.baseMint, isSigner: false, isWritable: false },
-          { pubkey: input.leftoverReceiver, isSigner: false, isWritable: false },
-          { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
-          { pubkey: dbcEventAuthority(), isSigner: false, isWritable: false },
-          { pubkey: DBC_PROGRAM_ID, isSigner: false, isWritable: false },
-        ],
-        data: DBC_WITHDRAW_LEFTOVER_DISCRIMINATOR,
-      }),
-    ],
-  };
-}
-
 export function simulateMeteoraDbcLaunch(input: MeteoraDbcLaunchSimulationInput = {}): MeteoraDbcLaunchSimulation {
   const { launchConfig, treasurySupply, curveConfig } = buildMeteoraDbcCurveConfig(input);
   const marketSupply = launchConfig.totalSupply - treasurySupply;
@@ -576,14 +525,6 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
   const transactions = "createConfigTx" in result ? [result.createConfigTx, result.createPoolWithFirstBuyTx] : [result];
   const dbcPool = deriveDbcPoolAddress(quoteMint, baseMint.publicKey, config.publicKey);
   const treasuryVault = getAssociatedTokenAddressSync(baseMint.publicKey, leftoverReceiver, true, TOKEN_2022_PROGRAM_ID);
-  const withdrawLeftover = withdrawMeteoraDbcLeftoverInstructions({
-    payer,
-    config: config.publicKey,
-    virtualPool: dbcPool,
-    baseMint: baseMint.publicKey,
-    leftoverReceiver,
-    treasuryVault,
-  });
   const signerKeypairs = [config, baseMint];
   const transactionSteps = transactions.map((transaction, index) => ({
     label: index === 0 ? "Create Meteora DBC config" : "Create Meteora DBC pool",
@@ -594,15 +535,8 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
   }));
 
   return {
-    instructions: [...transactions.flatMap((transaction) => transaction.instructions), ...withdrawLeftover.instructions],
-    transactionSteps: [
-      ...transactionSteps,
-      {
-        label: "Fund mission treasury",
-        instructions: withdrawLeftover.instructions,
-        signerKeypairs: [],
-      },
-    ],
+    instructions: transactions.flatMap((transaction) => transaction.instructions),
+    transactionSteps,
     signerKeypairs,
     accounts: {
       meteoraConfig: config.publicKey.toBase58(),
@@ -610,7 +544,6 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
       dbcPool: dbcPool.toBase58(),
       quoteMint: quoteMint.toBase58(),
       treasuryVault: treasuryVault.toBase58(),
-      baseVault: withdrawLeftover.baseVault.toBase58(),
       poolSupply: String(poolSupply),
       treasurySupply: String(treasurySupply),
       initialMarketCap: String(launchConfig.initialMarketCap),

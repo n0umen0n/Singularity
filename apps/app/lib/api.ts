@@ -50,6 +50,20 @@ export type MissionBalances = {
   tokenSymbol: string;
 };
 
+function requestErrorMessage(status: number, data: unknown) {
+  const serverMessage =
+    typeof data === "object" && data !== null && "error" in data && typeof (data as { error?: unknown }).error === "string"
+      ? (data as { error: string }).error
+      : null;
+  if (serverMessage) return serverMessage;
+  if (status === 401) return "Sign in with your wallet before continuing.";
+  if (status === 403) return "Your wallet does not have permission to perform this action.";
+  if (status === 404) return "The requested item could not be found. Refresh the page and try again.";
+  if (status === 409) return "This action conflicts with the latest state. Refresh the page and try again.";
+  if (status >= 500) return "The server could not complete this action. Please try again in a moment.";
+  return "The request could not be completed. Check the form and try again.";
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
@@ -62,7 +76,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await response.json() : null;
-  if (!response.ok) throw new Error(data?.error || `Request failed with status ${response.status}.`);
+  if (!response.ok) throw new Error(requestErrorMessage(response.status, data));
   return data as T;
 }
 
