@@ -80,7 +80,7 @@ async function getJson<T>(url: string): Promise<T> {
   return data as T;
 }
 
-async function formatSendTransactionError(error: unknown, connection: Connection) {
+async function formatSendTransactionError(error: unknown, connection: Connection, kind?: string) {
   const plainLogs =
     typeof error === "object" && error && "logs" in error && Array.isArray((error as { logs?: unknown }).logs)
       ? ((error as { logs: string[] }).logs)
@@ -102,10 +102,15 @@ async function formatSendTransactionError(error: unknown, connection: Connection
   }
   if (details.includes("InstructionFallbackNotFound")) {
     return new Error(
-      "Simulation failed (InstructionFallbackNotFound): the chain rejected this instruction's header bytes—often a stale API deployment or RPC/cluster mismatch between the backend (SOLANA_RPC_URL) and your wallet RPC. The council program on mainnet matches this repo’s deploy artifact; redeploy the app if production might lag git.",
+      "Simulation failed (InstructionFallbackNotFound): the deployed council program does not recognize this fee-claim instruction. Upgrade the on-chain council program from the current source, then retry.",
     );
   }
   if (details.includes("AccountNotInitialized") || details.includes("expected this account to be already initialized")) {
+    if (kind === "mission-fee-claim" || details.includes("ClaimDbcFeesAndRoute")) {
+      return new Error(
+        "Fee claim failed because one of the Meteora or mission fee token accounts is not initialized yet. Check the console logs for the exact account error.",
+      );
+    }
     return new Error("This mission does not have 6 finalized councillors on-chain yet. Finalize the top 6 holders before submitting funding requests.");
   }
   if (details.includes("insufficient lamports") || details.includes("Attempt to debit an account")) {
@@ -229,7 +234,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
         const signedBytes = "signedTransaction" in signed ? signed.signedTransaction : signed;
         const rawTransaction = signedBytes instanceof Uint8Array ? signedBytes : new Uint8Array(signedBytes as ArrayBuffer);
         const submitted = await connection.sendRawTransaction(rawTransaction, { skipPreflight: false }).catch(async (error: unknown) => {
-          throw await formatSendTransactionError(error, connection);
+          throw await formatSendTransactionError(error, connection, transaction.kind);
         });
         signatures.push(submitted);
         await connection.confirmTransaction(submitted, "confirmed");

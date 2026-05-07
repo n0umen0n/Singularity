@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { createPortal } from "react-dom";
 import Cropper, { type Area, type MediaSize } from "react-easy-crop";
-import { ArrowRight, ChevronDown, Copy, Sparkles, Upload, Zap } from "lucide-react";
+import { ArrowRight, ChevronDown, Copy, Sparkles, Upload } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
@@ -29,34 +29,8 @@ type CropRequest = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
-  const pathname = usePathname();
-  const [navigationLoading, setNavigationLoading] = useState(false);
-
-  useEffect(() => {
-    setNavigationLoading(false);
-  }, [pathname]);
-
-  useEffect(() => {
-    if (!navigationLoading) return;
-    const timer = window.setTimeout(() => setNavigationLoading(false), 8000);
-    return () => window.clearTimeout(timer);
-  }, [navigationLoading]);
-
-  const showNavigationLoader = (event: React.MouseEvent<HTMLElement>) => {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-
-    const anchor = (event.target as Element | null)?.closest("a[href]");
-    if (!(anchor instanceof HTMLAnchorElement) || anchor.target || anchor.hasAttribute("download")) return;
-
-    const nextUrl = new URL(anchor.href);
-    if (nextUrl.origin !== window.location.origin) return;
-    if (`${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}` === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
-
-    setNavigationLoading(true);
-  };
-
   return (
-    <main className="app-shell" onClickCapture={showNavigationLoader}>
+    <main className="app-shell">
       <header className="top-nav">
         <Link href="/missions">
           <BrandWordmark />
@@ -84,11 +58,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <Link href="/missions/new">Create</Link>
         <Link href="/profile">Profile</Link>
       </nav>
-      {navigationLoading ? (
-        <div className="navigation-loader-overlay">
-          <PageLoader className="navigation-loader-card" />
-        </div>
-      ) : null}
     </main>
   );
 }
@@ -396,57 +365,9 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
         <aside className="right-rail">
           <TreasuryPanel mission={mission} />
           <TradePanel mission={mission} onMissionChange={setMission} />
-          <ClaimFeesPanel mission={mission} />
         </aside>
       </section>
     </AppShell>
-  );
-}
-
-function ClaimFeesPanel({ mission }: { mission: Mission }) {
-  const wallet = useSingularityWallet();
-  const [status, setStatus] = useState<string | null>(null);
-  const [claiming, setClaiming] = useState(false);
-
-  const claim = async () => {
-    if (!wallet.address) {
-      await wallet.signIn();
-      return;
-    }
-    try {
-      setClaiming(true);
-      setStatus("Preparing fee claim...");
-      const result = await api.prepareMissionFeeClaim(mission.id);
-      if (result.transaction.status !== "ready") {
-        setStatus(result.transaction.message);
-        return;
-      }
-      setStatus("Approve the fee claim in your wallet...");
-      const signature = await wallet.sendPreparedTransaction(result.transaction);
-      setStatus(signature ? `Fees claimed and routed: ${shortAddress(signature)}` : "Fee claim was not submitted.");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Fee claim failed.");
-    } finally {
-      setClaiming(false);
-    }
-  };
-
-  return (
-    <GlassCard className="section-card">
-      <div className="section-heading">
-        <div>
-          <span className="stat-label">Fees</span>
-          <h2>Claim trading fees</h2>
-        </div>
-      </div>
-      <p className="stat-note">
-        Claims mission-token bonding curve fees into the router and splits them 50% treasury, 25% creator, and 25% Singularity.
-      </p>
-      {status ? <p className="stat-note">{status}</p> : null}
-      <button className="button button-primary" type="button" disabled={claiming} style={{ width: "100%" }} onClick={() => void claim()}>
-        {claiming ? <InlineLoader /> : wallet.address ? "Claim fees" : "Sign in to claim fees"}
-      </button>
-    </GlassCard>
   );
 }
 
@@ -2150,28 +2071,25 @@ export function ProfilePage({ address }: { address?: string }) {
         </GlassCard>
         <GlassCard className="section-card">
           <div className="section-heading">
-            <h2>Earned trading fees</h2>
+            <h2>Trading fee distributions</h2>
           </div>
           {createdMissions.length ? (
             <div className="fee-grid">
               {createdMissions.map((entry) => (
-              <GlassCard className="creator-fee-card interactive" key={entry.missionId}>
-                <span className="token-avatar">
-                  <img src={entry.mission.tokenImage} alt="" decoding="async" loading="lazy" />
-                </span>
-                <div>
-                  <span className="stat-label">{entry.mission.tokenSymbol} earned fees</span>
-                  <div className="stat-value">{money(entry.tradingFeesEarned)}</div>
-                </div>
-                <button className="button button-primary">
-                  <Zap size={16} />
-                  Claim trading fees
-                </button>
-              </GlassCard>
+                <GlassCard className="creator-fee-card" key={entry.missionId}>
+                  <span className="token-avatar">
+                    <img src={entry.mission.tokenImage} alt="" decoding="async" loading="lazy" />
+                  </span>
+                  <div>
+                    <span className="stat-label">{entry.mission.tokenSymbol} distributed fees</span>
+                    <div className="stat-value">{money(entry.tradingFeesEarned)}</div>
+                    <p className="stat-note">Fees are distributed automatically every 24 hours.</p>
+                  </div>
+                </GlassCard>
               ))}
             </div>
           ) : (
-            <EmptyState title="No fees to claim" description="Create a mission or join a council to start earning trading fees as markets trade." />
+            <EmptyState title="No distributed fees yet" description="Create a mission to receive automatic trading-fee distributions every 24 hours." />
           )}
         </GlassCard>
         <GlassCard className="section-card">

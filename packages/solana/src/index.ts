@@ -40,6 +40,7 @@ export const DEFAULT_DBC_INITIAL_MARKET_CAP = 25;
 export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 50;
 
 const DEFAULT_DBC_BUY_AMOUNTS_USDC = [5, 10, 25, 100, 1_000];
+const DBC_LAUNCH_DUST_LIQUIDITY_USDC = 0.05;
 const DBC_GUARDRAILS = {
   maxTenUsdcTotalSupplyPercent: 100,
   maxHundredUsdcTotalSupplyPercent: 1_000,
@@ -574,6 +575,11 @@ function spotPrice(virtualPool: VirtualPool) {
   return Number(price.toString());
 }
 
+function sqrtPriceToUsdc(value: unknown) {
+  const price = getPriceFromSqrtPrice(bnField(value), TokenDecimal.SIX, TokenDecimal.SIX);
+  return Number(price.toString());
+}
+
 function reserveAmount(value: unknown) {
   return amountFromBaseUnits(bnField(value));
 }
@@ -707,6 +713,22 @@ export async function meteoraDbcPartnerFeeClaimInstruction(input: {
   maxBaseAmount?: bigint;
   maxQuoteAmount?: bigint;
 }) {
+  const instructions = await meteoraDbcPartnerFeeClaimInstructions(input);
+  const claimInstruction = instructions.find((instruction) => instruction.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID));
+  if (!claimInstruction) throw new Error("Meteora DBC fee claim instruction was not built.");
+
+  return claimInstruction;
+}
+
+export async function meteoraDbcPartnerFeeClaimInstructions(input: {
+  rpcUrl: string;
+  pool: string;
+  feeClaimer: string;
+  payer: string;
+  receiver: string;
+  maxBaseAmount?: bigint;
+  maxQuoteAmount?: bigint;
+}) {
   const connection = new Connection(input.rpcUrl, "confirmed");
   const client = new DynamicBondingCurveClient(connection, "confirmed");
   const transaction = await client.partner.claimPartnerTradingFee({
@@ -717,10 +739,8 @@ export async function meteoraDbcPartnerFeeClaimInstruction(input: {
     maxBaseAmount: new BN((input.maxBaseAmount ?? 9_000_000_000_000_000n).toString()),
     maxQuoteAmount: new BN((input.maxQuoteAmount ?? 0n).toString()),
   });
-  const claimInstruction = transaction.instructions.find((instruction) => instruction.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID));
-  if (!claimInstruction) throw new Error("Meteora DBC fee claim instruction was not built.");
 
-  return claimInstruction;
+  return transaction.instructions;
 }
 
 export async function fetchMeteoraDbcMarketSnapshot(input: {
@@ -732,7 +752,8 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
   totalSupply?: number;
 }) {
   const { connection, client, virtualPool, config } = await dbcPoolState(input);
-  const currentPrice = spotPrice(virtualPool);
+  const poolPrice = spotPrice(virtualPool);
+  const launchPrice = sqrtPriceToUsdc((config as { sqrtStartPrice?: unknown }).sqrtStartPrice);
   const baseMint = input.tokenMint || (virtualPool as { baseMint: PublicKey }).baseMint.toBase58();
   const quoteMint = (config as { quoteMint: PublicKey }).quoteMint.toBase58();
   const baseReserve = reserveAmount((virtualPool as { baseReserve?: unknown }).baseReserve);
@@ -752,7 +773,13 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     .then((accounts) => accounts.filter((account) => account.account.data.length >= 8 && account.account.data.readBigUInt64LE(0) > 0n).length)
     .catch(() => 0);
   const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
-  const marketTokens = baseReserve;
+  const isLaunchDust = quoteReserve > 0 && quoteReserve <= DBC_LAUNCH_DUST_LIQUIDITY_USDC;
+  const currentPrice = isLaunchDust && Number.isFinite(launchPrice) && launchPrice > 0 ? launchPrice : poolPrice;
+  const liquidityUsd = isLaunchDust ? 0 : quoteReserve;
+  const marketSupply = Math.max(supply - treasuryTokens, 0);
+  const poolMarketReserve = baseReserve > marketSupply && treasuryTokens > 0 ? baseReserve - treasuryTokens : baseReserve;
+  const marketTokens = isLaunchDust ? marketSupply : Math.max(0, Math.min(poolMarketReserve, marketSupply));
+  const circulatingTokens = isLaunchDust ? 0 : Math.max(marketSupply - marketTokens, 0);
 
   return {
     route: "meteora-dbc" as const,
@@ -762,13 +789,13 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     currentPrice,
     baseReserve,
     quoteReserve,
-    liquidityUsd: quoteReserve,
+    liquidityUsd,
     poolProgressPercent: Math.max(0, Math.min(progress * 100, 100)),
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
     holders,
     totalSupply: supply,
-    circulatingTokens: Math.max(supply - treasuryTokens - marketTokens, 0),
+    circulatingTokens,
     marketTokens,
     updatedAt: new Date().toISOString(),
   } satisfies MeteoraDbcMarketSnapshot;

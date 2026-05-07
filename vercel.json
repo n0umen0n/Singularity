@@ -3,10 +3,17 @@
     {
       "path": "/api/indexer/run",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/distribute-fees",
+      "schedule": "0 0 * * *"
     }
   ],
   "functions": {
     "apps/app/app/api/indexer/run/route.ts": {
+      "maxDuration": 300
+    },
+    "apps/app/app/api/cron/distribute-fees/route.ts": {
       "maxDuration": 300
     }
   }

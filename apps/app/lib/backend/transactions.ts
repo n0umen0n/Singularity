@@ -1,6 +1,23 @@
 import { createHash } from "node:crypto";
-import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  sendAndConfirmTransaction,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  createTransferCheckedInstruction,
+  getAccount,
+  getAssociatedTokenAddressSync,
+  getMint,
+  TOKEN_2022_PROGRAM_ID,
+} from "@solana/spl-token";
 import bs58 from "bs58";
 import {
   buildPreparedTransaction,
@@ -13,6 +30,7 @@ import {
   fetchMeteoraDbcMarketSnapshot,
   latestBlockhash,
   meteoraDbcPartnerFeeClaimInstruction,
+  meteoraDbcPartnerFeeClaimInstructions,
   prepareMeteoraDbcLaunchInstructions,
   prepareMeteoraDbcTrade,
   quoteMeteoraDbcTrade,
@@ -159,14 +177,30 @@ function bytesVecBuffer(value: Uint8Array | Buffer) {
   return Buffer.concat([length, Buffer.from(value)]);
 }
 
-function keypairFromEnv(name: string) {
+function optionalKeypairFromEnv(name: string) {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required for automatic council checkpoint finalization.`);
+  if (!value) return null;
 
   const secret = value.startsWith("[")
     ? Uint8Array.from(JSON.parse(value) as number[])
     : bs58.decode(value);
   return Keypair.fromSecretKey(secret);
+}
+
+function keypairFromEnv(name: string, purpose = "this transaction") {
+  const keypair = optionalKeypairFromEnv(name);
+  if (!keypair) throw new Error(`${name} is required for ${purpose}.`);
+  return keypair;
+}
+
+function feeDistributorKeypair() {
+  return keypairFromEnv("SINGULARITY_FEE_DISTRIBUTOR_KEYPAIR", "backend mission fee distribution");
+}
+
+function feeClaimerForLaunch(feeRouterAuthority: string) {
+  const configured = process.env.SINGULARITY_FEE_DISTRIBUTOR_PUBKEY?.trim();
+  if (configured) return configured;
+  return optionalKeypairFromEnv("SINGULARITY_FEE_DISTRIBUTOR_KEYPAIR")?.publicKey.toBase58() ?? feeRouterAuthority;
 }
 
 function assertConfiguredCouncilAuthority(authority: PublicKey) {
@@ -360,7 +394,7 @@ export async function prepareLaunchTransaction(input: {
       symbol: input.tokenSymbol || "MISSION",
       uri: input.metadataUri || `https://metadata.singularity.diy/${input.metadataHash}.json`,
       quoteMint: process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT,
-      feeClaimer: feeRouterAuthority,
+      feeClaimer: feeClaimerForLaunch(feeRouterAuthority),
       leftoverReceiver: treasuryAuthority,
       totalSupply: launchConfig.totalSupply,
       treasurySupplyPercent: launchConfig.treasurySupplyPercent,
@@ -957,4 +991,111 @@ export async function prepareClaimMissionFeesTransaction(input: {
   } catch (error) {
     return notConfigured(kind, error);
   }
+}
+
+async function tokenAccountBalance(connection: Connection, account: PublicKey) {
+  try {
+    return (await getAccount(connection, account, "confirmed", TOKEN_2022_PROGRAM_ID)).amount;
+  } catch {
+    return 0n;
+  }
+}
+
+export async function submitBackendMissionFeeDistribution(input: {
+  missionId: string;
+  creatorWallet: string;
+  tokenMint: string;
+  dbcPool: string;
+  treasuryVault: string;
+}) {
+  const config = requireProgramConfig(process.env);
+  const distributor = feeDistributorKeypair();
+  const platformWallet = process.env.SINGULARITY_PLATFORM_FEE_RECIPIENT?.trim();
+  if (!platformWallet) throw new Error("SINGULARITY_PLATFORM_FEE_RECIPIENT is required for backend mission fee distribution.");
+
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const mint = new PublicKey(input.tokenMint);
+  const mintInfo = await getMint(connection, mint, "confirmed", TOKEN_2022_PROGRAM_ID);
+  const creator = new PublicKey(input.creatorWallet);
+  const platform = new PublicKey(platformWallet);
+  const treasuryVault = new PublicKey(input.treasuryVault);
+  const distributorTokenAccount = getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
+  const creatorTokenAccount = getAssociatedTokenAddressSync(mint, creator, true, TOKEN_2022_PROGRAM_ID);
+  const platformTokenAccount = getAssociatedTokenAddressSync(mint, platform, true, TOKEN_2022_PROGRAM_ID);
+
+  const claimInstructions = await meteoraDbcPartnerFeeClaimInstructions({
+    rpcUrl: config.rpcUrl,
+    pool: input.dbcPool,
+    feeClaimer: distributor.publicKey.toBase58(),
+    payer: distributor.publicKey.toBase58(),
+    receiver: distributor.publicKey.toBase58(),
+    maxBaseAmount: 9_000_000_000_000_000n,
+    maxQuoteAmount: 0n,
+  });
+
+  const claimTransaction = new Transaction().add(
+    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, distributorTokenAccount, distributor.publicKey, mint, TOKEN_2022_PROGRAM_ID),
+    ...claimInstructions,
+  );
+  const claimSignature = await sendAndConfirmTransaction(connection, claimTransaction, [distributor], { commitment: "confirmed" });
+  const distributableAmount = await tokenAccountBalance(connection, distributorTokenAccount);
+
+  if (distributableAmount <= 0n) {
+    return {
+      status: "no_fees" as const,
+      missionId: input.missionId,
+      claimSignature,
+      distributedAmount: "0",
+    };
+  }
+
+  const treasuryAmount = distributableAmount / 2n;
+  const creatorAmount = distributableAmount / 4n;
+  const platformAmount = distributableAmount - treasuryAmount - creatorAmount;
+  const distributionTransaction = new Transaction().add(
+    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, creatorTokenAccount, creator, mint, TOKEN_2022_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, platformTokenAccount, platform, mint, TOKEN_2022_PROGRAM_ID),
+    createTransferCheckedInstruction(
+      distributorTokenAccount,
+      mint,
+      treasuryVault,
+      distributor.publicKey,
+      treasuryAmount,
+      mintInfo.decimals,
+      [],
+      TOKEN_2022_PROGRAM_ID,
+    ),
+    createTransferCheckedInstruction(
+      distributorTokenAccount,
+      mint,
+      creatorTokenAccount,
+      distributor.publicKey,
+      creatorAmount,
+      mintInfo.decimals,
+      [],
+      TOKEN_2022_PROGRAM_ID,
+    ),
+    createTransferCheckedInstruction(
+      distributorTokenAccount,
+      mint,
+      platformTokenAccount,
+      distributor.publicKey,
+      platformAmount,
+      mintInfo.decimals,
+      [],
+      TOKEN_2022_PROGRAM_ID,
+    ),
+  );
+  const distributionSignature = await sendAndConfirmTransaction(connection, distributionTransaction, [distributor], { commitment: "confirmed" });
+
+  return {
+    status: "distributed" as const,
+    missionId: input.missionId,
+    claimSignature,
+    distributionSignature,
+    distributedAmount: distributableAmount.toString(),
+    treasuryAmount: treasuryAmount.toString(),
+    creatorAmount: creatorAmount.toString(),
+    platformAmount: platformAmount.toString(),
+  };
 }

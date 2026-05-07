@@ -883,24 +883,6 @@ textarea {
   text-align: center;
 }
 
-.navigation-loader-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: grid;
-  padding: clamp(1.4rem, 4vw, 3rem);
-  place-items: center;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(118, 108, 255, 0.16), transparent 24rem),
-    rgba(2, 2, 3, 0.54);
-  backdrop-filter: blur(16px);
-}
-
-.navigation-loader-card {
-  width: min(520px, 100%);
-  margin: 0;
-}
-
 .page-loader-card::before,
 .page-loader-card::after {
   position: absolute;

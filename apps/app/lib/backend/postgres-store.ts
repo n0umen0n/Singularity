@@ -18,7 +18,7 @@ import {
   prepareLaunchTransaction,
   prepareMeteoraDbcTradeTransaction,
   prepareMissionGraduationTransaction,
-  prepareClaimMissionFeesTransaction,
+  submitBackendMissionFeeDistribution,
   submitFinalizeEpochCouncilTransaction,
 } from "@/lib/backend/transactions";
 import type { MissionSort } from "@/lib/backend/store";
@@ -991,19 +991,58 @@ export async function prepareMissionGraduationInPostgres(
   };
 }
 
-export async function prepareMissionFeeClaimInPostgres(missionId: string, input: { wallet?: string }) {
-  const mission = await getMissionByIdFromPostgres(missionId);
-  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+export async function distributeMissionFeesInPostgres(input: { limit?: number } = {}) {
+  const limit = Math.max(1, Math.min(input.limit || 50, 100));
+  const result = await query<{
+    id: string;
+    creator_wallet: string;
+    token_mint: string;
+    dbc_pool: string;
+    treasury_vault: string;
+  }>(
+    `
+      select id, creator_wallet, token_mint, dbc_pool, treasury_vault
+      from missions
+      where lifecycle_state = 'bonding'
+        and token_mint is not null
+        and dbc_pool is not null
+        and treasury_vault is not null
+      order by created_at asc
+      limit $1
+    `,
+    [limit],
+  );
+
+  const missions = result.rows;
+  const results = [];
+  for (const mission of missions) {
+    try {
+      const distribution = await submitBackendMissionFeeDistribution({
+        missionId: mission.id,
+        creatorWallet: mission.creator_wallet,
+        tokenMint: mission.token_mint,
+        dbcPool: mission.dbc_pool,
+        treasuryVault: mission.treasury_vault,
+      });
+      if (distribution.distributionSignature) {
+        await query(
+          "insert into transactions (signature, wallet, mission_id, type, status) values ($1, $2, $3, 'mission-fee-distribution', 'confirmed') on conflict (signature) do nothing",
+          [distribution.distributionSignature, process.env.SINGULARITY_FEE_DISTRIBUTOR_PUBKEY || "backend-fee-distributor", mission.id],
+        );
+      }
+      results.push(distribution);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Mission fee distribution failed.";
+      console.error("Mission fee distribution failed", { missionId: mission.id, error: message });
+      results.push({ status: "failed" as const, missionId: mission.id, error: message });
+    }
+  }
 
   return {
-    transaction: await prepareClaimMissionFeesTransaction({
-      wallet: input.wallet,
-      missionId,
-      creatorWallet: await getMissionCreatorWallet(missionId),
-      tokenMint: mission.tokenMint,
-      dbcPool: mission.dbcPool,
-      treasuryVault: mission.treasuryVault,
-    }),
+    checked: missions.length,
+    distributed: results.filter((entry) => entry.status === "distributed").length,
+    failed: results.filter((entry) => entry.status === "failed").length,
+    results,
   };
 }
 
