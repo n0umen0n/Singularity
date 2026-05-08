@@ -635,22 +635,27 @@ async function positiveTokenAccountHolders(connection: Connection, mint: string)
     .catch(() => 0);
 }
 
-async function jupiterReferencePrice(input: { baseMint: string; quoteMint: string; fallbackPrice: number }) {
-  const quoteUrl = new URL("https://lite-api.jup.ag/swap/v1/quote");
-  quoteUrl.searchParams.set("inputMint", input.quoteMint);
-  quoteUrl.searchParams.set("outputMint", input.baseMint);
-  quoteUrl.searchParams.set("amount", "1000000");
-  quoteUrl.searchParams.set("slippageBps", "100");
+async function jupiterMarketSnapshot(input: { baseMint: string; fallbackPrice: number; fallbackLiquidityUsd: number }) {
+  for (const baseUrl of ["https://lite-api.jup.ag/price/v3", "https://api.jup.ag/price/v3"]) {
+    const priceUrl = new URL(baseUrl);
+    priceUrl.searchParams.set("ids", input.baseMint);
 
-  try {
-    const response = await fetch(quoteUrl);
-    if (!response.ok) return input.fallbackPrice;
-    const quote = (await response.json()) as { outAmount?: string };
-    const tokensOut = Number(quote.outAmount || 0) / 1_000_000;
-    return tokensOut > 0 ? 1 / tokensOut : input.fallbackPrice;
-  } catch {
-    return input.fallbackPrice;
+    try {
+      const response = await fetch(priceUrl);
+      if (!response.ok) continue;
+      const prices = (await response.json()) as Record<string, { liquidity?: number; usdPrice?: number } | undefined>;
+      const market = prices[input.baseMint];
+      const price = market?.usdPrice;
+      return {
+        liquidityUsd: market?.liquidity && Number.isFinite(market.liquidity) && market.liquidity > 0 ? market.liquidity : input.fallbackLiquidityUsd,
+        price: price && Number.isFinite(price) && price > 0 ? price : input.fallbackPrice,
+      };
+    } catch {
+      continue;
+    }
   }
+
+  return { liquidityUsd: input.fallbackLiquidityUsd, price: input.fallbackPrice };
 }
 
 function priceImpact(input: { side: MeteoraDbcTradeSide; inputAmount: number; estimatedOutput: number; currentPrice: number }) {
@@ -978,7 +983,8 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
     positiveTokenAccountHolders(connection, baseMint),
   ]);
   const fallbackPrice = input.fallbackPrice && input.fallbackPrice > 0 ? input.fallbackPrice : quoteReserve > 0 && baseReserve > 0 ? quoteReserve / baseReserve : 0;
-  const currentPrice = await jupiterReferencePrice({ baseMint, quoteMint, fallbackPrice });
+  const marketSnapshot = await jupiterMarketSnapshot({ baseMint, fallbackPrice, fallbackLiquidityUsd: quoteReserve });
+  const currentPrice = marketSnapshot.price;
   const configuredTreasuryTokens =
     input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
   const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
@@ -994,7 +1000,7 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
     currentPrice,
     baseReserve,
     quoteReserve,
-    liquidityUsd: quoteReserve + baseReserve * currentPrice,
+    liquidityUsd: marketSnapshot.liquidityUsd,
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
     holders,

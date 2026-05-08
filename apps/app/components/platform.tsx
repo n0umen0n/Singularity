@@ -839,6 +839,7 @@ function TreasuryPanel({ mission }: { mission: Mission }) {
   const totalSupplyAmount = `${number(mission.totalSupply)} ${mission.tokenSymbol}`;
   const treasuryTokenAmount = `${number(treasuryTokens)} ${mission.tokenSymbol}`;
   const marketTokenAmount = `${number(marketTokens)} ${mission.tokenSymbol}`;
+  const headlineMoney = (value: number) => money(value, false, 1);
 
   return (
     <GlassCard className="section-card">
@@ -851,21 +852,21 @@ function TreasuryPanel({ mission }: { mission: Mission }) {
       <div className="treasury-market-grid">
         <div>
           <span className="stat-label">Market Capitalization</span>
-          <div className="stat-value">{money(marketCapValue)}</div>
+          <div className="stat-value">{headlineMoney(marketCapValue)}</div>
           <div className="stat-note" title={totalSupplyAmount}>
             {number(mission.totalSupply, true)} {mission.tokenSymbol}
           </div>
         </div>
         <div>
           <span className="stat-label">Treasury</span>
-          <div className="stat-value">{money(treasuryValue)}</div>
+          <div className="stat-value">{headlineMoney(treasuryValue)}</div>
           <div className="stat-note" title={treasuryTokenAmount}>
             {number(treasuryTokens, true)} {mission.tokenSymbol}
           </div>
         </div>
         <div>
           <span className="stat-label">Liquidity</span>
-          <div className="stat-value">{money(mission.liquidity)}</div>
+          <div className="stat-value">{headlineMoney(mission.liquidity)}</div>
           <div className="stat-note" title={marketTokenAmount}>
             {number(marketTokens, true)} {mission.tokenSymbol}
           </div>

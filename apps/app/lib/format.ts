@@ -1,7 +1,7 @@
-export function money(value: number, compact = false) {
+export function money(value: number, compact = false, maximumFractionDigitsOverride?: number) {
   const safeValue = Number.isFinite(value) ? value : 0;
   const absoluteValue = Math.abs(safeValue);
-  const maximumFractionDigits = compact || absoluteValue >= 1000 ? 0 : absoluteValue > 0 && absoluteValue < 0.01 ? 8 : 4;
+  const maximumFractionDigits = maximumFractionDigitsOverride ?? (compact || absoluteValue >= 1000 ? 0 : absoluteValue > 0 && absoluteValue < 0.01 ? 8 : 4);
 
   return new Intl.NumberFormat("en-US", {
     style: "currency",
