@@ -16,6 +16,8 @@ import {
   prepareCouncilCheckpointInPostgres,
   prepareFundingRequestInPostgres,
   prepareMissionGraduationInPostgres,
+  prepareMissionMarketGraduationInPostgres,
+  confirmMissionMarketGraduationInPostgres,
   prepareMissionLaunchInPostgres,
   quoteMissionTradeFromPostgres,
   refreshMissionMarketDataInPostgres,
@@ -32,6 +34,7 @@ import {
   prepareFundingRequestTransaction,
   prepareJupiterTradeTransaction,
   prepareLaunchTransaction,
+  prepareMissionMarketGraduationTransaction,
   prepareMissionGraduationTransaction,
 } from "@/lib/backend/transactions";
 import { currentUser, missions, type FundingRequest, type Mission, type RequestStatus } from "@/lib/mock-data";
@@ -393,13 +396,15 @@ export async function quoteMissionTrade(missionId: string, input: { side?: strin
   const mission = findMissionOrThrow(state, missionId);
   const amount = Math.max(Number(input.amount) || 0, 0);
   const side = input.side === "sell" ? "sell" : "buy";
-  const chainQuote = mission.tokenMint
+  const useAmm = Boolean(mission.dammPool) || mission.lifecycle === "graduated";
+  const chainQuote = mission.tokenMint && useAmm
     ? await prepareJupiterTradeTransaction({
         wallet: input.wallet,
         side,
         amount,
         tokenMint: mission.tokenMint,
         slippageBps: input.slippageBps,
+      referencePrice: mission.tokenPrice,
       })
     : undefined;
 
@@ -448,6 +453,36 @@ export async function prepareMissionGraduation(
         dammPool: input.dammPool,
       }),
     };
+  });
+}
+
+export async function prepareMissionMarketGraduation(missionId: string, input: { wallet?: string }) {
+  if (storageMode() === "postgres") return prepareMissionMarketGraduationInPostgres(missionId, input);
+
+  const state = await readState();
+  const mission = findMissionOrThrow(state, missionId);
+  const result = await prepareMissionMarketGraduationTransaction({
+    wallet: input.wallet || state.currentUser.address,
+    dbcPool: mission.dbcPool,
+  });
+
+  return {
+    mission,
+    dammPool: "dammPool" in result ? result.dammPool : mission.dammPool || null,
+    transaction: "transaction" in result ? result.transaction : result,
+  };
+}
+
+export async function confirmMissionMarketGraduation(missionId: string, input: { wallet?: string; signature?: string; dammPool?: string }) {
+  if (storageMode() === "postgres") return confirmMissionMarketGraduationInPostgres(missionId, input);
+  if (!input.signature) throw new Error("signature is required.");
+  if (!input.dammPool) throw new Error("dammPool is required.");
+
+  return updateState(async (state) => {
+    const mission = findMissionOrThrow(state, missionId);
+    mission.dammPool = input.dammPool;
+    mission.lifecycle = "graduated";
+    return { mission };
   });
 }
 

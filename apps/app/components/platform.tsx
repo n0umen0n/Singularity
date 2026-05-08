@@ -1080,9 +1080,11 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
   const [status, setStatus] = useState<string | null>(null);
   const [tradePending, setTradePending] = useState(false);
   const [tradeSucceeded, setTradeSucceeded] = useState(false);
+  const [graduationPending, setGraduationPending] = useState(false);
   const wallet = useSingularityWallet();
   const numeric = Number(amount) || 0;
   const hasAmount = numeric > 0;
+  const marketGraduationReady = mission.lifecycle === "bonding" && !mission.dammPool && (mission.poolProgressPercent || 0) >= 100;
   const activeBalance = mode === "buy" ? balances?.usdc : balances?.missionToken;
   const activeBalanceLabel = mode === "buy" ? "USDC balance" : `${mission.tokenSymbol} balance`;
   const refreshBalances = useCallback(async () => {
@@ -1158,6 +1160,40 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       setTradePending(false);
     }
   };
+  const graduateMarket = async () => {
+    if (!wallet.address) {
+      await wallet.signIn();
+      return;
+    }
+    try {
+      setStatus("Preparing market graduation...");
+      setGraduationPending(true);
+      const result = await api.prepareMissionMarketGraduation(mission.id);
+      if (result.transaction.status !== "ready") {
+        setStatus(result.transaction.message);
+        return;
+      }
+      if (!result.dammPool) {
+        setStatus("Market graduation was prepared but no AMM pool address was returned.");
+        return;
+      }
+      setStatus("Approve the market graduation transaction in your wallet...");
+      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      if (!signature) {
+        setStatus("Market graduation transaction was not submitted.");
+        return;
+      }
+      setStatus("Market graduation submitted. Recording AMM route...");
+      const confirmed = await api.confirmMissionMarketGraduation(mission.id, { signature, dammPool: result.dammPool });
+      onMissionChange?.(confirmed.mission);
+      setQuote(null);
+      setStatus("Market graduated. Buy and sell now route through the AMM.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Market graduation failed.");
+    } finally {
+      setGraduationPending(false);
+    }
+  };
 
   useEffect(() => {
     setQuote(null);
@@ -1219,7 +1255,9 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
             : "Sign in to view"}
         </strong>
       </p>
-      {hasAmount ? (
+      {marketGraduationReady ? (
+        <p className="stat-note">Graduate this market to AMM trading before the next buy or sell.</p>
+      ) : hasAmount ? (
         <>
           {cappedBuyLabel ? <p className="stat-note">Available purchase: {cappedBuyLabel}</p> : null}
           <p className="stat-note">Minimum received: {minimumReceivedLabel}</p>
@@ -1231,8 +1269,13 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       ) : status ? (
         <p className="stat-note">{status}</p>
       ) : null}
-      <button className={cx("button", mode === "buy" ? "button-primary" : "button-danger")} disabled={tradePending || (hasAmount && quote?.transaction.status === "not_configured")} style={{ width: "100%" }} onClick={() => void trade()}>
-        {tradePending ? <InlineLoader /> : wallet.address ? (mode === "buy" ? "Buy tokens" : "Sell tokens") : "Sign in to trade"}
+      <button
+        className={cx("button", mode === "buy" ? "button-primary" : "button-danger")}
+        disabled={tradePending || graduationPending || (!marketGraduationReady && hasAmount && quote?.transaction.status === "not_configured")}
+        style={{ width: "100%" }}
+        onClick={() => void (marketGraduationReady ? graduateMarket() : trade())}
+      >
+        {tradePending || graduationPending ? <InlineLoader /> : wallet.address ? (marketGraduationReady ? "Graduate market" : mode === "buy" ? "Buy tokens" : "Sell tokens") : "Sign in to trade"}
       </button>
     </GlassCard>
   );

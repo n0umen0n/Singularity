@@ -1,5 +1,5 @@
 import { Connection, PublicKey, type ConfirmedSignatureInfo, type ParsedTransactionWithMeta } from "@solana/web3.js";
-import { fetchMeteoraDbcMarketSnapshot } from "@singularity/solana";
+import { fetchMeteoraDammV2MarketSnapshot, fetchMeteoraDbcMarketSnapshot } from "@singularity/solana";
 import type pg from "pg";
 
 const defaultSource = "singularity-mainnet";
@@ -70,26 +70,39 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
     id: string;
     token_mint: string | null;
     dbc_pool: string | null;
+    damm_pool: string | null;
+    lifecycle_state: string | null;
     treasury_vault: string | null;
     treasury_supply_percent: string;
     total_supply: string;
   }>(
     `
-      select id, token_mint, dbc_pool, treasury_vault, treasury_supply_percent, total_supply
+      select id, token_mint, dbc_pool, damm_pool, lifecycle_state, treasury_vault, treasury_supply_percent, total_supply
       from missions
-      where lifecycle_state = 'bonding' and dbc_pool is not null
+      where (lifecycle_state = 'bonding' and dbc_pool is not null)
+         or (lifecycle_state = 'graduated' and damm_pool is not null and token_mint is not null)
     `,
   );
 
   for (const mission of missions.rows) {
-    const snapshot = await fetchMeteoraDbcMarketSnapshot({
-      rpcUrl: input.env.SOLANA_RPC_URL,
-      pool: mission.dbc_pool!,
-      tokenMint: mission.token_mint,
-      treasuryVault: mission.treasury_vault,
-      treasurySupplyPercent: Number(mission.treasury_supply_percent || 0),
-      totalSupply: Number(mission.total_supply || 0),
-    }).catch(() => null);
+    const snapshot =
+      mission.lifecycle_state === "graduated" && mission.damm_pool && mission.token_mint
+        ? await fetchMeteoraDammV2MarketSnapshot({
+            rpcUrl: input.env.SOLANA_RPC_URL,
+            dammPool: mission.damm_pool,
+            tokenMint: mission.token_mint,
+            treasuryVault: mission.treasury_vault,
+            treasurySupplyPercent: Number(mission.treasury_supply_percent || 0),
+            totalSupply: Number(mission.total_supply || 0),
+          }).catch(() => null)
+        : await fetchMeteoraDbcMarketSnapshot({
+            rpcUrl: input.env.SOLANA_RPC_URL,
+            pool: mission.dbc_pool!,
+            tokenMint: mission.token_mint,
+            treasuryVault: mission.treasury_vault,
+            treasurySupplyPercent: Number(mission.treasury_supply_percent || 0),
+            totalSupply: Number(mission.total_supply || 0),
+          }).catch(() => null);
     if (!snapshot) continue;
 
     await input.pool.query(
@@ -113,10 +126,10 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
         insert into price_points (mission_id, timestamp, price_usdc, volume_usdc, source)
         select $1, now(), $2, 0, 'meteora-dbc-indexer'
         where not exists (
-          select 1 from price_points where mission_id = $1 and source = 'meteora-dbc-indexer' and timestamp > now() - interval '5 minutes'
+          select 1 from price_points where mission_id = $1 and source = $3 and timestamp > now() - interval '5 minutes'
         )
       `,
-      [mission.id, snapshot.currentPrice],
+      [mission.id, snapshot.currentPrice, `${snapshot.route}-indexer`],
     );
   }
 }

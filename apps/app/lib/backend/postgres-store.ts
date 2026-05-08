@@ -12,11 +12,13 @@ import {
   prepareCouncilExecuteTransaction,
   prepareFinalizeEpochCouncilTransaction,
   fetchMeteoraDbcMissionSnapshot,
+  fetchMeteoraDammV2MissionSnapshot,
   prepareJupiterTradeTransaction,
   prepareCouncilVoteTransaction,
   prepareFundingRequestTransaction,
   prepareLaunchTransaction,
   prepareMeteoraDbcTradeTransaction,
+  prepareMissionMarketGraduationTransaction,
   prepareMissionGraduationTransaction,
   submitBackendMissionFeeDistribution,
   submitFinalizeEpochCouncilTransaction,
@@ -501,15 +503,25 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
 
   const mission = await getMissionByIdFromPostgres(missionId, client);
   if (!mission) return null;
-  if (mission.lifecycle !== "bonding" || !mission.dbcPool) return mission;
-
-  const snapshot = await fetchMeteoraDbcMissionSnapshot({
-    dbcPool: mission.dbcPool,
-    tokenMint: mission.tokenMint,
-    treasuryVault: mission.treasuryVault,
-    treasurySupplyPercent: mission.treasurySupplyPercent,
-    totalSupply: mission.totalSupply,
-  }).catch(() => null);
+  const snapshot =
+    mission.dammPool || mission.lifecycle === "graduated"
+      ? await fetchMeteoraDammV2MissionSnapshot({
+          dammPool: mission.dammPool,
+          tokenMint: mission.tokenMint,
+          treasuryVault: mission.treasuryVault,
+          treasurySupplyPercent: mission.treasurySupplyPercent,
+          totalSupply: mission.totalSupply,
+          fallbackPrice: mission.tokenPrice,
+        }).catch(() => null)
+      : mission.lifecycle === "bonding" && mission.dbcPool
+        ? await fetchMeteoraDbcMissionSnapshot({
+            dbcPool: mission.dbcPool,
+            tokenMint: mission.tokenMint,
+            treasuryVault: mission.treasuryVault,
+            treasurySupplyPercent: mission.treasurySupplyPercent,
+            totalSupply: mission.totalSupply,
+          }).catch(() => null)
+        : null;
   if (!snapshot) return mission;
 
   const holders = snapshot.holders || mission.holders || 1;
@@ -541,8 +553,8 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
 
   if (shouldInsertPoint) {
     await (client || { query }).query(
-      "insert into price_points (mission_id, timestamp, price_usdc, volume_usdc, source) values ($1, now(), $2, 0, 'meteora-dbc')",
-      [missionId, snapshot.currentPrice],
+      "insert into price_points (mission_id, timestamp, price_usdc, volume_usdc, source) values ($1, now(), $2, 0, $3)",
+      [missionId, snapshot.currentPrice, snapshot.route],
     );
   }
 
@@ -557,7 +569,7 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
         circulatingTokens: snapshot.circulatingTokens,
         baseReserve: snapshot.baseReserve,
         quoteReserve: snapshot.quoteReserve,
-        poolProgressPercent: snapshot.poolProgressPercent,
+        poolProgressPercent: "poolProgressPercent" in snapshot ? snapshot.poolProgressPercent : undefined,
         marketDataUpdatedAt: snapshot.updatedAt,
       }
     : refreshed;
@@ -912,7 +924,7 @@ export async function quoteMissionTradeFromPostgres(missionId: string, input: { 
 
   const amount = Math.max(Number(input.amount) || 0, 0);
   const side = input.side === "sell" ? "sell" : "buy";
-  const isBondingDbc = mission.lifecycle === "bonding" && Boolean(mission.dbcPool);
+  const isBondingDbc = mission.lifecycle === "bonding" && Boolean(mission.dbcPool) && !mission.dammPool;
   const chainQuote = isBondingDbc
     ? await prepareMeteoraDbcTradeTransaction({
         wallet: input.wallet,
@@ -927,6 +939,7 @@ export async function quoteMissionTradeFromPostgres(missionId: string, input: { 
         amount,
         tokenMint: mission.tokenMint,
         slippageBps: input.slippageBps,
+        referencePrice: mission.tokenPrice,
       });
 
   return {
@@ -992,6 +1005,67 @@ export async function prepareMissionGraduationInPostgres(
       dammPool: input.dammPool,
     }),
   };
+}
+
+export async function prepareMissionMarketGraduationInPostgres(missionId: string, input: { wallet?: string }) {
+  const mission = await getMissionByIdFromPostgres(missionId);
+  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+  if (!mission.dbcPool) throw new Error("This mission does not have a bonding-curve pool to graduate.");
+  if (mission.dammPool) {
+    return {
+      mission,
+      dammPool: mission.dammPool,
+      transaction: {
+        kind: "mission-market-graduation",
+        status: "not_configured" as const,
+        message: "This market has already graduated.",
+        instructions: [],
+      },
+    };
+  }
+
+  const result = await prepareMissionMarketGraduationTransaction({ wallet: input.wallet || currentUser.address, dbcPool: mission.dbcPool });
+  return {
+    mission,
+    dammPool: "dammPool" in result ? result.dammPool : null,
+    transaction: "transaction" in result ? result.transaction : result,
+  };
+}
+
+export async function confirmMissionMarketGraduationInPostgres(missionId: string, input: { signature?: string; dammPool?: string; wallet?: string }) {
+  if (!input.signature) throw new Error("signature is required.");
+  if (!input.dammPool) throw new Error("dammPool is required.");
+  const mission = await getMissionByIdFromPostgres(missionId);
+  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+
+  await query(
+    `
+      update missions
+      set damm_pool = $2, lifecycle_state = 'graduated'
+      where id = $1
+    `,
+    [missionId, input.dammPool],
+  );
+  await query(
+    `
+      insert into transactions (signature, wallet, mission_id, type, status)
+      values ($1, $2, $3, 'mission-market-graduation', 'submitted')
+      on conflict (signature) do nothing
+    `,
+    [input.signature, input.wallet || currentUser.address, missionId],
+  );
+  await query(
+    `
+      update migration_reconciliation_jobs
+      set damm_pool = $2, signature = coalesce(signature, $3), status = 'submitted', updated_at = now()
+      where mission_id = $1 and status in ('pending', 'failed')
+    `,
+    [missionId, input.dammPool, input.signature],
+  );
+
+  const refreshed = await getMissionByIdFromPostgres(missionId);
+  if (!refreshed) throw new Error(`Mission not found: ${missionId}`);
+  return { mission: refreshed };
 }
 
 export async function distributeMissionFeesInPostgres(input: { limit?: number } = {}) {

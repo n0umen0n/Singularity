@@ -20,6 +20,9 @@ import {
   deriveDbcPoolAddress,
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   DynamicBondingCurveClient,
+  DAMM_V2_MIGRATION_FEE_ADDRESS,
+  deriveDammV2PoolAddress,
+  deriveDammV2TokenVaultAddress,
   getCurrentPoint,
   getPriceFromSqrtPrice,
   MigrationFeeOption,
@@ -196,7 +199,36 @@ export type MeteoraDbcMarketSnapshot = {
   updatedAt: string;
 };
 
+export type MeteoraDammV2MarketSnapshot = {
+  route: "meteora-damm-v2";
+  dammPool: string;
+  baseMint: string;
+  quoteMint: string;
+  currentPrice: number;
+  baseReserve: number;
+  quoteReserve: number;
+  liquidityUsd: number;
+  treasuryTokens: number;
+  treasuryUsdc: number;
+  holders: number;
+  totalSupply: number;
+  circulatingTokens: number;
+  marketTokens: number;
+  updatedAt: string;
+};
+
 export type MeteoraDbcTradeResult = MeteoraDbcQuote & {
+  transaction: PreparedSolanaTransaction;
+};
+
+export type MeteoraDbcDammV2MigrationResult = {
+  route: "meteora-damm-v2";
+  dbcPool: string;
+  dammPool: string;
+  dammConfig: string;
+  baseMint: string;
+  quoteMint: string;
+  alreadyMigrated: boolean;
   transaction: PreparedSolanaTransaction;
 };
 
@@ -589,6 +621,38 @@ function reserveAmount(value: unknown) {
   return amountFromBaseUnits(bnField(value));
 }
 
+async function tokenAccountAmount(connection: Connection, address: PublicKey) {
+  return connection.getTokenAccountBalance(address).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0);
+}
+
+async function positiveTokenAccountHolders(connection: Connection, mint: string) {
+  return connection
+    .getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
+      filters: [{ memcmp: { offset: 0, bytes: mint } }],
+      dataSlice: { offset: 64, length: 8 },
+    })
+    .then((accounts) => accounts.filter((account) => account.account.data.length >= 8 && account.account.data.readBigUInt64LE(0) > 0n).length)
+    .catch(() => 0);
+}
+
+async function jupiterReferencePrice(input: { baseMint: string; quoteMint: string; fallbackPrice: number }) {
+  const quoteUrl = new URL("https://lite-api.jup.ag/swap/v1/quote");
+  quoteUrl.searchParams.set("inputMint", input.quoteMint);
+  quoteUrl.searchParams.set("outputMint", input.baseMint);
+  quoteUrl.searchParams.set("amount", "1000000");
+  quoteUrl.searchParams.set("slippageBps", "100");
+
+  try {
+    const response = await fetch(quoteUrl);
+    if (!response.ok) return input.fallbackPrice;
+    const quote = (await response.json()) as { outAmount?: string };
+    const tokensOut = Number(quote.outAmount || 0) / 1_000_000;
+    return tokensOut > 0 ? 1 / tokensOut : input.fallbackPrice;
+  } catch {
+    return input.fallbackPrice;
+  }
+}
+
 function priceImpact(input: { side: MeteoraDbcTradeSide; inputAmount: number; estimatedOutput: number; currentPrice: number }) {
   const spotOutput = input.side === "buy" ? input.inputAmount / input.currentPrice : input.inputAmount * input.currentPrice;
   if (!Number.isFinite(spotOutput) || spotOutput <= 0) return 0;
@@ -752,6 +816,53 @@ export async function prepareMeteoraDbcTrade(input: {
   };
 }
 
+export async function prepareMeteoraDbcDammV2Migration(input: {
+  rpcUrl: string;
+  pool: string;
+  wallet: string;
+  recentBlockhash: string;
+}): Promise<MeteoraDbcDammV2MigrationResult> {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const client = new DynamicBondingCurveClient(connection, "confirmed");
+  const virtualPool = new PublicKey(input.pool);
+  const payer = new PublicKey(input.wallet);
+  const poolState = await client.state.getPool(virtualPool);
+  if (!poolState) throw new Error(`Pool not found: ${input.pool}`);
+  const config = await client.state.getPoolConfig((poolState as { config: PublicKey }).config);
+  const dammConfig = DAMM_V2_MIGRATION_FEE_ADDRESS[(config as { migrationFeeOption: number }).migrationFeeOption];
+  if (!dammConfig) throw new Error("Meteora DAMM v2 migration config could not be resolved.");
+
+  const baseMint = (poolState as { baseMint: PublicKey }).baseMint;
+  const quoteMint = (config as { quoteMint: PublicKey }).quoteMint;
+  const dammPool = deriveDammV2PoolAddress(dammConfig, baseMint, quoteMint);
+  const migration = await client.migration.migrateToDammV2({ payer, virtualPool, dammConfig });
+
+  return {
+    route: "meteora-damm-v2",
+    dbcPool: input.pool,
+    dammPool: dammPool.toBase58(),
+    dammConfig: dammConfig.toBase58(),
+    baseMint: baseMint.toBase58(),
+    quoteMint: quoteMint.toBase58(),
+    alreadyMigrated: Boolean((poolState as { isMigrated?: number | boolean }).isMigrated),
+    transaction: buildPreparedTransaction({
+      kind: "mission-market-graduation",
+      feePayer: input.wallet,
+      recentBlockhash: input.recentBlockhash,
+      instructions: migration.transaction.instructions,
+      signerKeypairs: [migration.firstPositionNftKeypair, migration.secondPositionNftKeypair],
+      requiredSigners: [input.wallet],
+      accounts: {
+        dbcPool: input.pool,
+        dammPool: dammPool.toBase58(),
+        dammConfig: dammConfig.toBase58(),
+        baseMint: baseMint.toBase58(),
+        quoteMint: quoteMint.toBase58(),
+      },
+    }),
+  };
+}
+
 export async function meteoraDbcPartnerFeeClaimInstruction(input: {
   rpcUrl: string;
   pool: string;
@@ -807,19 +918,11 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
   const baseReserve = reserveAmount((virtualPool as { baseReserve?: unknown }).baseReserve);
   const quoteReserve = reserveAmount((virtualPool as { quoteReserve?: unknown }).quoteReserve);
   const supply = input.totalSupply ?? (await connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0));
-  const treasuryVaultTokens = input.treasuryVault
-    ? await connection.getTokenAccountBalance(new PublicKey(input.treasuryVault)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0)
-    : 0;
+  const treasuryVaultTokens = input.treasuryVault ? await tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : 0;
   const configuredTreasuryTokens =
     input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
   const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
-  const holders = await connection
-    .getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
-      filters: [{ memcmp: { offset: 0, bytes: baseMint } }],
-      dataSlice: { offset: 64, length: 8 },
-    })
-    .then((accounts) => accounts.filter((account) => account.account.data.length >= 8 && account.account.data.readBigUInt64LE(0) > 0n).length)
-    .catch(() => 0);
+  const holders = await positiveTokenAccountHolders(connection, baseMint);
   const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
   const isLaunchDust = quoteReserve > 0 && quoteReserve <= DBC_LAUNCH_DUST_LIQUIDITY_USDC;
   const currentPrice = isLaunchDust && Number.isFinite(launchPrice) && launchPrice > 0 ? launchPrice : poolPrice;
@@ -847,6 +950,59 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     marketTokens,
     updatedAt: new Date().toISOString(),
   } satisfies MeteoraDbcMarketSnapshot;
+}
+
+export async function fetchMeteoraDammV2MarketSnapshot(input: {
+  rpcUrl: string;
+  dammPool: string;
+  tokenMint: string;
+  quoteMint?: string | null;
+  treasuryVault?: string | null;
+  treasurySupplyPercent?: number | null;
+  totalSupply?: number;
+  fallbackPrice?: number | null;
+}) {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const baseMint = input.tokenMint;
+  const quoteMint = input.quoteMint || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const dammPool = new PublicKey(input.dammPool);
+  const baseVault = deriveDammV2TokenVaultAddress(dammPool, new PublicKey(baseMint));
+  const quoteVault = deriveDammV2TokenVaultAddress(dammPool, new PublicKey(quoteMint));
+  const [baseReserve, quoteReserve, supply, treasuryVaultTokens, holders] = await Promise.all([
+    tokenAccountAmount(connection, baseVault),
+    tokenAccountAmount(connection, quoteVault),
+    input.totalSupply
+      ? Promise.resolve(input.totalSupply)
+      : connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0),
+    input.treasuryVault ? tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : Promise.resolve(0),
+    positiveTokenAccountHolders(connection, baseMint),
+  ]);
+  const fallbackPrice = input.fallbackPrice && input.fallbackPrice > 0 ? input.fallbackPrice : quoteReserve > 0 && baseReserve > 0 ? quoteReserve / baseReserve : 0;
+  const currentPrice = await jupiterReferencePrice({ baseMint, quoteMint, fallbackPrice });
+  const configuredTreasuryTokens =
+    input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
+  const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
+  const marketSupply = Math.max(supply - treasuryTokens, 0);
+  const marketTokens = Math.max(0, Math.min(baseReserve, marketSupply));
+  const circulatingTokens = Math.max(marketSupply - marketTokens, 0);
+
+  return {
+    route: "meteora-damm-v2" as const,
+    dammPool: input.dammPool,
+    baseMint,
+    quoteMint,
+    currentPrice,
+    baseReserve,
+    quoteReserve,
+    liquidityUsd: quoteReserve + baseReserve * currentPrice,
+    treasuryTokens,
+    treasuryUsdc: treasuryTokens * currentPrice,
+    holders,
+    totalSupply: supply,
+    circulatingTokens,
+    marketTokens,
+    updatedAt: new Date().toISOString(),
+  } satisfies MeteoraDammV2MarketSnapshot;
 }
 
 export function registryInstruction(input: {

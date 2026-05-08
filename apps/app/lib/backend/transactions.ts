@@ -28,14 +28,17 @@ import {
   DEFAULT_DBC_TOTAL_SUPPLY,
   DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
   fetchMeteoraDbcMarketSnapshot,
+  fetchMeteoraDammV2MarketSnapshot,
   latestBlockhash,
   meteoraDbcPartnerFeeClaimInstruction,
   meteoraDbcPartnerFeeClaimInstructions,
+  prepareMeteoraDbcDammV2Migration,
   prepareMeteoraDbcLaunchInstructions,
   prepareMeteoraDbcTrade,
   quoteMeteoraDbcTrade,
   requireProgramConfig,
   resolveMeteoraDbcLaunchConfig,
+  type MeteoraDammV2MarketSnapshot,
   type MeteoraDbcMarketSnapshot,
   type PreparedSolanaTransaction,
 } from "@singularity/solana";
@@ -50,7 +53,7 @@ type TransactionResult =
     };
 
 const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const DEFAULT_JUPITER_API_URL = "https://quote-api.jup.ag/v6";
+const DEFAULT_JUPITER_API_URL = "https://lite-api.jup.ag/swap/v1";
 type NotConfiguredTransaction = { kind: string; status: "not_configured"; message: string; instructions: unknown[] };
 
 export type JupiterTradeResult = {
@@ -62,6 +65,7 @@ export type JupiterTradeResult = {
   partialFill?: boolean;
   willGraduate?: boolean;
   estimatedOutput: number;
+  minimumAmountOut?: number | null;
   priceImpactPercent: number;
   transaction: TransactionResult;
   quoteResponse?: unknown;
@@ -88,6 +92,17 @@ export type MeteoraDbcTradeQuoteResult = {
     liquidityUsd: number;
     poolProgressPercent: number;
   };
+  transaction: TransactionResult;
+};
+
+export type MissionMarketGraduationResult = {
+  route: "meteora-damm-v2";
+  dbcPool: string;
+  dammPool: string;
+  dammConfig: string;
+  baseMint: string;
+  quoteMint: string;
+  alreadyMigrated: boolean;
   transaction: TransactionResult;
 };
 
@@ -236,7 +251,14 @@ function tokenAmountBaseUnits(amount: number, decimals = 6) {
 }
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (error) {
+    const host = new URL(url).host;
+    const message = error instanceof Error ? error.message : "fetch failed";
+    throw new Error(`Could not reach ${host}: ${message}`);
+  }
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(`Request failed (${response.status}): ${body || response.statusText}`);
@@ -451,6 +473,7 @@ export async function prepareJupiterTradeTransaction(input: {
   tokenMint?: string | null;
   quoteMint?: string;
   slippageBps?: number;
+  referencePrice?: number | null;
 }): Promise<JupiterTradeResult | { kind: string; status: "not_configured"; message: string; instructions: unknown[] }> {
   const kind = "trade";
 
@@ -470,10 +493,21 @@ export async function prepareJupiterTradeTransaction(input: {
     quoteUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
     const quoteResponse = await jsonFetch<{
       outAmount?: string;
+      otherAmountThreshold?: string;
       priceImpactPct?: string;
     }>(quoteUrl.toString());
     const estimatedOutput = Number(quoteResponse.outAmount || 0) / 1_000_000;
-    const priceImpactPercent = Number(quoteResponse.priceImpactPct || 0) * 100;
+    const minimumAmountOut = quoteResponse.otherAmountThreshold ? Number(quoteResponse.otherAmountThreshold) / 1_000_000 : null;
+    const jupiterPriceImpactPercent = Number(quoteResponse.priceImpactPct || 0) * 100;
+    const referenceOutput =
+      input.referencePrice && input.referencePrice > 0
+        ? input.side === "buy"
+          ? input.amount / input.referencePrice
+          : input.amount * input.referencePrice
+        : 0;
+    const fallbackPriceImpactPercent =
+      referenceOutput > 0 && estimatedOutput > 0 ? Math.max(((referenceOutput - estimatedOutput) / referenceOutput) * 100, 0) : 0;
+    const priceImpactPercent = jupiterPriceImpactPercent > 0 ? jupiterPriceImpactPercent : fallbackPriceImpactPercent;
 
     if (!input.wallet) {
       return {
@@ -482,6 +516,7 @@ export async function prepareJupiterTradeTransaction(input: {
         outputMint,
         inputAmount: input.amount,
         estimatedOutput,
+        minimumAmountOut,
         priceImpactPercent,
         transaction: notConfigured(kind, new Error("wallet is required to prepare a Jupiter swap transaction.")),
         quoteResponse,
@@ -506,6 +541,7 @@ export async function prepareJupiterTradeTransaction(input: {
       outputMint,
       inputAmount: input.amount,
       estimatedOutput,
+      minimumAmountOut,
       priceImpactPercent,
       transaction: {
         kind,
@@ -592,6 +628,38 @@ export async function prepareMeteoraDbcTradeTransaction(input: {
   }
 }
 
+export async function prepareMissionMarketGraduationTransaction(input: {
+  wallet?: string;
+  dbcPool?: string | null;
+}): Promise<MissionMarketGraduationResult | NotConfiguredTransaction> {
+  const kind = "mission-market-graduation";
+
+  try {
+    if (!input.wallet) throw new Error("wallet is required to prepare market graduation.");
+    if (!input.dbcPool) throw new Error("dbcPool is required to prepare market graduation.");
+    const config = requireProgramConfig(process.env);
+    const migration = await prepareMeteoraDbcDammV2Migration({
+      rpcUrl: config.rpcUrl,
+      pool: input.dbcPool,
+      wallet: input.wallet,
+      recentBlockhash: (await latestBlockhash(config)).blockhash,
+    });
+
+    return {
+      route: migration.route,
+      dbcPool: migration.dbcPool,
+      dammPool: migration.dammPool,
+      dammConfig: migration.dammConfig,
+      baseMint: migration.baseMint,
+      quoteMint: migration.quoteMint,
+      alreadyMigrated: migration.alreadyMigrated,
+      transaction: migration.transaction,
+    };
+  } catch (error) {
+    return notConfigured(kind, error) as NotConfiguredTransaction;
+  }
+}
+
 export async function fetchMeteoraDbcMissionSnapshot(input: {
   dbcPool?: string | null;
   tokenMint?: string | null;
@@ -608,6 +676,27 @@ export async function fetchMeteoraDbcMissionSnapshot(input: {
     treasuryVault: input.treasuryVault,
     treasurySupplyPercent: input.treasurySupplyPercent,
     totalSupply: input.totalSupply,
+  });
+}
+
+export async function fetchMeteoraDammV2MissionSnapshot(input: {
+  dammPool?: string | null;
+  tokenMint?: string | null;
+  treasuryVault?: string | null;
+  treasurySupplyPercent?: number | null;
+  totalSupply?: number;
+  fallbackPrice?: number | null;
+}): Promise<MeteoraDammV2MarketSnapshot | null> {
+  if (!input.dammPool || !input.tokenMint) return null;
+  const config = requireProgramConfig(process.env);
+  return fetchMeteoraDammV2MarketSnapshot({
+    rpcUrl: config.rpcUrl,
+    dammPool: input.dammPool,
+    tokenMint: input.tokenMint,
+    treasuryVault: input.treasuryVault,
+    treasurySupplyPercent: input.treasurySupplyPercent,
+    totalSupply: input.totalSupply,
+    fallbackPrice: input.fallbackPrice,
   });
 }
 

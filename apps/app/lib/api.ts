@@ -45,6 +45,12 @@ export type MissionQuote = {
   transaction: PreparedTransaction;
 };
 
+export type MissionMarketGraduation = {
+  mission: Mission;
+  dammPool: string | null;
+  transaction: PreparedTransaction;
+};
+
 export type MissionBalances = {
   wallet: string;
   missionId: string;
@@ -141,6 +147,20 @@ export function confirmMissionLaunch(input: { launchId: string; signature: strin
 
 export function getMissionQuote(missionId: string, input: { side: "buy" | "sell"; amount: number; wallet?: string | null; slippageBps?: number }) {
   return api<MissionQuote>(`/api/missions/${missionId}/quote`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function prepareMissionMarketGraduation(missionId: string) {
+  return api<MissionMarketGraduation>(`/api/missions/${missionId}/prepare-market-graduation`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function confirmMissionMarketGraduation(missionId: string, input: { signature: string; dammPool: string }) {
+  return api<{ mission: Mission }>(`/api/missions/${missionId}/confirm-market-graduation`, {
     method: "POST",
     body: JSON.stringify(input),
   });
