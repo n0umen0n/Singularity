@@ -84,6 +84,8 @@ const launchPerformance: Mission["performance"] = {
   "1D": { label: "1 day", agoLabel: "1 day ago", value: 100, change: 0 },
   "1W": { label: "1 week", agoLabel: "1 week ago", value: 100, change: 0 },
   "1M": { label: "1 month", agoLabel: "1 month ago", value: 100, change: 0 },
+  "6M": { label: "6 months", agoLabel: "6 months ago", value: 100, change: 0 },
+  "1Y": { label: "1 year", agoLabel: "1 year ago", value: 100, change: 0 },
 };
 
 const defaultDataPath = path.join(process.cwd(), ".singularity", "backend-db.json");
@@ -615,11 +617,11 @@ export async function executeFundingRequest(
     wallet?: string;
     requestAccount?: string;
     treasuryVault?: string;
-    recipientTokenAccount?: string;
+    recipientWallet?: string;
     mint?: string;
   } = {},
 ) {
-  if (storageMode() === "postgres") return executeFundingRequestInPostgres(requestId, input);
+  if (storageMode() === "postgres") return executeFundingRequestInPostgres(requestId, { wallet: input.wallet });
 
   return updateState(async (state) => {
     const { mission, request } = findRequestOrThrow(state, requestId);
@@ -633,8 +635,8 @@ export async function executeFundingRequest(
         requestId,
         requestAccount: input.requestAccount,
         treasuryVault: input.treasuryVault,
-        recipientTokenAccount: input.recipientTokenAccount,
-        mint: input.mint,
+        recipientWallet: input.recipientWallet || mission.id,
+        mint: input.mint || mission.tokenMint,
       }),
     };
   });

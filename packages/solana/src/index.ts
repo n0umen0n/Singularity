@@ -394,7 +394,7 @@ export function simulateMeteoraDbcLaunch(input: MeteoraDbcLaunchSimulationInput 
       averagePriceUsdc: tokensOut > 0 ? buyAmountUsdc / tokensOut : 0,
       startingSpotPriceUsdc,
       endingSpotPriceUsdc,
-      priceImpactPercent: priceImpact({ side: "buy", inputAmount: buyAmountUsdc, estimatedOutput: tokensOut, currentPrice: startingSpotPriceUsdc }),
+      priceImpactPercent: priceImpactFromSpotPrices(startingSpotPriceUsdc, endingSpotPriceUsdc),
       poolProgressPercent: Math.max(0, Math.min((buyAmountUsdc / amountFromBaseUnits(curveConfig.migrationQuoteThreshold)) * 100, 100)),
     } satisfies MeteoraDbcLaunchSimulationQuote;
   });
@@ -658,10 +658,10 @@ async function jupiterMarketSnapshot(input: { baseMint: string; fallbackPrice: n
   return { liquidityUsd: input.fallbackLiquidityUsd, price: input.fallbackPrice };
 }
 
-function priceImpact(input: { side: MeteoraDbcTradeSide; inputAmount: number; estimatedOutput: number; currentPrice: number }) {
-  const spotOutput = input.side === "buy" ? input.inputAmount / input.currentPrice : input.inputAmount * input.currentPrice;
-  if (!Number.isFinite(spotOutput) || spotOutput <= 0) return 0;
-  return Math.max(((spotOutput - input.estimatedOutput) / spotOutput) * 100, 0);
+function priceImpactFromSpotPrices(prePrice: number, postPrice: number) {
+  if (!Number.isFinite(prePrice) || prePrice <= 0) return 0;
+  if (!Number.isFinite(postPrice) || postPrice <= 0) return 0;
+  return Math.max((Math.abs(postPrice - prePrice) / prePrice) * 100, 0);
 }
 
 function isPartialFillQuote(quote: SwapQuoteResult | SwapQuote2Result) {
@@ -695,7 +695,7 @@ function dbcQuoteFromResult(input: {
   const currentPrice = spotPrice(input.virtualPool);
   const baseMint = (input.virtualPool as { baseMint: PublicKey }).baseMint.toBase58();
   const quoteMint = (input.config as { quoteMint: PublicKey }).quoteMint.toBase58();
-  const quote = input.quote as { outputAmount?: BN; minimumAmountOut?: BN };
+  const quote = input.quote as { outputAmount?: BN; minimumAmountOut?: BN; nextSqrtPrice?: BN };
   const requestedInputAmount = input.amount;
   const inputAmount = actualInputAmount({ requestedAmount: requestedInputAmount, quote: input.quote });
   const partialFill = isPartialFillQuote(input.quote);
@@ -703,6 +703,7 @@ function dbcQuoteFromResult(input: {
   const minimumAmountOut = amountFromBaseUnits(quote.minimumAmountOut || new BN(0));
   const baseReserve = reserveAmount((input.virtualPool as { baseReserve?: unknown }).baseReserve);
   const quoteReserve = reserveAmount((input.virtualPool as { quoteReserve?: unknown }).quoteReserve);
+  const nextPrice = quote.nextSqrtPrice ? sqrtPriceToUsdc(quote.nextSqrtPrice) : currentPrice;
 
   return {
     route: "meteora-dbc" as const,
@@ -713,7 +714,7 @@ function dbcQuoteFromResult(input: {
     willGraduate: partialFill && input.side === "buy",
     estimatedOutput,
     minimumAmountOut,
-    priceImpactPercent: priceImpact({ side: input.side, inputAmount, estimatedOutput, currentPrice }),
+    priceImpactPercent: priceImpactFromSpotPrices(currentPrice, nextPrice),
     currentPrice,
     inputMint: input.side === "buy" ? quoteMint : baseMint,
     outputMint: input.side === "buy" ? baseMint : quoteMint,

@@ -13,3 +13,4 @@ apps/*/dist/
 .env.*
 !.env.example
 .singularity/
+scripts/.test-funding-flow.state.json

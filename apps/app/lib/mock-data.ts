@@ -59,7 +59,7 @@ export type Mission = {
   poolProgressPercent?: number;
   treasuryAllocationClaimed?: boolean;
   marketDataUpdatedAt?: string;
-  performance: Record<"1H" | "4H" | "1D" | "1W" | "1M", PerformancePoint>;
+  performance: Record<"1H" | "4H" | "1D" | "1W" | "1M" | "6M" | "1Y", PerformancePoint>;
   council: Investor[];
   requests: FundingRequest[];
 };
@@ -97,6 +97,8 @@ function performance(base: number): Mission["performance"] {
     "1D": point("1 day", "1 day ago", 1.284),
     "1W": point("1 week", "1 week ago", 1.92),
     "1M": point("1 month", "1 month ago", 2.74),
+    "6M": point("6 months", "6 months ago", 4.6),
+    "1Y": point("1 year", "1 year ago", 7.2),
   };
 }
 

@@ -314,7 +314,11 @@ const previewPerformance: Mission["performance"] = {
   "1D": { label: "1 day", agoLabel: "1 day ago", value: 100, change: 0 },
   "1W": { label: "1 week", agoLabel: "1 week ago", value: 100, change: 0 },
   "1M": { label: "1 month", agoLabel: "1 month ago", value: 100, change: 0 },
+  "6M": { label: "6 months", agoLabel: "6 months ago", value: 100, change: 0 },
+  "1Y": { label: "1 year", agoLabel: "1 year ago", value: 100, change: 0 },
 };
+
+const performanceFrameOrder: Array<keyof Mission["performance"]> = ["1H", "4H", "1D", "1W", "1M", "6M", "1Y"];
 
 export function MissionDetailPage({ missionId, initialMission }: { missionId: string; initialMission?: Mission | null }) {
   const [mission, setMission] = useState<Mission | null>(initialMission ?? null);
@@ -359,7 +363,7 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
           <MissionHero mission={mission} />
           <StatsGrid mission={mission} />
           <PerformanceCard mission={mission} />
-          <CouncilSection mission={mission} />
+          <CouncilSection mission={mission} onMissionChange={setMission} />
           <FundingRequests mission={mission} onMissionChange={setMission} />
         </div>
         <aside className="right-rail">
@@ -411,17 +415,87 @@ function StatsGrid({ mission }: { mission: Mission }) {
   );
 }
 
+function TimeframeDropdown({
+  value,
+  options,
+  onChange,
+}: {
+  value: keyof Mission["performance"];
+  options: Array<keyof Mission["performance"]>;
+  onChange: (next: keyof Mission["performance"]) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [isOpen]);
+
+  return (
+    <div className={cx("timeframe-dropdown", isOpen && "open")} ref={containerRef}>
+      <button
+        type="button"
+        className="timeframe-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-label="Performance timeframe"
+        onClick={() => setIsOpen((current) => !current)}
+      >
+        <span>{value}</span>
+        <ChevronDown size={14} aria-hidden />
+      </button>
+      {isOpen ? (
+        <ul className="timeframe-menu" role="listbox" aria-label="Performance timeframe">
+          {options.map((entry) => (
+            <li key={entry}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={entry === value}
+                className={cx("timeframe-option", entry === value && "active")}
+                onClick={() => {
+                  onChange(entry);
+                  setIsOpen(false);
+                }}
+              >
+                {entry}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function PerformanceCard({ mission }: { mission: Mission }) {
   const [frame, setFrame] = useState<keyof Mission["performance"]>("1D");
   const [investmentInput, setInvestmentInput] = useState("100");
   const point = mission.performance[frame] || previewPerformance[frame];
   const investmentAmount = Math.max(Number(investmentInput) || 0, 0);
-  const returnMultiplier = point.value / 100;
+  // point.value is (currentPrice / baselinePrice) * 100, computed identically for the
+  // bonding curve and AMM phases since both record currentPrice in price_points.
+  // Tokens you would have bought: investmentAmount / baselinePrice
+  // Today's value:                tokens * currentPrice = investmentAmount * (currentPrice / baselinePrice)
+  const returnMultiplier = point.value > 0 ? point.value / 100 : 1;
   const projectedValue = investmentAmount * returnMultiplier;
   const investmentReturn = projectedValue - investmentAmount;
   const growthTone = investmentReturn < 0 ? "drop" : returnMultiplier > 1.3 ? "surge" : "rise";
   const isPositiveReturn = investmentReturn > 0;
   const growthLabel = `${investmentReturn > 0 ? "+" : ""}${money(investmentReturn)}`;
+  const orderedFrames = performanceFrameOrder.filter((entry) => entry in mission.performance);
   return (
     <GlassCard className="section-card chart-card">
       <div className="section-heading">
@@ -449,13 +523,7 @@ function PerformanceCard({ mission }: { mission: Mission }) {
           </h2>
           <p>Your {money(investmentAmount)} would be worth <strong>{money(projectedValue)}</strong></p>
         </div>
-        <div className="timeframe-row">
-          {(Object.keys(mission.performance) as Array<keyof Mission["performance"]>).map((entry) => (
-            <button className={cx("filter-pill", frame === entry && "active")} key={entry} onClick={() => setFrame(entry)}>
-              {entry}
-            </button>
-          ))}
-        </div>
+        <TimeframeDropdown value={frame} options={orderedFrames} onChange={setFrame} />
       </div>
       <div className={`growth-arrow-stage growth-${growthTone}`} aria-label={`Investment growth: ${growthLabel}`}>
         <div className="growth-value-badge">
@@ -467,7 +535,7 @@ function PerformanceCard({ mission }: { mission: Mission }) {
   );
 }
 
-function CouncilSection({ mission }: { mission: Mission }) {
+function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMissionChange?: (mission: Mission) => void }) {
   const wallet = useSingularityWallet();
   const [status, setStatus] = useState<string | null>(null);
   const [isRegistering, setIsRegistering] = useState(false);
@@ -475,6 +543,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
   const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [registeredCandidateAddress, setRegisteredCandidateAddress] = useState<string | null>(null);
   const [walletTokenBalance, setWalletTokenBalance] = useState<number | null>(null);
+  const [walletAvatar, setWalletAvatar] = useState<string | null>(null);
   const userBalance = walletTokenBalance ?? mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
   const trackedBalance = Math.max(0, Math.floor(userBalance));
   const openCouncilSlots = Math.max(6 - mission.council.length, 0);
@@ -520,12 +589,35 @@ function CouncilSection({ mission }: { mission: Mission }) {
     };
   }, [mission.id, wallet.address]);
 
+  useEffect(() => {
+    if (!wallet.address) {
+      setWalletAvatar(null);
+      return;
+    }
+
+    let alive = true;
+    api
+      .getProfile(wallet.address)
+      .then(({ profile }) => {
+        if (alive) setWalletAvatar(profile.avatar || null);
+      })
+      .catch(() => {
+        if (alive) setWalletAvatar(null);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [wallet.address]);
+
   const displayedCouncil = useMemo(() => {
     const members = mission.council.map((member) =>
       wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase()
         ? {
             ...member,
             name: "You",
+            avatar: walletAvatar || member.avatar,
+            tokens: trackedBalance > 0 ? trackedBalance : member.tokens,
           }
         : member,
     );
@@ -538,7 +630,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
         id: `${mission.id}-${registeredAddress}`,
         name: "You",
         address: registeredAddress,
-        avatar: mission.tokenImage,
+        avatar: walletAvatar || mission.tokenImage,
         tokens: trackedBalance,
         ownership: 0,
       });
@@ -547,7 +639,7 @@ function CouncilSection({ mission }: { mission: Mission }) {
     return members
       .sort((left, right) => right.tokens - left.tokens)
       .slice(0, 6);
-  }, [mission.council, mission.id, mission.tokenImage, registeredCandidateAddress, trackedBalance, wallet.address]);
+  }, [mission.council, mission.id, mission.tokenImage, registeredCandidateAddress, trackedBalance, wallet.address, walletAvatar]);
 
   const councilSlots = useMemo<Array<Investor | null>>(
     () => Array.from({ length: 6 }, (_, index) => displayedCouncil[index] ?? null),
@@ -591,6 +683,13 @@ function CouncilSection({ mission }: { mission: Mission }) {
         setRegistrationSucceeded(true);
         window.setTimeout(() => setRegistrationSucceeded(false), 1600);
         setIsCandidateModalOpen(false);
+        // Pull the latest mission so the council list shows the registered
+        // candidate with their actual profile avatar from the database, not
+        // the optimistic placeholder.
+        api
+          .getMission(mission.id)
+          .then((next) => onMissionChange?.(next.mission))
+          .catch(() => {});
       } else {
         if (result.transaction.status === "not_configured" && result.transaction.message.includes("already registered")) {
           setRegisteredCandidateAddress(wallet.address);
@@ -691,6 +790,13 @@ function CouncilSection({ mission }: { mission: Mission }) {
 }
 
 function FundingRequests({ mission, onMissionChange }: { mission: Mission; onMissionChange?: (mission: Mission) => void }) {
+  const counts = useMemo(() => {
+    const byStatus: Record<RequestStatus, number> = { active: 0, accepted: 0, rejected: 0, expired: 0 };
+    for (const request of mission.requests) {
+      if (request.status in byStatus) byStatus[request.status as RequestStatus] += 1;
+    }
+    return byStatus;
+  }, [mission.requests]);
   const [tab, setTab] = useState<RequestStatus | "all">("active");
   const visible = mission.requests.filter((request) => tab === "all" || request.status === tab);
   const refresh = async () => {
@@ -709,11 +815,15 @@ function FundingRequests({ mission, onMissionChange }: { mission: Mission; onMis
         </Link>
       </div>
       <div className="tab-row" style={{ marginBottom: "1rem" }}>
-        {(["active", "accepted", "rejected", "all"] as const).map((entry) => (
-          <button className={cx("filter-pill", tab === entry && "active")} key={entry} onClick={() => setTab(entry)}>
-            {entry}
-          </button>
-        ))}
+        {(["active", "accepted", "rejected", "all"] as const).map((entry) => {
+          const count = entry === "all" ? mission.requests.length : counts[entry as RequestStatus] || 0;
+          return (
+            <button className={cx("filter-pill", tab === entry && "active")} key={entry} onClick={() => setTab(entry)}>
+              {entry}
+              {count > 0 ? <span style={{ marginLeft: 6, opacity: 0.7 }}>({count})</span> : null}
+            </button>
+          );
+        })}
       </div>
       <div className="request-list">
         {visible.map((request) => (
@@ -727,12 +837,14 @@ function FundingRequests({ mission, onMissionChange }: { mission: Mission; onMis
 function FundingRequestCard({ request, symbol, onChange }: { request: FundingRequest; symbol: string; onChange?: () => Promise<void> | void }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"vote" | "execute" | null>(null);
   const wallet = useSingularityWallet();
   const vote = async (choice: "approve" | "reject") => {
     if (!wallet.address) {
       await wallet.signIn();
       return;
     }
+    setBusy("vote");
     try {
       const result = await api.voteFundingRequest(request.id, choice);
       const signature = await wallet.sendPreparedTransaction(result.transaction);
@@ -740,6 +852,31 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
       await onChange?.();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Vote failed.");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const execute = async () => {
+    if (!wallet.address) {
+      await wallet.signIn();
+      return;
+    }
+    setBusy("execute");
+    try {
+      const result = await api.executeFundingRequest(request.id);
+      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      setStatus(
+        signature
+          ? `Execution submitted: ${shortAddress(signature)}`
+          : result.transaction.status === "not_configured"
+            ? result.transaction.message
+            : "Execution recorded.",
+      );
+      await onChange?.();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Execution failed.");
+    } finally {
+      setBusy(null);
     }
   };
   const dots = Array.from({ length: 6 }, (_, index) => {
@@ -801,13 +938,26 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
           </div>
           <div className="request-action-row">
             {/* TODO: Show these actions only to top investors/council members; everyone else should see the expanded request without voting controls. */}
-            <button className="button button-danger" type="button" onClick={() => void vote("reject")}>
-              Reject request
-            </button>
-            <button className="button button-primary" type="button" onClick={() => void vote("approve")}>
-              Approve request
-            </button>
+            {request.status === "active" ? (
+              <>
+                <button className="button button-danger" type="button" onClick={() => void vote("reject")} disabled={busy !== null}>
+                  Reject request
+                </button>
+                <button className="button button-primary" type="button" onClick={() => void vote("approve")} disabled={busy !== null}>
+                  Approve request
+                </button>
+              </>
+            ) : request.status === "accepted" ? (
+              <button className="button button-primary" type="button" onClick={() => void execute()} disabled={busy !== null}>
+                {busy === "execute" ? "Submitting..." : "Execute payout"}
+              </button>
+            ) : null}
           </div>
+          {request.status === "accepted" ? (
+            <p className="stat-note">
+              Execution releases {number(request.tokenAmount, true)} {symbol} from the treasury once the 3-day voting window has elapsed. Earlier attempts will be rejected by the program.
+            </p>
+          ) : null}
           {status ? <p className="stat-note">{status}</p> : null}
         </div>
       ) : null}
@@ -1118,7 +1268,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
   const [quote, setQuote] = useState<api.MissionQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [balances, setBalances] = useState<api.MissionBalances | null>(null);
-  const [balancesLoading, setBalancesLoading] = useState(false);
+  const [balancesError, setBalancesError] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [tradePending, setTradePending] = useState(false);
   const [tradeSucceeded, setTradeSucceeded] = useState(false);
@@ -1129,23 +1279,27 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
   const marketGraduationReady = mission.lifecycle === "bonding" && !mission.dammPool && (mission.poolProgressPercent || 0) >= 100;
   const activeBalance = mode === "buy" ? balances?.usdc : balances?.missionToken;
   const activeBalanceLabel = mode === "buy" ? "USDC balance" : `${mission.tokenSymbol} balance`;
+  // While the wallet is connected but we have not yet successfully fetched
+  // balances (and have not errored out), keep showing a loader instead of "0".
+  // This avoids flashing a stale 0 right after navigating to a freshly created
+  // mission, where the first fetch hasn't returned yet.
+  const balancesLoading = Boolean(wallet.address) && !balances && !balancesError;
   const refreshBalances = useCallback(async () => {
     if (!wallet.address) {
       setBalances(null);
-      setBalancesLoading(false);
+      setBalancesError(false);
       return null;
     }
 
-    setBalancesLoading(true);
+    setBalancesError(false);
     try {
       const next = await api.getMissionBalances(mission.id, wallet.address);
       setBalances(next);
       return next;
     } catch {
       setBalances(null);
+      setBalancesError(true);
       return null;
-    } finally {
-      setBalancesLoading(false);
     }
   }, [mission.id, wallet.address]);
   const requestQuote = async () => {
@@ -1289,13 +1443,26 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       </label>
       <p className="stat-note">
         {activeBalanceLabel}:{" "}
-        <strong>
-          {wallet.address
-            ? balancesLoading
-              ? <InlineLoader />
-              : `${number(activeBalance || 0)} ${mode === "buy" ? "USDC" : mission.tokenSymbol}`
-            : "Sign in to view"}
-        </strong>
+        {wallet.address && !balancesLoading && (activeBalance || 0) > 0 ? (
+          <button
+            type="button"
+            className="balance-prefill"
+            onClick={() => setAmount(String(activeBalance ?? 0))}
+            title="Use full balance"
+          >
+            <strong>{`${number(activeBalance || 0)} ${mode === "buy" ? "USDC" : mission.tokenSymbol}`}</strong>
+          </button>
+        ) : (
+          <strong>
+            {wallet.address
+              ? balancesLoading
+                ? <InlineLoader />
+                : balancesError
+                  ? "Unavailable"
+                  : `${number(activeBalance || 0)} ${mode === "buy" ? "USDC" : mission.tokenSymbol}`
+              : "Sign in to view"}
+          </strong>
+        )}
       </p>
       {marketGraduationReady ? (
         <p className="stat-note">Graduate this market to AMM trading before the next buy or sell.</p>
@@ -1337,6 +1504,7 @@ export function LaunchMissionPage() {
   const [cropRequest, setCropRequest] = useState<CropRequest | null>(null);
   const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [launchSucceeded, setLaunchSucceeded] = useState(false);
   const previewSymbol = symbol || "NOVA";
   const previewMission: Mission = {
     id: "preview",
@@ -1409,10 +1577,11 @@ export function LaunchMissionPage() {
         setStatus("Mission launch transaction was not submitted.");
         return;
       }
-      setStatus(`Launch submitted: ${shortAddress(signature)}. Confirming mission...`);
+      setStatus("Confirming mission...");
       const confirmed = await api.confirmMissionLaunch({ launchId: result.launchId, signature });
-      setStatus("Mission launch submitted and recorded.");
-      router.push(`/missions/${confirmed.mission.id}`);
+      setStatus(null);
+      setLaunchSucceeded(true);
+      window.setTimeout(() => router.push(`/missions/${confirmed.mission.id}`), 1200);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Mission launch failed.");
     }
@@ -1511,8 +1680,12 @@ export function LaunchMissionPage() {
                 <span className="form-label">Initial purchase in USDC (optional)</span>
                 <input className="field" placeholder="0" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
               </label>
-              {status ? <p className="stat-note">{status}</p> : null}
-              <button className="button button-primary" onClick={() => void launch()}>
+              {launchSucceeded ? (
+                <p className="stat-note">Success <InlineSuccess /></p>
+              ) : status ? (
+                <p className="stat-note">{status}</p>
+              ) : null}
+              <button className="button button-primary" disabled={launchSucceeded} onClick={() => void launch()}>
                 {wallet.address ? "Launch mission" : "Sign in to launch"}
               </button>
             </div>
@@ -2157,20 +2330,24 @@ export function ProfilePage({ address }: { address?: string }) {
             <h2>Balances</h2>
           </div>
           <div className="balance-grid">
-            <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
-            {profile.tokenBalances.map((balance) => {
-              const mission = missionById.get(balance.missionId);
-              return (
-                <BalanceCard
-                  key={balance.symbol}
-                  symbol={balance.symbol.slice(0, 1)}
-                  label={balance.symbol}
-                  value={`${number(balance.balance)} ${balance.symbol}`}
-                  note={money(balance.usd)}
-                  icon={mission?.tokenImage ? <img className="mission-token-logo" src={mission.tokenImage} alt={`${balance.symbol} logo`} /> : undefined}
-                />
-              );
-            })}
+            {(profile.balances.usdc || 0) >= 0.0001 ? (
+              <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
+            ) : null}
+            {profile.tokenBalances
+              .filter((balance) => (balance.balance || 0) >= 0.0001 && (balance.usd || 0) >= 0.0001)
+              .map((balance) => {
+                const mission = missionById.get(balance.missionId);
+                return (
+                  <BalanceCard
+                    key={balance.symbol}
+                    symbol={balance.symbol.slice(0, 1)}
+                    label={balance.symbol}
+                    value={`${number(balance.balance)} ${balance.symbol}`}
+                    note={money(balance.usd)}
+                    icon={mission?.tokenImage ? <img className="mission-token-logo" src={mission.tokenImage} alt={`${balance.symbol} logo`} /> : undefined}
+                  />
+                );
+              })}
           </div>
         </GlassCard>
         <GlassCard className="section-card">

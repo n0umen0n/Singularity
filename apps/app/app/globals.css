@@ -269,7 +269,7 @@ textarea {
   bottom: -1rem;
   width: 17rem;
   height: 17rem;
-  opacity: 0.09;
+  opacity: 0.05;
   pointer-events: none;
 }
 
@@ -1143,6 +1143,114 @@ textarea {
   gap: 0.5rem;
 }
 
+.timeframe-dropdown {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.timeframe-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 4.4rem;
+  padding: 1rem 0.85rem;
+  border: 1px solid rgba(255, 247, 237, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 247, 237, 0.04);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.timeframe-trigger > span {
+  text-align: left;
+}
+
+.timeframe-trigger:hover {
+  border-color: rgba(255, 247, 237, 0.3);
+  background: rgba(255, 247, 237, 0.08);
+}
+
+.timeframe-trigger:focus-visible {
+  outline: none;
+  border-color: rgba(255, 247, 237, 0.42);
+  background: rgba(255, 247, 237, 0.1);
+}
+
+.timeframe-dropdown.open .timeframe-trigger {
+  border-color: rgba(255, 247, 237, 0.32);
+  background: rgba(255, 247, 237, 0.08);
+}
+
+.timeframe-trigger svg {
+  opacity: 0.7;
+  transition: transform 0.18s ease;
+}
+
+.timeframe-dropdown.open .timeframe-trigger svg {
+  transform: rotate(180deg);
+}
+
+.timeframe-menu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 30;
+  min-width: 100%;
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  background: rgba(20, 19, 26, 0.96);
+  border: 1px solid rgba(255, 247, 237, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.timeframe-menu li {
+  display: block;
+}
+
+.timeframe-option {
+  width: 100%;
+  display: block;
+  padding: 0.55rem 0.85rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.timeframe-option:hover,
+.timeframe-option:focus-visible {
+  outline: none;
+  background: rgba(255, 247, 237, 0.06);
+  color: var(--text-primary);
+}
+
+.timeframe-option.active {
+  color: var(--text-primary);
+  background: rgba(255, 247, 237, 0.09);
+}
+
 .chart-visual {
   position: relative;
   height: 170px;
@@ -1818,6 +1926,29 @@ textarea {
   grid-template-columns: 1fr 1fr;
   gap: 0.5rem;
   margin-bottom: 1rem;
+}
+
+.balance-prefill {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.2em;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+  transition: color 160ms ease, text-decoration-color 160ms ease;
+}
+
+.balance-prefill:hover,
+.balance-prefill:focus-visible {
+  color: var(--text-primary, #fff);
+  text-decoration-color: currentColor;
+  outline: none;
 }
 
 .form-grid {

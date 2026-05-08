@@ -8,6 +8,7 @@ import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { query, transaction } from "@/lib/backend/db";
 import {
+  fundingRequestPda,
   prepareCandidateRegistrationTransaction,
   prepareCouncilExecuteTransaction,
   prepareFinalizeEpochCouncilTransaction,
@@ -54,11 +55,15 @@ type FundingRequestRow = {
   id: string;
   mission_id: string;
   requester_wallet: string;
+  recipient_wallet: string;
   derived_usd_estimate: string;
   mission_token_amount: string;
   status: RequestStatus;
   title: string;
   description: string;
+  metadata_hash: string;
+  request_pda: string | null;
+  epoch_number: number | string | null;
   approvals: string;
   rejections: string;
 };
@@ -116,6 +121,8 @@ const performanceFrames = {
   "1D": { label: "1 day", agoLabel: "1 day ago", ms: 24 * 60 * 60 * 1000 },
   "1W": { label: "1 week", agoLabel: "1 week ago", ms: 7 * 24 * 60 * 60 * 1000 },
   "1M": { label: "1 month", agoLabel: "1 month ago", ms: 30 * 24 * 60 * 60 * 1000 },
+  "6M": { label: "6 months", agoLabel: "6 months ago", ms: 182 * 24 * 60 * 60 * 1000 },
+  "1Y": { label: "1 year", agoLabel: "1 year ago", ms: 365 * 24 * 60 * 60 * 1000 },
 } as const satisfies Record<keyof Mission["performance"], { label: string; agoLabel: string; ms: number }>;
 
 const launchPerformance = Object.fromEntries(
@@ -189,6 +196,61 @@ function configuredAddressSet(value?: string) {
       .filter(Boolean)
       .map((entry) => entry.toLowerCase()),
   );
+}
+
+const mintDecimalsCache = new Map<string, number>();
+
+async function getMintDecimals(mintAddress: string): Promise<number | null> {
+  const cached = mintDecimalsCache.get(mintAddress);
+  if (cached !== undefined) return cached;
+
+  const url = rpcUrl();
+  if (!url) return null;
+
+  try {
+    const connection = new Connection(url, "confirmed");
+    const info = await connection.getParsedAccountInfo(new PublicKey(mintAddress), "confirmed");
+    const data = info.value?.data;
+    if (data && typeof data !== "string" && "parsed" in data) {
+      const parsed = data.parsed as { info?: { decimals?: number | string } };
+      const decimals = Number(parsed.info?.decimals);
+      if (Number.isFinite(decimals) && decimals >= 0) {
+        mintDecimalsCache.set(mintAddress, decimals);
+        return decimals;
+      }
+    }
+  } catch {
+    // ignore — fall through and return null so callers can degrade gracefully
+  }
+
+  return null;
+}
+
+async function fetchTokenBalanceBaseUnits(wallet: string, mintAddress: string): Promise<string> {
+  const url = rpcUrl();
+  if (!url) return "0";
+
+  try {
+    const connection = new Connection(url, "confirmed");
+    const accounts = await connection.getParsedTokenAccountsByOwner(
+      new PublicKey(wallet),
+      { mint: new PublicKey(mintAddress) },
+      "confirmed",
+    );
+    let total = 0n;
+    for (const account of accounts.value) {
+      const data = account.account.data as { parsed?: { info?: { tokenAmount?: { amount?: string; decimals?: number } } } };
+      const amount = data.parsed?.info?.tokenAmount?.amount;
+      const decimals = data.parsed?.info?.tokenAmount?.decimals;
+      if (amount) total += BigInt(amount);
+      if (typeof decimals === "number" && Number.isFinite(decimals)) {
+        mintDecimalsCache.set(mintAddress, decimals);
+      }
+    }
+    return total.toString();
+  } catch {
+    return "0";
+  }
 }
 
 function tokenAccountAmountToNumber(amount: string, decimals: number) {
@@ -271,14 +333,25 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
   };
 }
 
-function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandidateRow[]) {
+async function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandidateRow[]) {
   const existing = new Map((row.council_json || []).map((member) => [member.address.toLowerCase(), member]));
   const totalSupply = num(row.total_supply);
   const merged = [...(row.council_json || [])];
 
-  for (const candidate of candidates) {
-    if (existing.has(candidate.owner_wallet.toLowerCase())) continue;
-    const tokens = num(candidate.latest_checkpoint_balance);
+  // The council_json column stores tokens in human-readable UI units, while
+  // council_candidates.latest_checkpoint_balance is denominated in raw base
+  // units (e.g. 100k GF -> 100_000_000_000 with 6 decimals). Convert candidate
+  // balances down to UI units so the final list can be ranked consistently.
+  const newCandidates = candidates.filter((candidate) => !existing.has(candidate.owner_wallet.toLowerCase()));
+  let divisor = 1;
+  if (newCandidates.length > 0 && row.token_mint) {
+    const decimals = await getMintDecimals(row.token_mint);
+    if (decimals !== null) divisor = 10 ** decimals;
+  }
+
+  for (const candidate of newCandidates) {
+    const baseUnits = num(candidate.latest_checkpoint_balance);
+    const tokens = baseUnits / divisor;
     merged.push({
       id: `${row.id}-candidate-${candidate.owner_wallet}`,
       name: candidate.display_name || shortWallet(candidate.owner_wallet),
@@ -289,7 +362,7 @@ function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandidateRow
     });
   }
 
-  return merged.slice(0, 6);
+  return merged.sort((a, b) => b.tokens - a.tokens).slice(0, 6);
 }
 
 async function councilCandidateRows(missionIds: string[], client?: Queryable) {
@@ -361,7 +434,9 @@ async function refreshMissionCouncilFromTopHoldersInPostgres(mission: Mission, c
     });
   }
 
-  const ranked = [...grouped.values()].sort((a, b) => (a.amount === b.amount ? 0 : a.amount > b.amount ? -1 : 1)).slice(0, 6);
+  const ranked = [...grouped.values()]
+    .sort((a, b) => (a.amount === b.amount ? a.owner.localeCompare(b.owner) : a.amount > b.amount ? -1 : 1))
+    .slice(0, 6);
   if (ranked.length < 6) {
     throw new Error(`This mission has only ${ranked.length} eligible token holder${ranked.length === 1 ? "" : "s"}. At least 6 holders are required before a treasury council can be finalized.`);
   }
@@ -429,6 +504,57 @@ async function ensureEpochCouncilFinalizedOnChain(input: {
   return finalized;
 }
 
+// Returns the epoch number that newly-created funding requests for this mission should reference.
+// Reuses the latest finalized epoch when the on-chain council would be unchanged; otherwise allocates
+// the next epoch number and submits `finalize_epoch_council` on chain.
+async function selectOrFinalizeEpochCouncil(input: {
+  mission: Mission;
+  candidates: CouncilCheckpointMember[];
+  escrowAmounts: number[];
+  client?: Queryable;
+}): Promise<{ epoch: number; rotated: boolean }> {
+  const reader = input.client || { query };
+  const latest = await reader.query<{ epoch_number: number; member_wallets: string[]; escrow_amounts: unknown[] }>(
+    "select epoch_number, member_wallets, escrow_amounts from epoch_councils where mission_id = $1 order by epoch_number desc limit 1",
+    [input.mission.id],
+  );
+  const latestRow = latest.rows[0];
+
+  // Build a stable signature: address -> escrow amount as string (BigInt-safe).
+  const sigFor = (members: string[], amounts: Array<number | string>) => {
+    const map = new Map<string, string>();
+    members.forEach((address, index) => map.set(address, String(amounts[index] ?? "0")));
+    return map;
+  };
+  const mapsEqual = (a: Map<string, string>, b: Map<string, string>) => {
+    if (a.size !== b.size) return false;
+    for (const [key, value] of a) if (b.get(key) !== value) return false;
+    return true;
+  };
+
+  const newSig = sigFor(input.candidates.map((c) => c.address), input.escrowAmounts);
+  if (latestRow) {
+    const latestSig = sigFor(latestRow.member_wallets || [], (latestRow.escrow_amounts as Array<number | string>) || []);
+    if (mapsEqual(newSig, latestSig)) return { epoch: latestRow.epoch_number, rotated: false };
+  }
+
+  const nextEpoch = (latestRow?.epoch_number ?? 0) + 1;
+  await ensureEpochCouncilFinalizedOnChain({
+    mission: input.mission,
+    epoch: nextEpoch,
+    candidates: input.candidates,
+    escrowAmounts: input.escrowAmounts,
+  });
+  await recordEpochCouncilInPostgres({
+    missionId: input.mission.id,
+    epoch: nextEpoch,
+    candidates: input.candidates,
+    escrowAmounts: input.escrowAmounts,
+    client: input.client,
+  });
+  return { epoch: nextEpoch, rotated: true };
+}
+
 async function recordEpochCouncilInPostgres(input: {
   missionId: string;
   epoch: number;
@@ -461,19 +587,24 @@ async function performanceFromPricePoints(missionId: string, currentPrice: numbe
     `
       select timestamp, price_usdc
       from price_points
-      where mission_id = $1 and timestamp >= now() - interval '31 days'
+      where mission_id = $1 and timestamp >= now() - interval '370 days'
       order by timestamp asc
     `,
     [missionId],
   );
   const points = result.rows.map((row) => ({ timestamp: new Date(row.timestamp).getTime(), price: num(row.price_usdc) })).filter((point) => point.price > 0);
   const now = Date.now();
+  const oldestTimestamp = points[0]?.timestamp ?? now;
 
   return Object.fromEntries(
     Object.entries(performanceFrames).map(([key, frame]) => {
       const cutoff = now - frame.ms;
-      const baseline = [...points].reverse().find((point) => point.timestamp <= cutoff)?.price || points[0]?.price || currentPrice || 1;
-      const value = baseline > 0 ? (currentPrice / baseline) * 100 : 100;
+      const olderPoint = [...points].reverse().find((point) => point.timestamp <= cutoff);
+      const hasHistoryForFrame = olderPoint !== undefined || oldestTimestamp <= cutoff;
+      const baseline = hasHistoryForFrame
+        ? olderPoint?.price || points[0]?.price || currentPrice || 1
+        : currentPrice || 1;
+      const value = baseline > 0 && currentPrice > 0 ? (currentPrice / baseline) * 100 : 100;
       return [
         key,
         {
@@ -634,12 +765,15 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
   );
   const requestsByMission = await requestRows(result.rows.map((row) => row.id));
   const candidatesByMission = await councilCandidateRows(result.rows.map((row) => row.id));
+  const councilByMission = await Promise.all(
+    result.rows.map((row) => candidateRowsToCouncil(row, candidatesByMission.get(row.id) || [])),
+  );
 
-  return result.rows.map((row) =>
+  return result.rows.map((row, index) =>
     rowToMission(
       {
         ...row,
-        council_json: candidateRowsToCouncil(row, candidatesByMission.get(row.id) || []),
+        council_json: councilByMission[index],
       },
       requestsByMission.get(row.id) || [],
     ),
@@ -662,10 +796,11 @@ export async function getMissionByIdFromPostgres(missionId: string, client?: Que
 
   const requestsByMission = await requestRows([missionId], client);
   const candidatesByMission = await councilCandidateRows([missionId], client);
+  const councilJson = await candidateRowsToCouncil(row, candidatesByMission.get(missionId) || []);
   return rowToMission(
     {
       ...row,
-      council_json: candidateRowsToCouncil(row, candidatesByMission.get(missionId) || []),
+      council_json: councilJson,
     },
     requestsByMission.get(missionId) || [],
   );
@@ -1187,28 +1322,32 @@ export async function prepareFundingRequestInPostgres(input: {
   if (council.length < 6) {
     throw new Error("This mission does not have 6 eligible token holders yet. At least 6 holders are required before funding requests can open.");
   }
-  const epoch = 1;
   const escrowAmounts = councilEscrowAmounts(council);
-  const autoFinalized = await ensureEpochCouncilFinalizedOnChain({ mission, epoch, candidates: council, escrowAmounts });
-  if (autoFinalized) {
-    await recordEpochCouncilInPostgres({ missionId: mission.id, epoch, candidates: council, escrowAmounts });
-  }
+  // Re-checked on every funding request: if the top-6 holders + their escrow amounts changed since the
+  // last finalized council, allocate a new epoch and submit `finalize_epoch_council` on chain.
+  const { epoch } = await selectOrFinalizeEpochCouncil({ mission, candidates: council, escrowAmounts });
 
   const tokenAmount = amountUsd / mission.tokenPrice;
   const id = `${mission.id}-r-${randomBytes(4).toString("hex")}`;
   const requesterWallet = input.requesterWallet || currentUser.address;
   const metadataHash = contentHash({ name, description, tokenAmount, amountUsd, requesterWallet });
+  const requestPdaAddress = fundingRequestPda({
+    registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+    councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+    missionId: mission.id,
+    metadataHash,
+  });
 
   const result = await query<FundingRequestRow>(
     `
       insert into funding_requests (
-        id, mission_id, requester_wallet, recipient_wallet, mission_token_amount,
-        derived_usd_estimate, status, metadata_hash, title, description
+        id, request_pda, mission_id, requester_wallet, recipient_wallet, mission_token_amount,
+        derived_usd_estimate, status, metadata_hash, title, description, epoch_number
       )
-      values ($1, $2, $3, $3, $4, $5, 'active', $6, $7, $8)
+      values ($1, $2, $3, $4, $4, $5, $6, 'active', $7, $8, $9, $10)
       returning *, 0::bigint as approvals, 0::bigint as rejections
     `,
-    [id, mission.id, requesterWallet, tokenAmount, amountUsd, metadataHash, name, description],
+    [id, requestPdaAddress, mission.id, requesterWallet, tokenAmount, amountUsd, metadataHash, name, description, epoch],
   );
 
   return {
@@ -1221,6 +1360,8 @@ export async function prepareFundingRequestInPostgres(input: {
       metadataHash,
       recipientWallet: requesterWallet,
       tokenAmount: tokenAmount * 1_000_000,
+      tokenMint: mission.tokenMint,
+      epoch,
     }),
   };
 }
@@ -1231,10 +1372,26 @@ export async function voteFundingRequestInPostgres(requestId: string, input: { w
   const vote = input.vote;
 
   return transaction(async (client) => {
-    const existing = await client.query<{ request_status: RequestStatus; existing_vote: "approve" | "reject" | null }>(
+    const existing = await client.query<{
+      request_status: RequestStatus;
+      existing_vote: "approve" | "reject" | null;
+      request_pda: string | null;
+      mission_id: string;
+      metadata_hash: string;
+      token_mint: string | null;
+      epoch_number: number | null;
+    }>(
       `
-        select fr.status as request_status, frv.vote as existing_vote
+        select
+          fr.status as request_status,
+          frv.vote as existing_vote,
+          fr.request_pda,
+          fr.mission_id,
+          fr.metadata_hash,
+          fr.epoch_number,
+          m.token_mint
         from funding_requests fr
+        join missions m on m.id = fr.mission_id
         left join funding_request_votes frv
           on frv.request_id = fr.id
           and lower(frv.voter_wallet) = lower($2)
@@ -1278,13 +1435,26 @@ export async function voteFundingRequestInPostgres(requestId: string, input: { w
       [requestId, status, approvals, rejections],
     );
 
+    // Fall back to recomputing the request PDA if it wasn't persisted yet (legacy rows).
+    const requestAccount =
+      current.request_pda ||
+      fundingRequestPda({
+        registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+        councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+        missionId: current.mission_id,
+        metadataHash: current.metadata_hash,
+      });
+
     return {
       request: rowToRequest(result.rows[0]),
       transaction: await prepareCouncilVoteTransaction({
         wallet,
-        missionId: result.rows[0].mission_id,
+        missionId: current.mission_id,
         requestId,
         vote,
+        requestAccount,
+        mint: current.token_mint,
+        epoch: Number(current.epoch_number ?? 1),
       }),
     };
   });
@@ -1294,22 +1464,28 @@ export async function executeFundingRequestInPostgres(
   requestId: string,
   input: {
     wallet?: string;
-    requestAccount?: string;
-    treasuryVault?: string;
-    recipientTokenAccount?: string;
-    mint?: string;
   } = {},
 ) {
-  const result = await query<FundingRequestRow>(
+  const result = await query<
+    FundingRequestRow & {
+      request_pda: string | null;
+      recipient_wallet: string;
+      token_mint: string | null;
+      treasury_vault: string | null;
+    }
+  >(
     `
       select
         fr.*,
+        m.token_mint,
+        m.treasury_vault,
         count(*) filter (where frv.vote = 'approve') as approvals,
         count(*) filter (where frv.vote = 'reject') as rejections
       from funding_requests fr
+      join missions m on m.id = fr.mission_id
       left join funding_request_votes frv on frv.request_id = fr.id
       where fr.id = $1
-      group by fr.id
+      group by fr.id, m.token_mint, m.treasury_vault
     `,
     [requestId],
   );
@@ -1317,16 +1493,25 @@ export async function executeFundingRequestInPostgres(
   if (!row) throw new Error(`Funding request not found: ${requestId}`);
   if (row.status !== "accepted") throw new Error("Only accepted requests can be executed.");
 
+  const requestAccount =
+    row.request_pda ||
+    fundingRequestPda({
+      registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+      councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+      missionId: row.mission_id,
+      metadataHash: row.metadata_hash,
+    });
+
   return {
     request: rowToRequest(row),
     transaction: await prepareCouncilExecuteTransaction({
       wallet: input.wallet || currentUser.address,
       missionId: row.mission_id,
       requestId,
-      requestAccount: input.requestAccount,
-      treasuryVault: input.treasuryVault,
-      recipientTokenAccount: input.recipientTokenAccount,
-      mint: input.mint,
+      requestAccount,
+      treasuryVault: row.treasury_vault,
+      recipientWallet: row.recipient_wallet,
+      mint: row.token_mint,
     }),
   };
 }
@@ -1371,13 +1556,24 @@ export async function registerCouncilCandidateInPostgres(input: { missionId?: st
   if (!input.missionId) throw new Error("missionId is required.");
   const wallet = input.wallet || currentUser.address;
 
+  // Snapshot the candidate's current on-chain balance so the council list can
+  // rank them correctly even before the next epoch checkpoint runs.
+  const mintRow = await query<{ token_mint: string | null }>(
+    "select token_mint from missions where id = $1",
+    [input.missionId],
+  );
+  const tokenMint = mintRow.rows[0]?.token_mint || null;
+  const balanceBaseUnits = tokenMint ? await fetchTokenBalanceBaseUnits(wallet, tokenMint) : "0";
+
   await query(
     `
-      insert into council_candidates (mission_id, owner_wallet, latest_checkpoint_balance)
-      values ($1, $2, 0)
-      on conflict (mission_id, owner_wallet) do update set status = 'registered'
+      insert into council_candidates (mission_id, owner_wallet, latest_checkpoint_balance, status)
+      values ($1, $2, $3, 'registered')
+      on conflict (mission_id, owner_wallet) do update set
+        latest_checkpoint_balance = greatest(council_candidates.latest_checkpoint_balance, excluded.latest_checkpoint_balance),
+        status = 'registered'
     `,
-    [input.missionId, wallet],
+    [input.missionId, wallet, balanceBaseUnits],
   );
 
   return {

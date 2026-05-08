@@ -22,7 +22,6 @@ import bs58 from "bs58";
 import {
   buildPreparedTransaction,
   buildPreparedTransactionSteps,
-  councilInstruction,
   DEFAULT_DBC_INITIAL_MARKET_CAP,
   DEFAULT_DBC_MIGRATION_MARKET_CAP,
   DEFAULT_DBC_TOTAL_SUPPLY,
@@ -185,6 +184,29 @@ function treasuryAuthorityPda(programId: string, mission: string) {
   );
 
   return address.toBase58();
+}
+
+function voteEscrowAuthorityPda(programId: string, request: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("vote_escrow_authority"), new PublicKey(request).toBuffer()],
+    new PublicKey(programId),
+  );
+
+  return address.toBase58();
+}
+
+function votePda(programId: string, request: string, voter: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("vote"), new PublicKey(request).toBuffer(), new PublicKey(voter).toBuffer()],
+    new PublicKey(programId),
+  );
+
+  return address.toBase58();
+}
+
+export function fundingRequestPda(input: { registryProgramId: string; councilProgramId: string; missionId: string; metadataHash: string }) {
+  const mission = missionPda(input.registryProgramId, input.missionId);
+  return requestPda(input.councilProgramId, mission, input.metadataHash);
 }
 
 function feeRouterAuthorityPda(programId: string, mission: string) {
@@ -405,6 +427,62 @@ function createFundingRequestInstruction(input: {
   });
 }
 
+function voteInstruction(input: {
+  programId: string;
+  voter: string;
+  epochCouncil: string;
+  request: string;
+  vote: string;
+  voterTokenAccount: string;
+  voteEscrowAuthority: string;
+  voteEscrowVault: string;
+  mint: string;
+  approve: boolean;
+}) {
+  const data = Buffer.concat([anchorDiscriminator("vote"), Buffer.from([input.approve ? 1 : 0])]);
+
+  return new TransactionInstruction({
+    programId: new PublicKey(input.programId),
+    keys: [
+      { pubkey: new PublicKey(input.voter), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(input.epochCouncil), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.request), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.vote), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voterTokenAccount), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voteEscrowAuthority), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.voteEscrowVault), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.mint), isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
+function executeFundingRequestInstruction(input: {
+  programId: string;
+  executor: string;
+  request: string;
+  treasuryAuthority: string;
+  treasuryVault: string;
+  recipientTokenAccount: string;
+  mint: string;
+}) {
+  return new TransactionInstruction({
+    programId: new PublicKey(input.programId),
+    keys: [
+      { pubkey: new PublicKey(input.executor), isSigner: true, isWritable: false },
+      { pubkey: new PublicKey(input.request), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.treasuryAuthority), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.treasuryVault), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.recipientTokenAccount), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.mint), isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+    ],
+    data: anchorDiscriminator("execute"),
+  });
+}
+
 export async function prepareLaunchTransaction(input: {
   creatorWallet?: string;
   missionId: string;
@@ -508,7 +586,9 @@ export async function prepareJupiterTradeTransaction(input: {
     }>(quoteUrl.toString());
     const estimatedOutput = Number(quoteResponse.outAmount || 0) / 1_000_000;
     const minimumAmountOut = quoteResponse.otherAmountThreshold ? Number(quoteResponse.otherAmountThreshold) / 1_000_000 : null;
-    const jupiterPriceImpactPercent = Number(quoteResponse.priceImpactPct || 0) * 100;
+    const jupiterImpactRaw = quoteResponse.priceImpactPct;
+    const jupiterImpactNumeric = jupiterImpactRaw !== undefined && jupiterImpactRaw !== null && jupiterImpactRaw !== "" ? Number(jupiterImpactRaw) : Number.NaN;
+    const jupiterPriceImpactPercent = Number.isFinite(jupiterImpactNumeric) ? Math.max(jupiterImpactNumeric * 100, 0) : Number.NaN;
     const referenceOutput =
       input.referencePrice && input.referencePrice > 0
         ? input.side === "buy"
@@ -517,7 +597,7 @@ export async function prepareJupiterTradeTransaction(input: {
         : 0;
     const fallbackPriceImpactPercent =
       referenceOutput > 0 && estimatedOutput > 0 ? Math.max(((referenceOutput - estimatedOutput) / referenceOutput) * 100, 0) : 0;
-    const priceImpactPercent = jupiterPriceImpactPercent > 0 ? jupiterPriceImpactPercent : fallbackPriceImpactPercent;
+    const priceImpactPercent = Number.isFinite(jupiterPriceImpactPercent) ? jupiterPriceImpactPercent : fallbackPriceImpactPercent;
 
     if (!input.wallet) {
       return {
@@ -748,6 +828,7 @@ export async function prepareFundingRequestTransaction(input: {
   recipientWallet?: string;
   tokenAmount: number;
   epoch?: number;
+  tokenMint?: string | null;
 }) {
   const kind = "funding-request-create";
 
@@ -758,28 +839,58 @@ export async function prepareFundingRequestTransaction(input: {
     const mission = missionPda(config.registryProgramId, input.missionId);
     const request = requestPda(config.councilProgramId, mission, input.metadataHash);
     const epochCouncil = epochCouncilPda(config.councilProgramId, mission, input.epoch ?? 1);
-    const instruction = createFundingRequestInstruction({
-      programId: config.councilProgramId,
-      requester: input.requesterWallet,
-      mission,
-      epochCouncil,
-      request,
-      metadataHash: input.metadataHash,
-      recipient: input.recipientWallet || input.requesterWallet,
-      tokenAmount: input.tokenAmount,
-    });
+    const recipient = input.recipientWallet || input.requesterWallet;
+    const requesterPubkey = new PublicKey(input.requesterWallet);
+    const recipientPubkey = new PublicKey(recipient);
+    const instructions: TransactionInstruction[] = [
+      createFundingRequestInstruction({
+        programId: config.councilProgramId,
+        requester: input.requesterWallet,
+        mission,
+        epochCouncil,
+        request,
+        metadataHash: input.metadataHash,
+        recipient,
+        tokenAmount: input.tokenAmount,
+      }),
+    ];
+    const accounts: Record<string, string> = { mission, epochCouncil, request };
+
+    // Pre-create the vote escrow vault and recipient token account so voters and the executor don't have to.
+    // Both are idempotent ATA creates - free if they already exist.
+    if (input.tokenMint) {
+      const mintPubkey = new PublicKey(input.tokenMint);
+      const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, request);
+      const voteEscrowVault = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
+      const recipientTokenAccount = getAssociatedTokenAddressSync(mintPubkey, recipientPubkey, false, TOKEN_2022_PROGRAM_ID);
+      instructions.push(
+        createAssociatedTokenAccountIdempotentInstruction(
+          requesterPubkey,
+          voteEscrowVault,
+          new PublicKey(voteEscrowAuthority),
+          mintPubkey,
+          TOKEN_2022_PROGRAM_ID,
+        ),
+        createAssociatedTokenAccountIdempotentInstruction(
+          requesterPubkey,
+          recipientTokenAccount,
+          recipientPubkey,
+          mintPubkey,
+          TOKEN_2022_PROGRAM_ID,
+        ),
+      );
+      accounts.voteEscrowAuthority = voteEscrowAuthority;
+      accounts.voteEscrowVault = voteEscrowVault.toBase58();
+      accounts.recipientTokenAccount = recipientTokenAccount.toBase58();
+    }
 
     return buildPreparedTransaction({
       kind,
       feePayer: input.requesterWallet,
       recentBlockhash: blockhash.blockhash,
-      instructions: [instruction],
+      instructions,
       requiredSigners: [input.requesterWallet],
-      accounts: {
-        mission,
-        epochCouncil,
-        request,
-      },
+      accounts,
     });
   } catch (error) {
     return notConfigured(kind, error);
@@ -791,44 +902,62 @@ export async function prepareCouncilVoteTransaction(input: {
   missionId: string;
   requestId: string;
   vote: "approve" | "reject";
-  requestAccount?: string;
-  voterTokenAccount?: string;
-  voteEscrowAuthority?: string;
-  voteEscrowVault?: string;
-  mint?: string;
+  requestAccount?: string | null;
+  mint?: string | null;
+  epoch?: number;
 }) {
   const kind = "funding-request-vote";
 
   try {
     if (!input.wallet) throw new Error("wallet is required to prepare a vote transaction.");
-    if (!input.requestAccount) throw new Error("requestAccount is required to prepare a vote transaction.");
-    if (!input.voterTokenAccount) throw new Error("voterTokenAccount is required to prepare a vote transaction.");
-    if (!input.voteEscrowAuthority) throw new Error("voteEscrowAuthority is required to prepare a vote transaction.");
-    if (!input.voteEscrowVault) throw new Error("voteEscrowVault is required to prepare a vote transaction.");
-    if (!input.mint) throw new Error("mint is required to prepare a vote transaction.");
+    if (!input.requestAccount) throw new Error("This funding request has not been recorded on-chain yet. Try again in a moment.");
+    if (!input.mint) throw new Error("Mission token mint is unavailable. Refresh the mission and try again.");
     const config = requireProgramConfig(process.env);
     const blockhash = await latestBlockhash(config);
-    const instruction = councilInstruction({
-      programId: config.councilProgramId,
-      opcode: input.vote === "approve" ? 2 : 3,
-      payer: input.wallet,
-      mission: missionPda(config.registryProgramId, input.missionId),
-      request: input.requestAccount,
-      extraAccounts: [
-        { pubkey: input.voterTokenAccount, isWritable: true },
-        { pubkey: input.voteEscrowAuthority },
-        { pubkey: input.voteEscrowVault, isWritable: true },
-        { pubkey: input.mint },
-        { pubkey: TOKEN_2022_PROGRAM_ID.toBase58() },
-      ],
-    });
+    const mission = missionPda(config.registryProgramId, input.missionId);
+    const epochCouncil = epochCouncilPda(config.councilProgramId, mission, input.epoch ?? 1);
+    const voterPubkey = new PublicKey(input.wallet);
+    const requestPubkey = new PublicKey(input.requestAccount);
+    const mintPubkey = new PublicKey(input.mint);
+    const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, input.requestAccount);
+    const voteEscrowVault = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
+    const voterTokenAccount = getAssociatedTokenAddressSync(mintPubkey, voterPubkey, false, TOKEN_2022_PROGRAM_ID);
+    const vote = votePda(config.councilProgramId, input.requestAccount, input.wallet);
+
+    const instructions: TransactionInstruction[] = [
+      // Idempotent ATA creates protect against the unlikely cases where the funding request was created before the
+      // pre-creation logic existed, or where a voter's ATA was closed for some reason.
+      createAssociatedTokenAccountIdempotentInstruction(voterPubkey, voterTokenAccount, voterPubkey, mintPubkey, TOKEN_2022_PROGRAM_ID),
+      createAssociatedTokenAccountIdempotentInstruction(voterPubkey, voteEscrowVault, new PublicKey(voteEscrowAuthority), mintPubkey, TOKEN_2022_PROGRAM_ID),
+      voteInstruction({
+        programId: config.councilProgramId,
+        voter: input.wallet,
+        epochCouncil,
+        request: input.requestAccount,
+        vote,
+        voterTokenAccount: voterTokenAccount.toBase58(),
+        voteEscrowAuthority,
+        voteEscrowVault: voteEscrowVault.toBase58(),
+        mint: input.mint,
+        approve: input.vote === "approve",
+      }),
+    ];
 
     return buildPreparedTransaction({
       kind,
       feePayer: input.wallet,
       recentBlockhash: blockhash.blockhash,
-      instructions: [instruction],
+      instructions,
       requiredSigners: [input.wallet],
+      accounts: {
+        request: input.requestAccount,
+        epochCouncil,
+        vote,
+        voterTokenAccount: voterTokenAccount.toBase58(),
+        voteEscrowAuthority,
+        voteEscrowVault: voteEscrowVault.toBase58(),
+        mint: input.mint,
+      },
     });
   } catch (error) {
     return notConfigured(kind, error);
@@ -839,44 +968,55 @@ export async function prepareCouncilExecuteTransaction(input: {
   wallet?: string;
   missionId: string;
   requestId: string;
-  requestAccount?: string;
-  treasuryVault?: string;
-  recipientTokenAccount?: string;
-  mint?: string;
+  requestAccount?: string | null;
+  treasuryVault?: string | null;
+  recipientWallet?: string | null;
+  mint?: string | null;
 }) {
   const kind = "funding-request-execute";
 
   try {
     if (!input.wallet) throw new Error("wallet is required to prepare an execution transaction.");
-    if (!input.requestAccount) throw new Error("requestAccount is required to prepare an execution transaction.");
-    if (!input.treasuryVault) throw new Error("treasuryVault is required to prepare an execution transaction.");
-    if (!input.recipientTokenAccount) throw new Error("recipientTokenAccount is required to prepare an execution transaction.");
-    if (!input.mint) throw new Error("mint is required to prepare an execution transaction.");
+    if (!input.requestAccount) throw new Error("This funding request has not been recorded on-chain yet.");
+    if (!input.treasuryVault) throw new Error("Mission treasury vault is unavailable. Refresh the mission and try again.");
+    if (!input.recipientWallet) throw new Error("Funding request recipient wallet is missing.");
+    if (!input.mint) throw new Error("Mission token mint is unavailable. Refresh the mission and try again.");
     const config = requireProgramConfig(process.env);
     const blockhash = await latestBlockhash(config);
     const mission = missionPda(config.registryProgramId, input.missionId);
     const treasuryAuthority = treasuryAuthorityPda(config.councilProgramId, mission);
-    const instruction = councilInstruction({
-      programId: config.councilProgramId,
-      opcode: 4,
-      payer: input.wallet,
-      mission,
-      request: input.requestAccount,
-      extraAccounts: [
-        { pubkey: treasuryAuthority },
-        { pubkey: input.treasuryVault, isWritable: true },
-        { pubkey: input.recipientTokenAccount, isWritable: true },
-        { pubkey: input.mint },
-        { pubkey: TOKEN_2022_PROGRAM_ID.toBase58() },
-      ],
-    });
+    const executorPubkey = new PublicKey(input.wallet);
+    const recipientPubkey = new PublicKey(input.recipientWallet);
+    const mintPubkey = new PublicKey(input.mint);
+    const recipientTokenAccount = getAssociatedTokenAddressSync(mintPubkey, recipientPubkey, false, TOKEN_2022_PROGRAM_ID);
+
+    const instructions: TransactionInstruction[] = [
+      // Make sure the recipient ATA exists. Free if it does, ~0.002 SOL if it doesn't.
+      createAssociatedTokenAccountIdempotentInstruction(executorPubkey, recipientTokenAccount, recipientPubkey, mintPubkey, TOKEN_2022_PROGRAM_ID),
+      executeFundingRequestInstruction({
+        programId: config.councilProgramId,
+        executor: input.wallet,
+        request: input.requestAccount,
+        treasuryAuthority,
+        treasuryVault: input.treasuryVault,
+        recipientTokenAccount: recipientTokenAccount.toBase58(),
+        mint: input.mint,
+      }),
+    ];
 
     return buildPreparedTransaction({
       kind,
       feePayer: input.wallet,
       recentBlockhash: blockhash.blockhash,
-      instructions: [instruction],
+      instructions,
       requiredSigners: [input.wallet],
+      accounts: {
+        request: input.requestAccount,
+        treasuryAuthority,
+        treasuryVault: input.treasuryVault,
+        recipientTokenAccount: recipientTokenAccount.toBase58(),
+        mint: input.mint,
+      },
     });
   } catch (error) {
     return notConfigured(kind, error);

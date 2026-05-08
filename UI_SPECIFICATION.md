@@ -414,13 +414,15 @@ Card specs:
 
 Title: `If you invested $100`
 
-User can click timeframes:
+User can click timeframes (in this order):
 
 - `1H`
 - `4H`
 - `1D`
 - `1W`
 - `1M`
+- `6M`
+- `1Y`
 
 Behavior:
 
