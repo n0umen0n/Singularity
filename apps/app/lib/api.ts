@@ -51,6 +51,12 @@ export type MissionMarketGraduation = {
   transaction: PreparedTransaction;
 };
 
+export type MissionTreasuryAllocationClaim = {
+  mission: Mission;
+  treasuryVault: string | null;
+  transaction: PreparedTransaction;
+};
+
 export type MissionBalances = {
   wallet: string;
   missionId: string;
@@ -161,6 +167,20 @@ export function prepareMissionMarketGraduation(missionId: string) {
 
 export function confirmMissionMarketGraduation(missionId: string, input: { signature: string; dammPool: string }) {
   return api<{ mission: Mission }>(`/api/missions/${missionId}/confirm-market-graduation`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function prepareMissionTreasuryAllocationClaim(missionId: string) {
+  return api<MissionTreasuryAllocationClaim>(`/api/missions/${missionId}/prepare-treasury-allocation-claim`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function confirmMissionTreasuryAllocationClaim(missionId: string, input: { signature: string }) {
+  return api<{ mission: Mission }>(`/api/missions/${missionId}/confirm-treasury-allocation-claim`, {
     method: "POST",
     body: JSON.stringify(input),
   });

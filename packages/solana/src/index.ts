@@ -210,6 +210,7 @@ export type MeteoraDammV2MarketSnapshot = {
   liquidityUsd: number;
   treasuryTokens: number;
   treasuryUsdc: number;
+  treasuryAllocationClaimed: boolean;
   holders: number;
   totalSupply: number;
   circulatingTokens: number;
@@ -229,6 +230,15 @@ export type MeteoraDbcDammV2MigrationResult = {
   baseMint: string;
   quoteMint: string;
   alreadyMigrated: boolean;
+  transaction: PreparedSolanaTransaction;
+};
+
+export type MeteoraDbcTreasuryAllocationClaimResult = {
+  route: "meteora-dbc";
+  dbcPool: string;
+  tokenMint: string;
+  treasuryVault: string;
+  alreadyWithdrawn: boolean;
   transaction: PreparedSolanaTransaction;
 };
 
@@ -625,16 +635,6 @@ async function tokenAccountAmount(connection: Connection, address: PublicKey) {
   return connection.getTokenAccountBalance(address).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0);
 }
 
-async function positiveTokenAccountHolders(connection: Connection, mint: string) {
-  return connection
-    .getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
-      filters: [{ memcmp: { offset: 0, bytes: mint } }],
-      dataSlice: { offset: 64, length: 8 },
-    })
-    .then((accounts) => accounts.filter((account) => account.account.data.length >= 8 && account.account.data.readBigUInt64LE(0) > 0n).length)
-    .catch(() => 0);
-}
-
 async function jupiterMarketSnapshot(input: { baseMint: string; fallbackPrice: number; fallbackLiquidityUsd: number }) {
   for (const baseUrl of ["https://lite-api.jup.ag/price/v3", "https://api.jup.ag/price/v3"]) {
     const priceUrl = new URL(baseUrl);
@@ -868,6 +868,52 @@ export async function prepareMeteoraDbcDammV2Migration(input: {
   };
 }
 
+export async function prepareMeteoraDbcTreasuryAllocationClaim(input: {
+  rpcUrl: string;
+  pool: string;
+  wallet: string;
+  recentBlockhash: string;
+}): Promise<MeteoraDbcTreasuryAllocationClaimResult> {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const client = new DynamicBondingCurveClient(connection, "confirmed");
+  const virtualPool = new PublicKey(input.pool);
+  const payer = new PublicKey(input.wallet);
+  const poolState = await client.state.getPool(virtualPool);
+  if (!poolState) throw new Error(`Pool not found: ${input.pool}`);
+  if (!Boolean((poolState as { isMigrated?: number | boolean }).isMigrated)) {
+    throw new Error("This market must graduate before claiming the treasury allocation.");
+  }
+  if (Boolean((poolState as { isWithdrawLeftover?: number | boolean }).isWithdrawLeftover)) {
+    throw new Error("The treasury allocation has already been claimed.");
+  }
+  const config = await client.state.getPoolConfig((poolState as { config: PublicKey }).config);
+  const baseMint = (poolState as { baseMint: PublicKey }).baseMint;
+  const leftoverReceiver = (config as { leftoverReceiver: PublicKey }).leftoverReceiver;
+  const treasuryVault = getAssociatedTokenAddressSync(baseMint, leftoverReceiver, true, TOKEN_2022_PROGRAM_ID);
+  const transaction = await client.migration.withdrawLeftover({ payer, virtualPool });
+
+  return {
+    route: "meteora-dbc",
+    dbcPool: input.pool,
+    tokenMint: baseMint.toBase58(),
+    treasuryVault: treasuryVault.toBase58(),
+    alreadyWithdrawn: false,
+    transaction: buildPreparedTransaction({
+      kind: "mission-treasury-allocation-claim",
+      feePayer: input.wallet,
+      recentBlockhash: input.recentBlockhash,
+      instructions: transaction.instructions,
+      requiredSigners: [input.wallet],
+      accounts: {
+        dbcPool: input.pool,
+        tokenMint: baseMint.toBase58(),
+        treasuryVault: treasuryVault.toBase58(),
+        leftoverReceiver: leftoverReceiver.toBase58(),
+      },
+    }),
+  };
+}
+
 export async function meteoraDbcPartnerFeeClaimInstruction(input: {
   rpcUrl: string;
   pool: string;
@@ -927,7 +973,6 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
   const configuredTreasuryTokens =
     input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
   const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
-  const holders = await positiveTokenAccountHolders(connection, baseMint);
   const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
   const isLaunchDust = quoteReserve > 0 && quoteReserve <= DBC_LAUNCH_DUST_LIQUIDITY_USDC;
   const currentPrice = isLaunchDust && Number.isFinite(launchPrice) && launchPrice > 0 ? launchPrice : poolPrice;
@@ -949,7 +994,7 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     poolProgressPercent: Math.max(0, Math.min(progress * 100, 100)),
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
-    holders,
+    holders: 0,
     totalSupply: supply,
     circulatingTokens,
     marketTokens,
@@ -973,14 +1018,13 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
   const dammPool = new PublicKey(input.dammPool);
   const baseVault = deriveDammV2TokenVaultAddress(dammPool, new PublicKey(baseMint));
   const quoteVault = deriveDammV2TokenVaultAddress(dammPool, new PublicKey(quoteMint));
-  const [baseReserve, quoteReserve, supply, treasuryVaultTokens, holders] = await Promise.all([
+  const [baseReserve, quoteReserve, supply, treasuryVaultTokens] = await Promise.all([
     tokenAccountAmount(connection, baseVault),
     tokenAccountAmount(connection, quoteVault),
     input.totalSupply
       ? Promise.resolve(input.totalSupply)
       : connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0),
     input.treasuryVault ? tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : Promise.resolve(0),
-    positiveTokenAccountHolders(connection, baseMint),
   ]);
   const fallbackPrice = input.fallbackPrice && input.fallbackPrice > 0 ? input.fallbackPrice : quoteReserve > 0 && baseReserve > 0 ? quoteReserve / baseReserve : 0;
   const marketSnapshot = await jupiterMarketSnapshot({ baseMint, fallbackPrice, fallbackLiquidityUsd: quoteReserve });
@@ -1003,7 +1047,8 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
     liquidityUsd: marketSnapshot.liquidityUsd,
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
-    holders,
+    treasuryAllocationClaimed: treasuryVaultTokens > 0,
+    holders: 0,
     totalSupply: supply,
     circulatingTokens,
     marketTokens,

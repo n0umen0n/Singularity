@@ -34,6 +34,7 @@ import {
   meteoraDbcPartnerFeeClaimInstructions,
   prepareMeteoraDbcDammV2Migration,
   prepareMeteoraDbcLaunchInstructions,
+  prepareMeteoraDbcTreasuryAllocationClaim,
   prepareMeteoraDbcTrade,
   quoteMeteoraDbcTrade,
   requireProgramConfig,
@@ -103,6 +104,15 @@ export type MissionMarketGraduationResult = {
   baseMint: string;
   quoteMint: string;
   alreadyMigrated: boolean;
+  transaction: TransactionResult;
+};
+
+export type MissionTreasuryAllocationClaimResult = {
+  route: "meteora-dbc";
+  dbcPool: string;
+  tokenMint: string;
+  treasuryVault: string;
+  alreadyWithdrawn: boolean;
   transaction: TransactionResult;
 };
 
@@ -677,6 +687,36 @@ export async function fetchMeteoraDbcMissionSnapshot(input: {
     treasurySupplyPercent: input.treasurySupplyPercent,
     totalSupply: input.totalSupply,
   });
+}
+
+export async function prepareMissionTreasuryAllocationClaimTransaction(input: {
+  wallet?: string;
+  dbcPool?: string | null;
+}): Promise<MissionTreasuryAllocationClaimResult | NotConfiguredTransaction> {
+  const kind = "mission-treasury-allocation-claim";
+
+  try {
+    if (!input.wallet) throw new Error("wallet is required to claim the treasury allocation.");
+    if (!input.dbcPool) throw new Error("dbcPool is required to claim the treasury allocation.");
+    const config = requireProgramConfig(process.env);
+    const claim = await prepareMeteoraDbcTreasuryAllocationClaim({
+      rpcUrl: config.rpcUrl,
+      pool: input.dbcPool,
+      wallet: input.wallet,
+      recentBlockhash: (await latestBlockhash(config)).blockhash,
+    });
+
+    return {
+      route: claim.route,
+      dbcPool: claim.dbcPool,
+      tokenMint: claim.tokenMint,
+      treasuryVault: claim.treasuryVault,
+      alreadyWithdrawn: claim.alreadyWithdrawn,
+      transaction: claim.transaction,
+    };
+  } catch (error) {
+    return notConfigured(kind, error) as NotConfiguredTransaction;
+  }
 }
 
 export async function fetchMeteoraDammV2MissionSnapshot(input: {

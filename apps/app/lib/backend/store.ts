@@ -18,6 +18,8 @@ import {
   prepareMissionGraduationInPostgres,
   prepareMissionMarketGraduationInPostgres,
   confirmMissionMarketGraduationInPostgres,
+  prepareMissionTreasuryAllocationClaimInPostgres,
+  confirmMissionTreasuryAllocationClaimInPostgres,
   prepareMissionLaunchInPostgres,
   quoteMissionTradeFromPostgres,
   refreshMissionMarketDataInPostgres,
@@ -35,6 +37,7 @@ import {
   prepareJupiterTradeTransaction,
   prepareLaunchTransaction,
   prepareMissionMarketGraduationTransaction,
+  prepareMissionTreasuryAllocationClaimTransaction,
   prepareMissionGraduationTransaction,
 } from "@/lib/backend/transactions";
 import { currentUser, missions, type FundingRequest, type Mission, type RequestStatus } from "@/lib/mock-data";
@@ -484,6 +487,30 @@ export async function confirmMissionMarketGraduation(missionId: string, input: {
     mission.lifecycle = "graduated";
     return { mission };
   });
+}
+
+export async function prepareMissionTreasuryAllocationClaim(missionId: string, input: { wallet?: string }) {
+  if (storageMode() === "postgres") return prepareMissionTreasuryAllocationClaimInPostgres(missionId, input);
+
+  const state = await readState();
+  const mission = findMissionOrThrow(state, missionId);
+  const result = await prepareMissionTreasuryAllocationClaimTransaction({
+    wallet: input.wallet || state.currentUser.address,
+    dbcPool: mission.dbcPool,
+  });
+
+  return {
+    mission,
+    treasuryVault: "treasuryVault" in result ? result.treasuryVault : mission.treasuryVault || null,
+    transaction: "transaction" in result ? result.transaction : result,
+  };
+}
+
+export async function confirmMissionTreasuryAllocationClaim(missionId: string, input: { wallet?: string; signature?: string }) {
+  if (storageMode() === "postgres") return confirmMissionTreasuryAllocationClaimInPostgres(missionId, input);
+  if (!input.signature) throw new Error("signature is required.");
+  const state = await readState();
+  return { mission: findMissionOrThrow(state, missionId) };
 }
 
 export async function prepareFundingRequest(input: {

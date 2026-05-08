@@ -75,10 +75,12 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
     treasury_vault: string | null;
     treasury_supply_percent: string;
     total_supply: string;
+    holders: number | null;
   }>(
     `
-      select id, token_mint, dbc_pool, damm_pool, lifecycle_state, treasury_vault, treasury_supply_percent, total_supply
-      from missions
+      select m.id, m.token_mint, m.dbc_pool, m.damm_pool, m.lifecycle_state, m.treasury_vault, m.treasury_supply_percent, m.total_supply, mm.holders
+      from missions m
+      left join mission_metrics mm on mm.mission_id = m.id
       where (lifecycle_state = 'bonding' and dbc_pool is not null)
          or (lifecycle_state = 'graduated' and damm_pool is not null and token_mint is not null)
     `,
@@ -119,7 +121,7 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
           treasury_tokens = excluded.treasury_tokens,
           updated_at = now()
       `,
-      [mission.id, snapshot.currentPrice, snapshot.holders, snapshot.liquidityUsd, snapshot.treasuryUsdc, snapshot.treasuryTokens],
+      [mission.id, snapshot.currentPrice, snapshot.holders || mission.holders || 1, snapshot.liquidityUsd, snapshot.treasuryUsdc, snapshot.treasuryTokens],
     );
     await input.pool.query(
       `

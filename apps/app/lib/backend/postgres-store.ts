@@ -19,6 +19,7 @@ import {
   prepareLaunchTransaction,
   prepareMeteoraDbcTradeTransaction,
   prepareMissionMarketGraduationTransaction,
+  prepareMissionTreasuryAllocationClaimTransaction,
   prepareMissionGraduationTransaction,
   submitBackendMissionFeeDistribution,
   submitFinalizeEpochCouncilTransaction,
@@ -570,6 +571,7 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
         baseReserve: snapshot.baseReserve,
         quoteReserve: snapshot.quoteReserve,
         poolProgressPercent: "poolProgressPercent" in snapshot ? snapshot.poolProgressPercent : undefined,
+        treasuryAllocationClaimed: "treasuryAllocationClaimed" in snapshot ? snapshot.treasuryAllocationClaimed : undefined,
         marketDataUpdatedAt: snapshot.updatedAt,
       }
     : refreshed;
@@ -1064,6 +1066,41 @@ export async function confirmMissionMarketGraduationInPostgres(missionId: string
   );
 
   const refreshed = await getMissionByIdFromPostgres(missionId);
+  if (!refreshed) throw new Error(`Mission not found: ${missionId}`);
+  return { mission: refreshed };
+}
+
+export async function prepareMissionTreasuryAllocationClaimInPostgres(missionId: string, input: { wallet?: string }) {
+  const mission = await getMissionByIdFromPostgres(missionId);
+  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+  if (!mission.dbcPool) throw new Error("This mission does not have a bonding-curve pool.");
+  if (mission.lifecycle !== "graduated") throw new Error("This mission must graduate before claiming the treasury allocation.");
+
+  const result = await prepareMissionTreasuryAllocationClaimTransaction({ wallet: input.wallet || currentUser.address, dbcPool: mission.dbcPool });
+  return {
+    mission,
+    treasuryVault: "treasuryVault" in result ? result.treasuryVault : mission.treasuryVault || null,
+    transaction: "transaction" in result ? result.transaction : result,
+  };
+}
+
+export async function confirmMissionTreasuryAllocationClaimInPostgres(missionId: string, input: { signature?: string; wallet?: string }) {
+  if (!input.signature) throw new Error("signature is required.");
+  const mission = await getMissionByIdFromPostgres(missionId);
+  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+
+  await query(
+    `
+      insert into transactions (signature, wallet, mission_id, type, status)
+      values ($1, $2, $3, 'mission-treasury-allocation-claim', 'submitted')
+      on conflict (signature) do nothing
+    `,
+    [input.signature, input.wallet || currentUser.address, missionId],
+  );
+
+  const refreshed =
+    (await refreshMissionMarketDataInPostgres(missionId, { query: query as unknown as Queryable["query"] })) ||
+    (await getMissionByIdFromPostgres(missionId));
   if (!refreshed) throw new Error(`Mission not found: ${missionId}`);
   return { mission: refreshed };
 }

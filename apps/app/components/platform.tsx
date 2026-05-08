@@ -363,7 +363,7 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
           <FundingRequests mission={mission} onMissionChange={setMission} />
         </div>
         <aside className="right-rail">
-          <TreasuryPanel mission={mission} />
+          <TreasuryPanel mission={mission} onMissionChange={setMission} />
           <TradePanel mission={mission} onMissionChange={setMission} />
         </aside>
       </section>
@@ -834,12 +834,46 @@ function capitalizationBreakdown(mission: Mission) {
   };
 }
 
-function TreasuryPanel({ mission }: { mission: Mission }) {
+function TreasuryPanel({ mission, onMissionChange }: { mission: Mission; onMissionChange?: (mission: Mission) => void }) {
   const { marketCapValue, marketTokens, treasuryTokens, treasuryValue } = capitalizationBreakdown(mission);
+  const wallet = useSingularityWallet();
+  const [claimPending, setClaimPending] = useState(false);
+  const [claimStatus, setClaimStatus] = useState<string | null>(null);
   const totalSupplyAmount = `${number(mission.totalSupply)} ${mission.tokenSymbol}`;
   const treasuryTokenAmount = `${number(treasuryTokens)} ${mission.tokenSymbol}`;
   const marketTokenAmount = `${number(marketTokens)} ${mission.tokenSymbol}`;
   const headlineMoney = (value: number) => money(value, false, 1);
+  const canClaimTreasuryAllocation =
+    mission.lifecycle === "graduated" && Boolean(mission.dbcPool && mission.treasuryVault) && mission.treasuryAllocationClaimed !== true;
+  const claimTreasuryAllocation = async () => {
+    if (!wallet.address) {
+      await wallet.signIn();
+      return;
+    }
+    try {
+      setClaimPending(true);
+      setClaimStatus("Preparing treasury allocation claim...");
+      const result = await api.prepareMissionTreasuryAllocationClaim(mission.id);
+      if (result.transaction.status !== "ready") {
+        setClaimStatus(result.transaction.message);
+        return;
+      }
+      setClaimStatus("Approve the treasury allocation claim in your wallet...");
+      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      if (!signature) {
+        setClaimStatus("Treasury allocation claim was not submitted.");
+        return;
+      }
+      setClaimStatus("Treasury allocation submitted. Refreshing mission...");
+      const confirmed = await api.confirmMissionTreasuryAllocationClaim(mission.id, { signature });
+      onMissionChange?.(confirmed.mission);
+      setClaimStatus("Treasury allocation claimed.");
+    } catch (error) {
+      setClaimStatus(error instanceof Error ? error.message : "Treasury allocation claim failed.");
+    } finally {
+      setClaimPending(false);
+    }
+  };
 
   return (
     <GlassCard className="section-card">
@@ -876,6 +910,14 @@ function TreasuryPanel({ mission }: { mission: Mission }) {
       <p className="stat-note">
         The treasury is reserved for funding work that advances this mission. Liquidity shows how much value is available for buying and selling in the market.
       </p>
+      {canClaimTreasuryAllocation ? (
+        <>
+          {claimStatus ? <p className="stat-note">{claimStatus}</p> : null}
+          <button className="button" type="button" disabled={claimPending} style={{ width: "100%" }} onClick={() => void claimTreasuryAllocation()}>
+            {claimPending ? <InlineLoader /> : "Claim treasury allocation"}
+          </button>
+        </>
+      ) : null}
     </GlassCard>
   );
 }
@@ -884,7 +926,7 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
   const [active, setActive] = useState<"investors" | "treasury" | "market">("market");
   const { investorTokens, marketTokens, treasuryTokens } = capitalizationBreakdown(mission);
   const chartData = [
-    { key: "market" as const, name: "Market", value: marketTokens, gradient: "url(#marketGradient)" },
+    { key: "market" as const, name: "Liquidity pool", value: marketTokens, gradient: "url(#marketGradient)" },
     { key: "investors" as const, name: "Investors", value: investorTokens, gradient: "url(#investorsGradient)" },
     { key: "treasury" as const, name: "Treasury", value: treasuryTokens, gradient: "url(#treasuryGradient)" },
   ];
@@ -926,8 +968,7 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
               cornerRadius={9}
               stroke="rgba(255,247,237,0.16)"
               strokeWidth={1}
-              isAnimationActive
-              animationDuration={700}
+              isAnimationActive={false}
               onMouseEnter={(_, index) => setActive(chartData[index]?.key ?? "market")}
             >
               {chartData.map((entry) => (
@@ -949,7 +990,7 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
       <div className="donut-legend">
         <button className={cx("legend-item", active === "market" && "active")} onMouseEnter={() => setActive("market")} onFocus={() => setActive("market")}>
           <span className="legend-dot market-dot" />
-          Market
+          Pool
         </button>
         <button className={cx("legend-item", active === "investors" && "active")} onMouseEnter={() => setActive("investors")} onFocus={() => setActive("investors")}>
           <span className="legend-dot investors-dot" />

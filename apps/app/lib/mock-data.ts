@@ -57,6 +57,7 @@ export type Mission = {
   quoteReserve?: number;
   baseReserve?: number;
   poolProgressPercent?: number;
+  treasuryAllocationClaimed?: boolean;
   marketDataUpdatedAt?: string;
   performance: Record<"1H" | "4H" | "1D" | "1W" | "1M", PerformancePoint>;
   council: Investor[];
