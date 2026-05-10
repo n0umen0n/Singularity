@@ -412,11 +412,17 @@ function App() {
   const [isLoaded, setIsLoaded] = useState(false);
   const activeIndex = Math.min(chapters.length - 1, Math.round(scrollProgress * (chapters.length - 1)));
   const stopCount = Math.max(chapters.length - 1, 1);
+  const hasPreviousChapter = activeIndex > 0;
+  const hasNextChapter = activeIndex < chapters.length - 1;
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setIsLoaded(true));
     return () => cancelAnimationFrame(frame);
   }, []);
+
+  const scrollToChapter = (index: number) => {
+    document.getElementById(`chapter-${index + 1}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   return (
     <main className={isLoaded ? "page loaded" : "page"}>
@@ -534,6 +540,19 @@ function App() {
             );
           })}
         </div>
+
+        <nav className="section-arrows" aria-label="Chapter navigation">
+          {hasPreviousChapter ? (
+            <button className="section-arrow section-arrow-prev" type="button" aria-label="Previous section" onClick={() => scrollToChapter(activeIndex - 1)}>
+              <span aria-hidden="true" />
+            </button>
+          ) : null}
+          {hasNextChapter ? (
+            <button className="section-arrow section-arrow-next" type="button" aria-label="Next section" onClick={() => scrollToChapter(activeIndex + 1)}>
+              <span aria-hidden="true" />
+            </button>
+          ) : null}
+        </nav>
       </section>
 
       <div className="chapters">

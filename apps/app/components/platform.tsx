@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { createPortal } from "react-dom";
 import Cropper, { type Area, type MediaSize } from "react-easy-crop";
-import { ArrowRight, ChevronDown, Copy, Sparkles, Upload } from "lucide-react";
+import { ArrowRight, ChevronDown, Copy, Menu, Sparkles, Upload } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
@@ -29,6 +29,25 @@ type CropRequest = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setIsMenuOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [isMenuOpen]);
+
   return (
     <main className="app-shell">
       <header className="top-nav">
@@ -46,18 +65,65 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <ChevronDown size={15} />
             </Link>
           ) : (
-            <button className="button" type="button" onClick={() => void wallet.signIn()}>
+            <button className="button desktop-only" type="button" onClick={() => void wallet.signIn()}>
               Sign in
             </button>
           )}
+          <div className={cx("app-menu-shell mobile-menu-shell", isMenuOpen && "open")} ref={menuRef}>
+            <button
+              className="menu-trigger"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={isMenuOpen}
+              aria-label="Open app menu"
+              onClick={() => setIsMenuOpen((current) => !current)}
+            >
+              <Menu size={17} aria-hidden />
+              <span>Menu</span>
+            </button>
+            {isMenuOpen ? (
+              <div className="app-menu" role="menu">
+                {wallet.address ? <span className="menu-wallet">{shortAddress(wallet.address)}</span> : null}
+                <Link role="menuitem" href="/missions" onClick={() => setIsMenuOpen(false)}>
+                  Missions
+                </Link>
+                <Link role="menuitem" href="/missions/new" onClick={() => setIsMenuOpen(false)}>
+                  Create mission
+                </Link>
+                {wallet.address ? (
+                  <>
+                    <Link role="menuitem" href="/profile" onClick={() => setIsMenuOpen(false)}>
+                      Profile
+                    </Link>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        void wallet.signOut();
+                      }}
+                    >
+                      Sign out
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      void wallet.signIn();
+                    }}
+                  >
+                    Sign in
+                  </button>
+                )}
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
       {children}
-      <nav className="mobile-nav" aria-label="Primary">
-        <Link href="/missions">Missions</Link>
-        <Link href="/missions/new">Create</Link>
-        <Link href="/profile">Profile</Link>
-      </nav>
     </main>
   );
 }
@@ -381,17 +447,19 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
   return (
     <AppShell>
       <section className="page-container detail-grid">
-        <div>
+        <div className="detail-main">
           <MissionHero mission={mission} />
           <StatsGrid mission={mission} />
-          <PerformanceCard mission={mission} />
-          <CouncilSection mission={mission} onMissionChange={setMission} />
-          <FundingRequests mission={mission} onMissionChange={setMission} />
         </div>
         <aside className="right-rail">
           <TreasuryPanel mission={mission} onMissionChange={setMission} />
           <TradePanel mission={mission} onMissionChange={setMission} />
         </aside>
+        <div className="detail-lower">
+          <PerformanceCard mission={mission} />
+          <CouncilSection mission={mission} onMissionChange={setMission} />
+          <FundingRequests mission={mission} onMissionChange={setMission} />
+        </div>
       </section>
     </AppShell>
   );
