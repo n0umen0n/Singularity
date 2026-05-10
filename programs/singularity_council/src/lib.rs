@@ -7,7 +7,7 @@ declare_id!("4k7JhCHjs2uoiP1hmvYDawnwJuXMt5ZhUJotvMRqedKS");
 const COUNCIL_SIZE: usize = 6;
 const APPROVAL_THRESHOLD: u8 = 4;
 const REJECTION_THRESHOLD: u8 = 3;
-const MIN_VOTING_SECONDS: i64 = 3 * 24 * 60 * 60;
+const MIN_VOTING_SECONDS: i64 = 3 * 60;
 const DEFAULT_COUNCIL_AUTHORITY: &str = "11111111111111111111111111111111";
 
 #[program]
@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn voting_period_must_be_at_least_three_days() {
+    fn voting_period_must_be_at_least_three_minutes() {
         let created_at = 1_000;
 
         assert!(!minimum_voting_period_met(

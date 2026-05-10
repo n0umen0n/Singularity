@@ -893,7 +893,12 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
   const [isExpanded, setIsExpanded] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<"vote" | "execute" | null>(null);
+  const [isPaid, setIsPaid] = useState(Boolean(request.paid));
   const wallet = useSingularityWallet();
+  const requesterLabel = request.requester.length > 20 ? shortAddress(request.requester) : request.requester;
+  useEffect(() => {
+    setIsPaid(Boolean(request.paid));
+  }, [request.paid]);
   const vote = async (choice: "approve" | "reject") => {
     if (!wallet.address) {
       await wallet.signIn();
@@ -920,12 +925,22 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
     try {
       const result = await api.executeFundingRequest(request.id);
       const signature = await wallet.sendPreparedTransaction(result.transaction);
+      if (signature) {
+        setIsPaid(true);
+        try {
+          const confirmed = await api.confirmFundingRequestExecution(request.id, { signature });
+          setIsPaid(Boolean(confirmed.request.paid));
+          setStatus(`Execution submitted: ${shortAddress(signature)}`);
+        } catch {
+          setStatus(`Execution submitted: ${shortAddress(signature)}. Payment confirmation is pending.`);
+        }
+        await onChange?.();
+        return;
+      }
       setStatus(
-        signature
-          ? `Execution submitted: ${shortAddress(signature)}`
-          : result.transaction.status === "not_configured"
-            ? result.transaction.message
-            : "Execution recorded.",
+        result.transaction.status === "not_configured"
+          ? result.transaction.message
+          : "Execution recorded.",
       );
       await onChange?.();
     } catch (error) {
@@ -943,13 +958,18 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
     <GlassCard className={cx("request-card interactive", isExpanded && "expanded")}>
       <button className="request-card-toggle" type="button" onClick={() => setIsExpanded((current) => !current)} aria-expanded={isExpanded}>
         <div className="request-summary">
-          <StatusPill tone={request.status}>{request.status}</StatusPill>
+          <div className="request-status-row">
+            <StatusPill tone={request.status}>{request.status}</StatusPill>
+            {request.status === "accepted" ? <StatusPill tone={isPaid ? "success" : "warning"}>{isPaid ? "paid" : "not paid"}</StatusPill> : null}
+          </div>
           <div className="request-title">{request.name}</div>
           <div className="request-meta">
             <span className="avatar" style={{ width: 26, height: 26 }}>
               <img src={request.requesterAvatar} alt="" decoding="async" loading="lazy" />
             </span>
-            {request.requester}
+            <span className="request-requester" title={request.requester}>
+              {requesterLabel}
+            </span>
           </div>
         </div>
         <div className="request-amount">
@@ -1002,7 +1022,7 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
                   Approve request
                 </button>
               </>
-            ) : request.status === "accepted" ? (
+            ) : request.status === "accepted" && !isPaid ? (
               <button className="button button-primary" type="button" onClick={() => void execute()} disabled={busy !== null}>
                 {busy === "execute" ? "Submitting..." : "Execute payout"}
               </button>
@@ -1010,7 +1030,9 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
           </div>
           {request.status === "accepted" ? (
             <p className="stat-note">
-              Execution releases {number(request.tokenAmount, true)} {symbol} from the treasury once the 3-day voting window has elapsed. Earlier attempts will be rejected by the program.
+              {isPaid
+                ? `Payout executed${request.paidAt ? ` on ${new Date(request.paidAt).toLocaleDateString()}` : ""}.`
+                : `Execution releases ${number(request.tokenAmount, true)} ${symbol} from the treasury once the 3-day voting window has elapsed. Earlier attempts will be rejected by the program.`}
             </p>
           ) : null}
           {status ? <p className="stat-note">{status}</p> : null}

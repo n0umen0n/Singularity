@@ -24,6 +24,8 @@ export type FundingRequest = {
   rejections: number;
   timeLeft: string;
   status: RequestStatus;
+  paid: boolean;
+  paidAt?: string | null;
 };
 
 export type PerformancePoint = {
@@ -118,6 +120,7 @@ function requests(missionId: string, symbol: string): FundingRequest[] {
       rejections: 1,
       timeLeft: "18h 24m left",
       status: "active",
+      paid: false,
     },
     {
       id: `${missionId}-r2`,
@@ -132,6 +135,7 @@ function requests(missionId: string, symbol: string): FundingRequest[] {
       rejections: 0,
       timeLeft: "Accepted",
       status: "accepted",
+      paid: false,
     },
     {
       id: `${missionId}-r3`,
@@ -146,6 +150,7 @@ function requests(missionId: string, symbol: string): FundingRequest[] {
       rejections: 4,
       timeLeft: "Rejected",
       status: "rejected",
+      paid: false,
     },
   ];
 }

@@ -1701,6 +1701,12 @@ textarea {
   justify-content: center;
 }
 
+.request-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .request-amount,
 .request-votes {
   display: flex;
@@ -1737,6 +1743,13 @@ textarea {
   color: var(--text-muted);
   font-size: 0.84rem;
   line-height: 1;
+}
+
+.request-requester {
+  max-width: min(100%, 16rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vote-dots {

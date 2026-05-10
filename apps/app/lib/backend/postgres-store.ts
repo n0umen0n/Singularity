@@ -82,6 +82,7 @@ type FundingRequestRow = {
   epoch_number: number | string | null;
   approvals: string;
   rejections: string;
+  executed_at: string | null;
 };
 
 type CouncilCandidateRow = {
@@ -328,7 +329,61 @@ function rowToRequest(row: FundingRequestRow, requester?: ProfileRow): FundingRe
     rejections: Number(row.rejections || 0),
     timeLeft: requestTimeLeft(row.status),
     status: row.status,
+    paid: Boolean(row.executed_at),
+    paidAt: row.executed_at,
   };
+}
+
+const FUNDING_REQUEST_EXECUTED_AT_OFFSET = 187;
+
+function requestAccountForRow(row: FundingRequestRow) {
+  return (
+    row.request_pda ||
+    fundingRequestPda({
+      registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+      councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+      missionId: row.mission_id,
+      metadataHash: row.metadata_hash,
+    })
+  );
+}
+
+function executedAtFromFundingRequestAccount(data: Buffer) {
+  if (data.length < FUNDING_REQUEST_EXECUTED_AT_OFFSET + 8) return null;
+  const seconds = Number(data.readBigInt64LE(FUNDING_REQUEST_EXECUTED_AT_OFFSET));
+  return seconds > 0 ? new Date(seconds * 1000).toISOString() : null;
+}
+
+async function hydrateFundingRequestExecutionState(rows: FundingRequestRow[], client?: Queryable) {
+  const url = rpcUrl();
+  if (!url) return;
+
+  const entries = rows
+    .filter((row) => row.status === "accepted" && !row.executed_at)
+    .flatMap((row) => {
+      try {
+        return [{ row, account: new PublicKey(requestAccountForRow(row)) }];
+      } catch {
+        return [];
+      }
+    });
+  if (!entries.length) return;
+
+  try {
+    const connection = new Connection(url, "confirmed");
+    const infos = await connection.getMultipleAccountsInfo(entries.map((entry) => entry.account), "confirmed");
+    await Promise.all(
+      entries.map(async (entry, index) => {
+        const data = infos[index]?.data;
+        const executedAt = data ? executedAtFromFundingRequestAccount(data) : null;
+        if (!executedAt) return;
+        entry.row.executed_at = executedAt;
+        await (client || { query }).query("update funding_requests set executed_at = coalesce(executed_at, $2) where id = $1", [entry.row.id, executedAt]);
+      }),
+    );
+  } catch {
+    // Chain state refresh is opportunistic; DB state remains the fallback.
+  }
 }
 
 function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
@@ -825,6 +880,7 @@ async function requestRows(missionIds: string[], client?: Queryable) {
     [missionIds],
   );
   const byMission = new Map<string, FundingRequest[]>();
+  await hydrateFundingRequestExecutionState(result.rows, client);
 
   for (const row of result.rows) {
     const list = byMission.get(row.mission_id) || [];
@@ -1664,15 +1720,10 @@ export async function executeFundingRequestInPostgres(
   const row = result.rows[0];
   if (!row) throw new Error(`Funding request not found: ${requestId}`);
   if (row.status !== "accepted") throw new Error("Only accepted requests can be executed.");
+  await hydrateFundingRequestExecutionState([row]);
+  if (row.executed_at) throw new Error("This funding request has already been paid.");
 
-  const requestAccount =
-    row.request_pda ||
-    fundingRequestPda({
-      registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
-      councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
-      missionId: row.mission_id,
-      metadataHash: row.metadata_hash,
-    });
+  const requestAccount = requestAccountForRow(row);
 
   return {
     request: rowToRequest(row),
@@ -1686,6 +1737,65 @@ export async function executeFundingRequestInPostgres(
       mint: row.token_mint,
     }),
   };
+}
+
+export async function confirmFundingRequestExecutionInPostgres(requestId: string, input: { signature?: string; wallet?: string }) {
+  if (!input.signature) throw new Error("signature is required.");
+
+  const result = await transaction(async (client) => {
+    const currentResult = await client.query<FundingRequestRow>(
+      `
+        select
+          fr.*,
+          count(*) filter (where frv.vote = 'approve') as approvals,
+          count(*) filter (where frv.vote = 'reject') as rejections
+        from funding_requests fr
+        left join funding_request_votes frv on frv.request_id = fr.id
+        where fr.id = $1
+        group by fr.id
+      `,
+      [requestId],
+    );
+    const current = currentResult.rows[0];
+    if (!current) throw new Error(`Funding request not found: ${requestId}`);
+    if (current.status !== "accepted") throw new Error("Only accepted requests can be marked as paid.");
+
+    await client.query(
+      `
+        update funding_requests
+        set executed_at = coalesce(executed_at, now())
+        where id = $1
+      `,
+      [requestId],
+    );
+    await client.query(
+      `
+        insert into transactions (signature, wallet, mission_id, type, status)
+        values ($1, $2, $3, 'funding-request-execute', 'confirmed')
+        on conflict (signature) do nothing
+      `,
+      [input.signature, input.wallet || currentUser.address, current.mission_id],
+    );
+
+    const refreshed = await client.query<FundingRequestRow>(
+      `
+        select
+          fr.*,
+          count(*) filter (where frv.vote = 'approve') as approvals,
+          count(*) filter (where frv.vote = 'reject') as rejections
+        from funding_requests fr
+        left join funding_request_votes frv on frv.request_id = fr.id
+        where fr.id = $1
+        group by fr.id
+      `,
+      [requestId],
+    );
+
+    return refreshed.rows[0];
+  });
+
+  if (!result) throw new Error(`Funding request not found: ${requestId}`);
+  return { request: rowToRequest(result) };
 }
 
 export async function createAuthNonceInPostgres(address?: string) {

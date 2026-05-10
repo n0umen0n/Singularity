@@ -124,6 +124,7 @@ create table if not exists funding_requests (
   description text not null,
   voting_starts_at timestamptz not null default now(),
   voting_ends_at timestamptz,
+  executed_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -263,4 +264,5 @@ alter table profiles add column if not exists created_missions jsonb not null de
 alter table missions add column if not exists performance_json jsonb not null default '{}'::jsonb;
 alter table missions add column if not exists council_json jsonb not null default '[]'::jsonb;
 alter table funding_requests add column if not exists epoch_number integer not null default 1;
+alter table funding_requests add column if not exists executed_at timestamptz;
 alter table epoch_councils add column if not exists escrow_amounts jsonb not null default '[]'::jsonb;

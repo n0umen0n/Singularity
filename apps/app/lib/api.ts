@@ -214,6 +214,13 @@ export function executeFundingRequest(requestId: string) {
   });
 }
 
+export function confirmFundingRequestExecution(requestId: string, input: { signature: string }) {
+  return api<{ request: FundingRequest }>(`/api/funding-requests/${requestId}/confirm-execution`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function registerCouncilCandidate(missionId: string) {
   return api<{ transaction: PreparedTransaction }>(`/api/council-candidates/register`, {
     method: "POST",

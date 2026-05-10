@@ -7,6 +7,7 @@ import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/back
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
 import {
   backendHealthFromPostgres,
+  confirmFundingRequestExecutionInPostgres,
   confirmMissionLaunchInPostgres,
   createAuthNonceInPostgres,
   executeFundingRequestInPostgres,
@@ -573,6 +574,7 @@ export async function prepareFundingRequest(input: {
       rejections: 0,
       timeLeft: "3d left",
       status: "active",
+      paid: false,
     };
     const metadataHash = contentHash({
       name,
@@ -661,6 +663,20 @@ export async function executeFundingRequest(
         mint: input.mint || mission.tokenMint,
       }),
     };
+  });
+}
+
+export async function confirmFundingRequestExecution(requestId: string, input: { wallet?: string; signature?: string }) {
+  if (storageMode() === "postgres") return confirmFundingRequestExecutionInPostgres(requestId, input);
+  if (!input.signature) throw new Error("signature is required.");
+
+  return updateState(async (state) => {
+    const { request } = findRequestOrThrow(state, requestId);
+    if (request.status !== "accepted") throw new Error("Only accepted funding requests can be marked as paid.");
+    request.paid = true;
+    request.paidAt = new Date().toISOString();
+
+    return { request };
   });
 }
 
