@@ -326,6 +326,7 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
   const [mission, setMission] = useState<Mission | null>(initialMission ?? null);
   const [error, setError] = useState<string | null>(null);
   const loadedMissionId = useRef(initialMission?.id ?? null);
+  const refreshedMissionId = useRef<string | null>(null);
 
   useEffect(() => {
     if (loadedMissionId.current === missionId) return;
@@ -347,6 +348,25 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
       controller.abort();
     };
   }, [missionId]);
+
+  useEffect(() => {
+    if (!mission || mission.id !== missionId || refreshedMissionId.current === missionId) return;
+    refreshedMissionId.current = missionId;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      api
+        .getMission(missionId, { refresh: true, signal: controller.signal })
+        .then(({ mission }) => {
+          if (!controller.signal.aborted) setMission(mission);
+        })
+        .catch(() => {});
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [mission, missionId]);
 
   if (!mission) {
     return (
@@ -600,7 +620,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
 
     let alive = true;
     api
-      .getProfile(wallet.address)
+      .getProfile(wallet.address, { summary: true })
       .then(({ profile }) => {
         if (alive) setWalletProfile(profile);
       })
@@ -624,7 +644,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     Promise.all(
       addresses.map((address) =>
         api
-          .getProfile(address)
+          .getProfile(address, { summary: true })
           .then(({ profile }) => [address.toLowerCase(), profile] as const)
           .catch(() => null),
       ),
@@ -721,7 +741,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
         // candidate with their actual profile avatar from the database, not
         // the optimistic placeholder.
         api
-          .getMission(mission.id)
+          .getMission(mission.id, { refresh: true })
           .then((next) => onMissionChange?.(next.mission))
           .catch(() => {});
       } else {
@@ -835,7 +855,7 @@ function FundingRequests({ mission, onMissionChange }: { mission: Mission; onMis
   const [tab, setTab] = useState<RequestStatus | "all">("active");
   const visible = mission.requests.filter((request) => tab === "all" || request.status === tab);
   const refresh = async () => {
-    const next = await api.getMission(mission.id);
+    const next = await api.getMission(mission.id, { refresh: true });
     onMissionChange?.(next.mission);
   };
   return (
@@ -1002,8 +1022,13 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
 
 function capitalizationBreakdown(mission: Mission) {
   const treasuryTokens = mission.treasuryTokens;
-  const marketTokens = mission.marketTokens ?? Math.max(mission.totalSupply - treasuryTokens, 0);
-  const investorTokens = mission.circulatingTokens ?? Math.max(mission.totalSupply - treasuryTokens - marketTokens, 0);
+  const tradableSupply = Math.max(mission.totalSupply - treasuryTokens, 0);
+  const inferredMarketTokens =
+    mission.tokenPrice > 0 && mission.liquidity > 0
+      ? Math.max(0, Math.min(mission.liquidity / mission.tokenPrice, tradableSupply))
+      : tradableSupply;
+  const marketTokens = mission.marketTokens ?? inferredMarketTokens;
+  const investorTokens = mission.circulatingTokens ?? Math.max(tradableSupply - marketTokens, 0);
   const treasuryValue =
     Number.isFinite(mission.treasuryUsdc) && mission.treasuryUsdc > 0
       ? mission.treasuryUsdc
@@ -1452,7 +1477,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       if (signature) {
         setQuote(null);
         setAmount("");
-        const [refreshed] = await Promise.all([api.getMission(mission.id), refreshBalances()]);
+        const [refreshed] = await Promise.all([api.getMission(mission.id, { refresh: true }), refreshBalances()]);
         onMissionChange?.(refreshed.mission);
         setTradeSucceeded(true);
         window.setTimeout(() => setTradeSucceeded(false), 1600);
@@ -2226,31 +2251,30 @@ function EmptyState({ title, description }: { title: string; description: string
   );
 }
 
-export function ProfilePage({ address }: { address?: string }) {
+export function ProfilePage({ address, initialProfile }: { address?: string; initialProfile?: api.Profile | null }) {
   const wallet = useSingularityWallet();
-  const [profile, setProfile] = useState<api.Profile | null>(null);
-  const [missions, setMissions] = useState<Mission[]>([]);
+  const [profile, setProfile] = useState<api.Profile | null>(initialProfile ?? null);
   const [status, setStatus] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [addressCopied, setAddressCopied] = useState(false);
-  const [draft, setDraft] = useState({ name: "", description: "", avatar: "", x: "", telegram: "", github: "" });
+  const [draft, setDraft] = useState(() => (initialProfile ? profileDraftFromProfile(initialProfile) : { name: "", description: "", avatar: "", x: "", telegram: "", github: "" }));
   const [requestFilter, setRequestFilter] = useState<"submitted" | "council">("submitted");
   const targetAddress = address || wallet.address;
+  const loadedProfileAddress = useRef(initialProfile?.address.toLowerCase() ?? null);
   useEffect(() => {
     if (!targetAddress) return;
+    if (loadedProfileAddress.current === targetAddress.toLowerCase()) return;
     const controller = new AbortController();
 
-    Promise.all([
-      api.getProfile(targetAddress, { signal: controller.signal }),
-      api.listMissions({}, { signal: controller.signal }),
-    ])
-      .then(([{ profile }, { missions }]) => {
+    api
+      .getProfile(targetAddress, { signal: controller.signal })
+      .then(({ profile }) => {
         if (controller.signal.aborted) return;
         setProfile(profile);
+        loadedProfileAddress.current = profile.address.toLowerCase();
         setDraft(profileDraftFromProfile(profile));
-        setMissions(missions);
       })
       .catch((error: Error) => {
         if (error.name !== "AbortError") setStatus(error.message);
@@ -2283,13 +2307,12 @@ export function ProfilePage({ address }: { address?: string }) {
     );
   }
 
-  const missionById = new Map(missions.map((mission) => [mission.id, mission]));
   const userMissions = profile.tokenBalances.flatMap((entry) => {
-    const mission = missionById.get(entry.missionId);
+    const mission = entry.mission ?? null;
     return mission ? [{ ...entry, mission }] : [];
   });
   const createdMissions = profile.createdMissions.flatMap((entry) => {
-    const mission = missionById.get(entry.missionId);
+    const mission = entry.mission ?? null;
     return mission ? [{ ...entry, mission }] : [];
   });
   const featuredCreatorMissionId = profile.createdMissions[0]?.missionId;
@@ -2458,7 +2481,7 @@ export function ProfilePage({ address }: { address?: string }) {
             {profile.tokenBalances
               .filter((balance) => (balance.balance || 0) >= 0.0001 && (balance.usd || 0) >= 0.0001)
               .map((balance) => {
-                const mission = missionById.get(balance.missionId);
+                const mission = balance.mission ?? null;
                 return (
                   <BalanceCard
                     key={balance.symbol}

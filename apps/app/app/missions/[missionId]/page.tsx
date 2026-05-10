@@ -1,30 +1,18 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
+import { cache } from "react";
 import { MissionDetailPage } from "@/components/platform";
-import type { Mission } from "@/lib/mock-data";
+import { getMissionById } from "@/lib/backend/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function fetchMission(missionId: string): Promise<Mission | null> {
+const fetchMission = cache(async (missionId: string) => {
   try {
-    const headerList = await headers();
-    const host = headerList.get("host");
-    if (!host) return null;
-    const proto =
-      headerList.get("x-forwarded-proto") ||
-      (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
-    const response = await fetch(
-      `${proto}://${host}/api/missions/${encodeURIComponent(missionId)}`,
-      { next: { revalidate: 300 } },
-    );
-    if (!response.ok) return null;
-    const payload = (await response.json()) as { mission?: Mission };
-    return payload.mission ?? null;
+    return await getMissionById(missionId);
   } catch {
     return null;
   }
-}
+});
 
 export async function generateMetadata({ params }: { params: Promise<{ missionId: string }> }): Promise<Metadata> {
   const { missionId } = await params;
@@ -53,5 +41,6 @@ export async function generateMetadata({ params }: { params: Promise<{ missionId
 
 export default async function MissionRoute({ params }: { params: Promise<{ missionId: string }> }) {
   const { missionId } = await params;
-  return <MissionDetailPage missionId={missionId} />;
+  const mission = await fetchMission(missionId);
+  return <MissionDetailPage missionId={missionId} initialMission={mission} />;
 }

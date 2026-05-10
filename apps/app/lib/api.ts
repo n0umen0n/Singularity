@@ -14,8 +14,8 @@ export type Profile = {
     sol?: number;
     solUsd?: number;
   };
-  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; usd: number; council?: boolean }>;
-  createdMissions: Array<{ missionId: string; tradingFeesEarned: number; claimableFees?: number }>;
+  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; usd: number; council?: boolean; mission?: Mission | null }>;
+  createdMissions: Array<{ missionId: string; tradingFeesEarned: number; claimableFees?: number; mission?: Mission | null }>;
   submittedRequests?: Array<{ request: FundingRequest; symbol: string }>;
   councilRequests?: Array<{ request: FundingRequest; symbol: string }>;
 };
@@ -102,12 +102,14 @@ export function listMissions(params: { q?: string; sort?: string } = {}, init?: 
   return api<{ missions: Mission[] }>(`/api/missions${search.size ? `?${search}` : ""}`, init);
 }
 
-export function getMission(missionId: string, init?: Pick<RequestInit, "signal">) {
-  return api<{ mission: Mission }>(`/api/missions/${missionId}`, init);
+export function getMission(missionId: string, init?: Pick<RequestInit, "signal"> & { refresh?: boolean }) {
+  const search = init?.refresh ? "?refresh=1" : "";
+  return api<{ mission: Mission }>(`/api/missions/${missionId}${search}`, { signal: init?.signal });
 }
 
-export function getProfile(address: string, init?: Pick<RequestInit, "signal">) {
-  return api<{ profile: Profile }>(`/api/profile/${address}`, init);
+export function getProfile(address: string, init?: Pick<RequestInit, "signal"> & { summary?: boolean }) {
+  const search = init?.summary ? "?summary=1" : "";
+  return api<{ profile: Profile }>(`/api/profile/${address}${search}`, { signal: init?.signal });
 }
 
 export function updateProfile(input: { name?: string; description?: string; avatar?: string; socials?: string[] }) {

@@ -60,9 +60,24 @@ create table if not exists mission_metrics (
   liquidity_usdc numeric(40, 6) not null default 0,
   treasury_usdc numeric(40, 6) not null default 0,
   treasury_tokens numeric(40, 0) not null default 0,
+  market_tokens numeric(40, 6),
+  circulating_tokens numeric(40, 6),
+  base_reserve numeric(40, 6),
+  quote_reserve numeric(40, 6),
+  pool_progress_percent numeric(8, 4),
+  treasury_allocation_claimed boolean,
+  market_data_updated_at timestamptz,
   volume_usdc numeric(40, 6) not null default 0,
   updated_at timestamptz not null default now()
 );
+
+alter table mission_metrics add column if not exists market_tokens numeric(40, 6);
+alter table mission_metrics add column if not exists circulating_tokens numeric(40, 6);
+alter table mission_metrics add column if not exists base_reserve numeric(40, 6);
+alter table mission_metrics add column if not exists quote_reserve numeric(40, 6);
+alter table mission_metrics add column if not exists pool_progress_percent numeric(8, 4);
+alter table mission_metrics add column if not exists treasury_allocation_claimed boolean;
+alter table mission_metrics add column if not exists market_data_updated_at timestamptz;
 
 create table if not exists price_points (
   id bigserial primary key,
@@ -193,6 +208,14 @@ create table if not exists migration_reconciliation_jobs (
   updated_at timestamptz not null default now(),
   unique (dbc_pool, signature)
 );
+
+create index if not exists idx_mission_metrics_liquidity_usdc on mission_metrics (liquidity_usdc desc);
+create index if not exists idx_mission_metrics_holders on mission_metrics (holders desc);
+create index if not exists idx_missions_created_at on missions (created_at desc);
+create index if not exists idx_funding_requests_mission_id on funding_requests (mission_id);
+create index if not exists idx_funding_requests_requester_wallet on funding_requests (requester_wallet);
+create index if not exists idx_funding_request_votes_request_id on funding_request_votes (request_id);
+create index if not exists idx_council_candidates_mission_status on council_candidates (mission_id, status);
 
 create table if not exists platform_metric_snapshots (
   id bigserial primary key,

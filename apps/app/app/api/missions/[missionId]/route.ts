@@ -6,7 +6,9 @@ export const runtime = "nodejs";
 export async function GET(_request: Request, { params }: { params: Promise<{ missionId: string }> }) {
   try {
     const { missionId } = await params;
-    const mission = (await refreshMissionMarketData(missionId)) || (await getMissionById(missionId));
+    const request = new URL(_request.url);
+    const shouldRefresh = request.searchParams.get("refresh") === "1";
+    const mission = shouldRefresh ? (await refreshMissionMarketData(missionId)) || (await getMissionById(missionId)) : await getMissionById(missionId);
     if (!mission) return fail(new Error("Mission not found"), 404);
 
     return ok({ mission });

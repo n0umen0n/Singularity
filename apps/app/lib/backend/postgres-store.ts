@@ -50,6 +50,13 @@ type MissionRow = {
   liquidity_usdc: string | null;
   treasury_usdc: string | null;
   treasury_tokens: string | null;
+  market_tokens: string | null;
+  circulating_tokens: string | null;
+  base_reserve: string | null;
+  quote_reserve: string | null;
+  pool_progress_percent: string | null;
+  treasury_allocation_claimed: boolean | null;
+  market_data_updated_at: string | null;
 };
 
 type MissionTradeContextRow = Pick<MissionRow, "id" | "token_mint" | "dbc_pool" | "damm_pool" | "lifecycle_state"> & {
@@ -187,10 +194,18 @@ function emptyProfile(address: string) {
 }
 
 async function walletBalances(address: string, missionList: Mission[]) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
-    return await getWalletBalanceSnapshot(address, missionList);
+    return await Promise.race([
+      getWalletBalanceSnapshot(address, missionList),
+      new Promise<ReturnType<typeof emptyWalletBalanceSnapshot>>((resolve) => {
+        timeout = setTimeout(() => resolve(emptyWalletBalanceSnapshot()), 2500);
+      }),
+    ]);
   } catch {
     return emptyWalletBalanceSnapshot();
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -337,6 +352,13 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
     treasuryTokens: num(row.treasury_tokens),
     treasurySupplyPercent: num(row.treasury_supply_percent),
     totalSupply: num(row.total_supply),
+    marketTokens: row.market_tokens == null ? undefined : num(row.market_tokens),
+    circulatingTokens: row.circulating_tokens == null ? undefined : num(row.circulating_tokens),
+    baseReserve: row.base_reserve == null ? undefined : num(row.base_reserve),
+    quoteReserve: row.quote_reserve == null ? undefined : num(row.quote_reserve),
+    poolProgressPercent: row.pool_progress_percent == null ? undefined : num(row.pool_progress_percent),
+    treasuryAllocationClaimed: row.treasury_allocation_claimed ?? undefined,
+    marketDataUpdatedAt: row.market_data_updated_at ?? undefined,
     performance: row.performance_json || fixtureMissions[0].performance,
     council: row.council_json || [],
     requests,
@@ -714,18 +736,41 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
   await (client || { query }).query(
     `
       insert into mission_metrics (
-        mission_id, token_price_usdc, holders, liquidity_usdc, treasury_usdc, treasury_tokens, volume_usdc, updated_at
+        mission_id, token_price_usdc, holders, liquidity_usdc, treasury_usdc, treasury_tokens,
+        market_tokens, circulating_tokens, base_reserve, quote_reserve, pool_progress_percent,
+        treasury_allocation_claimed, market_data_updated_at, volume_usdc, updated_at
       )
-      values ($1, $2, $3, $4, $5, $6, 0, now())
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, now())
       on conflict (mission_id) do update set
         token_price_usdc = excluded.token_price_usdc,
         holders = excluded.holders,
         liquidity_usdc = excluded.liquidity_usdc,
         treasury_usdc = excluded.treasury_usdc,
         treasury_tokens = excluded.treasury_tokens,
+        market_tokens = excluded.market_tokens,
+        circulating_tokens = excluded.circulating_tokens,
+        base_reserve = excluded.base_reserve,
+        quote_reserve = excluded.quote_reserve,
+        pool_progress_percent = excluded.pool_progress_percent,
+        treasury_allocation_claimed = excluded.treasury_allocation_claimed,
+        market_data_updated_at = excluded.market_data_updated_at,
         updated_at = now()
     `,
-    [missionId, snapshot.currentPrice, holders, snapshot.liquidityUsd, snapshot.treasuryUsdc, snapshot.treasuryTokens],
+    [
+      missionId,
+      snapshot.currentPrice,
+      holders,
+      snapshot.liquidityUsd,
+      snapshot.treasuryUsdc,
+      snapshot.treasuryTokens,
+      snapshot.marketTokens,
+      snapshot.circulatingTokens,
+      snapshot.baseReserve,
+      snapshot.quoteReserve,
+      "poolProgressPercent" in snapshot ? snapshot.poolProgressPercent : null,
+      "treasuryAllocationClaimed" in snapshot ? snapshot.treasuryAllocationClaimed : null,
+      snapshot.updatedAt,
+    ],
   );
 
   const lastPoint = await (client || { query }).query<{ price_usdc: string; timestamp: string }>(
@@ -790,7 +835,7 @@ async function requestRows(missionIds: string[], client?: Queryable) {
   return byMission;
 }
 
-export async function listMissionsFromPostgres(options: { q?: string; sort?: MissionSort }) {
+export async function listMissionsFromPostgres(options: { q?: string; sort?: MissionSort; includeDetails?: boolean }) {
   const values: unknown[] = [];
   const where: string[] = [];
   const queryText = options.q?.trim();
@@ -809,7 +854,20 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
 
   const result = await query<MissionRow>(
     `
-      select m.*, mm.token_price_usdc, mm.holders, mm.liquidity_usdc, mm.treasury_usdc, mm.treasury_tokens
+      select
+        m.*,
+        mm.token_price_usdc,
+        mm.holders,
+        mm.liquidity_usdc,
+        mm.treasury_usdc,
+        mm.treasury_tokens,
+        mm.market_tokens,
+        mm.circulating_tokens,
+        mm.base_reserve,
+        mm.quote_reserve,
+        mm.pool_progress_percent,
+        mm.treasury_allocation_claimed,
+        mm.market_data_updated_at
       from missions m
       left join mission_metrics mm on mm.mission_id = m.id
       ${where.length ? `where ${where.join(" and ")}` : ""}
@@ -817,6 +875,10 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
     `,
     values,
   );
+  if (!options.includeDetails) {
+    return result.rows.map((row) => rowToMission(row, []));
+  }
+
   const requestsByMission = await requestRows(result.rows.map((row) => row.id));
   const candidatesByMission = await councilCandidateRows(result.rows.map((row) => row.id));
   const councilByMission = await Promise.all(
@@ -837,7 +899,20 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
 export async function getMissionByIdFromPostgres(missionId: string, client?: Queryable) {
   const result = await (client || { query }).query<MissionRow>(
     `
-      select m.*, mm.token_price_usdc, mm.holders, mm.liquidity_usdc, mm.treasury_usdc, mm.treasury_tokens
+      select
+        m.*,
+        mm.token_price_usdc,
+        mm.holders,
+        mm.liquidity_usdc,
+        mm.treasury_usdc,
+        mm.treasury_tokens,
+        mm.market_tokens,
+        mm.circulating_tokens,
+        mm.base_reserve,
+        mm.quote_reserve,
+        mm.pool_progress_percent,
+        mm.treasury_allocation_claimed,
+        mm.market_data_updated_at
       from missions m
       left join mission_metrics mm on mm.mission_id = m.id
       where m.id = $1
@@ -860,11 +935,26 @@ export async function getMissionByIdFromPostgres(missionId: string, client?: Que
   );
 }
 
-export async function getProfileFromPostgres(address: string) {
+export async function getProfileFromPostgres(address: string, options: { includeBalances?: boolean } = {}) {
   const normalizedAddress = address === "me" ? currentUser.address : address;
   const result = await query<ProfileRow>("select * from profiles where wallet_address = $1 limit 1", [normalizedAddress]);
   const row = result.rows[0];
-  const allMissions = await listMissionsFromPostgres({ sort: "highest-liquidity" });
+  if (options.includeBalances === false) {
+    if (!row) return emptyProfile(normalizedAddress);
+    return {
+      name: row.display_name,
+      address: row.wallet_address,
+      avatar: row.avatar_url || "",
+      description: row.bio || "",
+      socials: row.socials || [],
+      ...emptyWalletBalanceSnapshot(),
+      createdMissions: row.created_missions,
+      submittedRequests: [],
+      councilRequests: [],
+    };
+  }
+
+  const allMissions = await listMissionsFromPostgres({ sort: "highest-liquidity", includeDetails: true });
   const balances = await walletBalances(normalizedAddress, allMissions);
 
   if (!row) {

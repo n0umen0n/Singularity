@@ -173,10 +173,18 @@ function emptyProfile(address: string) {
 }
 
 async function walletBalances(address: string, missionList: Mission[]) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
-    return await getWalletBalanceSnapshot(address, missionList);
+    return await Promise.race([
+      getWalletBalanceSnapshot(address, missionList),
+      new Promise<ReturnType<typeof emptyWalletBalanceSnapshot>>((resolve) => {
+        timeout = setTimeout(() => resolve(emptyWalletBalanceSnapshot()), 2500);
+      }),
+    ]);
   } catch {
     return emptyWalletBalanceSnapshot();
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -204,7 +212,7 @@ function findRequestOrThrow(state: BackendState, requestId: string) {
   throw new Error(`Funding request not found: ${requestId}`);
 }
 
-export async function listMissions(options: { q?: string; sort?: MissionSort }) {
+export async function listMissions(options: { q?: string; sort?: MissionSort; includeDetails?: boolean }) {
   if (storageMode() === "postgres") return listMissionsFromPostgres(options);
 
   const state = await readState();
@@ -221,7 +229,13 @@ export async function listMissions(options: { q?: string; sort?: MissionSort }) 
   if (options.sort === "most-holders") filtered.sort((a, b) => b.holders - a.holders);
   else filtered.sort((a, b) => b.liquidity - a.liquidity);
 
-  return filtered;
+  return options.includeDetails
+    ? filtered
+    : filtered.map((mission) => ({
+        ...mission,
+        council: [],
+        requests: [],
+      }));
 }
 
 export async function getMissionById(missionId: string) {
@@ -238,20 +252,26 @@ export async function refreshMissionMarketData(missionId: string) {
   return state.missions.find((mission) => mission.id === missionId) ?? null;
 }
 
-export async function getProfile(address: string) {
-  if (storageMode() === "postgres") return getProfileFromPostgres(address);
+export async function getProfile(address: string, options: { includeBalances?: boolean } = {}) {
+  if (storageMode() === "postgres") return getProfileFromPostgres(address, options);
 
   const state = await readState();
   const normalizedAddress = address === "me" ? state.currentUser.address : address;
   const normalized = normalizedAddress.toLowerCase();
   const isCurrentUser = state.currentUser.address.toLowerCase() === normalized;
   const user = isCurrentUser ? state.currentUser : emptyProfile(normalizedAddress);
+  if (options.includeBalances === false) return user;
+
   const balances = await walletBalances(normalizedAddress, state.missions);
   const createdMissions = user.createdMissions.map((entry) => ({
     ...entry,
     mission: state.missions.find((mission) => mission.id === entry.missionId) ?? null,
   }));
-  const councilMissionIds = new Set(balances.tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
+  const tokenBalances = balances.tokenBalances.map((entry) => ({
+    ...entry,
+    mission: state.missions.find((mission) => mission.id === entry.missionId) ?? null,
+  }));
+  const councilMissionIds = new Set(tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
   const submittedRequests = state.missions.flatMap((mission) =>
     mission.requests
       .filter((request) => request.requester === normalizedAddress || (user.name && request.requester === user.name))
@@ -271,7 +291,7 @@ export async function getProfile(address: string) {
       : [],
   );
 
-  return { ...user, ...balances, createdMissions, submittedRequests, councilRequests };
+  return { ...user, ...balances, tokenBalances, createdMissions, submittedRequests, councilRequests };
 }
 
 export async function updateProfile(input: { address: string; name?: string; description?: string; avatar?: string; socials?: string[] }) {
