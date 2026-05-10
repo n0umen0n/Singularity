@@ -34,8 +34,8 @@ import {
   prepareFinalizeEpochCouncilTransaction,
   prepareCouncilVoteTransaction,
   prepareFundingRequestTransaction,
-  prepareJupiterTradeTransaction,
   prepareLaunchTransaction,
+  prepareMeteoraDammV2TradeTransaction,
   prepareMissionMarketGraduationTransaction,
   prepareMissionTreasuryAllocationClaimTransaction,
   prepareMissionGraduationTransaction,
@@ -403,13 +403,15 @@ export async function quoteMissionTrade(missionId: string, input: { side?: strin
   const side = input.side === "sell" ? "sell" : "buy";
   const useAmm = Boolean(mission.dammPool) || mission.lifecycle === "graduated";
   const chainQuote = mission.tokenMint && useAmm
-    ? await prepareJupiterTradeTransaction({
+    ? await prepareMeteoraDammV2TradeTransaction({
         wallet: input.wallet,
         side,
         amount,
+        dammPool: mission.dammPool,
         tokenMint: mission.tokenMint,
+        quoteMint: process.env.SINGULARITY_USDC_MINT,
         slippageBps: input.slippageBps,
-      referencePrice: mission.tokenPrice,
+        referencePrice: mission.tokenPrice,
       })
     : undefined;
 
@@ -698,7 +700,7 @@ export async function registerCouncilCandidate(input: { missionId?: string; wall
         id: `${mission.id}-candidate-${wallet}`,
         name: wallet === state.currentUser.address ? state.currentUser.name : `${wallet.slice(0, 4)}...${wallet.slice(-4)}`,
         address: wallet,
-        avatar: wallet === state.currentUser.address ? state.currentUser.avatar : mission.tokenImage,
+        avatar: wallet === state.currentUser.address ? state.currentUser.avatar : "",
         tokens: 0,
         ownership: 0,
       });

@@ -1,20 +1,111 @@
-# Singularity Monorepo
+# Singularity
 
-This repository contains the Singularity landing page and a clickable mock platform app.
+![Singularity](apps/app/public/singularity-project-logo.png)
 
-## Apps
+Singularity is a crypto-native mission funding platform for launching mission markets, selling mission tokens, governing treasury allocations, and funding builders through council approval.
 
-- `apps/landing` - the existing cinematic WebGL landing page for `singularity.diy`.
-- `apps/app` - the mock platform app intended for `app.singularity.diy`.
-- `packages/ui` - shared brand primitives such as the Singularity logo, glass cards, and status pills.
+The repository is organized as a production-oriented monorepo: a cinematic WebGL landing page, a Next.js platform app, shared UI and backend packages, an indexer, and Solana programs for mission registry and treasury council rules.
 
-## How To Run
+## Highlights
 
-Install dependencies:
+- **Mission markets** for launching goal-driven communities with their own mission token.
+- **Treasury allocation** with 20% of mission token supply reserved for the mission treasury.
+- **Council governance** where the top six registered mission-token holders can approve funding requests.
+- **Funding requests** that move through on-chain voting, acceptance, and delayed execution.
+- **Hybrid backend** that keeps canonical financial state on Solana while indexing fast app reads into Postgres.
+- **Cinematic interface** built around the Singularity hourglass/orbit visual language.
+
+## Repository Layout
+
+```text
+.
+|-- apps
+|   |-- app                 # Next.js platform app for app.singularity.diy
+|   |-- landing             # Vite + Three.js landing page for singularity.diy
+|   `-- indexer             # App-level indexer package entry point
+|-- packages
+|   |-- db                  # Database package
+|   |-- indexer             # Shared indexer core
+|   |-- solana              # Solana client helpers and transaction builders
+|   |-- storage             # Upload/storage boundary
+|   `-- ui                  # Shared brand primitives and UI components
+|-- programs
+|   |-- singularity_registry
+|   `-- singularity_council
+|-- tests                   # Anchor tests
+|-- docs                    # Supporting documentation and README assets
+|-- BACKEND_SPECIFICATION.md
+|-- PROGRAM_DOCUMENTATION.md
+`-- UI_SPECIFICATION.md
+```
+
+## Architecture
+
+Singularity uses a hybrid architecture:
+
+- The **landing app** presents the brand and product narrative through a real-time WebGL scene.
+- The **platform app** exposes missions, markets, profiles, council flows, funding requests, and wallet-authenticated actions.
+- The **backend API** prepares transactions, serves indexed reads, manages sessions, and stores editable metadata.
+- The **indexer** watches Solana state and denormalizes mission, council, request, balance, and market data for fast UI rendering.
+- The **Solana programs** enforce mission registry and treasury council invariants.
+
+## Product Model
+
+Core objects:
+
+- `Mission`: goal, token, market, treasury, council, and funding feed.
+- `Mission token`: the tradable token attached to a mission.
+- `Treasury`: 20% of mission token supply reserved for builder funding.
+- `Treasury council`: six registered mission-token holders selected for an epoch.
+- `Funding request`: proposal to receive mission-token treasury funds.
+- `Profile`: wallet-based identity with balances, roles, created missions, and request history.
+
+The MVP defaults to Token-2022 mission tokens, USDC-denominated market pricing, Meteora Dynamic Bonding Curve for launch markets, and Meteora DAMM for graduated liquidity.
+
+## Stack
+
+- **Monorepo:** npm workspaces, Turborepo, TypeScript
+- **Landing:** React, Vite, Three.js, React Three Fiber, GSAP
+- **Platform:** Next.js App Router, React, Motion, Recharts
+- **Auth:** Wallet authentication with Privy support
+- **Backend:** Next.js route handlers, Postgres, storage package boundary
+- **Solana:** Anchor, `@solana/web3.js`, Token Program clients
+- **Programs:** Rust Anchor programs for registry and council governance
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 20 or newer
+- npm 10 or newer
+- A Solana RPC endpoint
+- Postgres if running the persistent backend store
+- Anchor toolchain for Solana program tests
+
+### Install
 
 ```bash
 npm install
 ```
+
+### Configure Environment
+
+Copy the example environment file and fill in the values required for the app mode you want to run:
+
+```bash
+cp .env.example apps/app/.env.local
+```
+
+Important variables include:
+
+- `DATABASE_URL` and `DATABASE_SSL` for Postgres-backed app state.
+- `SINGULARITY_STORAGE` to choose the storage backend.
+- `SINGULARITY_SESSION_SECRET` for signed sessions.
+- `SOLANA_RPC_URL` and `NEXT_PUBLIC_SOLANA_RPC_URL` for chain access.
+- `NEXT_PUBLIC_PRIVY_APP_ID`, `PRIVY_APP_SECRET`, and optional `PRIVY_JWT_VERIFICATION_KEY` for Privy auth.
+- `SINGULARITY_REGISTRY_PROGRAM_ID` and `SINGULARITY_COUNCIL_PROGRAM_ID` for deployed program addresses.
+
+## Development
 
 Run the platform app:
 
@@ -22,7 +113,7 @@ Run the platform app:
 npm run dev:app
 ```
 
-Then visit:
+Open:
 
 ```text
 http://127.0.0.1:8094
@@ -34,77 +125,72 @@ Run the landing page:
 npm run dev:landing
 ```
 
-Then visit:
+Open:
 
 ```text
 http://127.0.0.1:8092
 ```
 
-Build for production:
+Build everything:
 
 ```bash
 npm run build
 ```
 
-## Stack
+Type-check every workspace:
 
-- Monorepo workspaces + Turborepo
-- Landing: React + TypeScript + Vite + Three.js
-- Platform app: Next.js App Router + React + TypeScript
-- Shared local mock data for first-version product exploration
-
-## Why This Version Is Smoother
-
-MP4 scroll scrubbing is limited by video encoding and browser seeking. If the video has sparse keyframes, scroll can look like still images changing.
-
-This version avoids that problem by rendering the structure in WebGL:
-
-- The camera moves continuously through a real 3D scene.
-- The structure can rotate, pulse, glow, and respond to scroll every frame.
-- Text remains HTML/CSS, so it is sharp, editable, accessible, and responsive.
-- Chapter stops are UI sections layered over the 3D scene.
-
-## Visual Storyboard
-
-1. Singularity / origin point.
-2. The hourglass wireframe structure resolves.
-3. The camera enters from the lower opening.
-4. Each ring becomes a stop point.
-5. The center compresses attention around the key message.
-6. The final expansion leads into the CTA section.
-
-## Content Strategy
-
-The strongest architecture is still:
-
-```text
-real-time WebGL / cinematic asset underneath
-live HTML/CSS content above it
+```bash
+npm run typecheck
 ```
 
-Keep main text, navigation, CTAs, and chapter content in code. Only bake text into video or 3D textures when it is decorative and non-essential.
+Run database migrations:
 
-## Optional Production Directions
+```bash
+npm run db:migrate
+```
 
-If you later want a fully art-directed cinematic version, there are three strong paths:
+Run the security gate:
 
-- Keep this WebGL approach and refine the geometry, materials, and camera path.
-- Render a Blender/Cinema 4D image sequence and draw it to canvas for frame-perfect scroll.
-- Combine both: WebGL structure for interaction, rendered video/image sequence for intro or background atmosphere.
+```bash
+npm run security:gate
+```
 
-## Legacy MP4 Prototype
+Run Anchor tests:
 
-The provided MP4 is still in the folder as a reference asset:
+```bash
+npm run test:anchor
+```
 
-`apps/landing/hf_20260424_205243_850495a8-16b4-4d8d-a28d-3526278d8385.mp4`
+For local Anchor test orchestration:
 
-The old `apps/landing/server.py` file remains available if you want to test MP4 byte-range scrubbing again, but the main landing experience now runs through Vite.
+```bash
+npm run test:anchor:local
+```
 
-## Files
+## Solana Programs
 
-- `apps/landing/src/main.tsx` - landing React app, WebGL scene, scroll camera, and chapter data.
-- `apps/landing/src/styles.css` - landing page styling and responsive overlays.
-- `apps/app/app` - Next.js App Router pages for the mock platform.
-- `apps/app/components/platform.tsx` - clickable mock product UI components.
-- `apps/app/lib/mock-data.ts` - local mock missions, investors, balances, and funding requests.
-- `UI_SPECIFICATION.md` - detailed product UI specification.
+`singularity_registry` creates and tracks missions. It stores mission metadata hash, token mint, treasury vault, total supply, treasury allocation, lifecycle, and graduation pool information.
+
+`singularity_council` manages candidate registration, epoch council finalization, funding request creation, council voting, escrowed voting tokens, and treasury execution after the required voting period.
+
+High-level flow:
+
+1. A creator initializes a mission in the registry program.
+2. Mission-token holders register as council candidates.
+3. The council authority finalizes the six-member epoch council.
+4. Builders create funding requests for mission-token treasury funds.
+5. Council members vote and escrow their required voting tokens.
+6. Four approvals accept a request; three rejections reject it.
+7. Accepted requests become executable after the three-day minimum voting period.
+8. The mission can later graduate from bonding to a DAMM pool.
+
+## Documentation
+
+- `UI_SPECIFICATION.md` defines product positioning, visual language, and platform screens.
+- `BACKEND_SPECIFICATION.md` defines the backend, indexer, storage, and Solana architecture.
+- `PROGRAM_DOCUMENTATION.md` explains the Anchor programs and their account model.
+- `docs/security/launch-audit-gates.md` captures launch security checks.
+
+## Status
+
+This codebase is an active product build. The platform app includes local mock flows and backend boundaries, while the Solana programs, transaction routes, indexer, and storage packages are being shaped toward a production launch path.

@@ -14,6 +14,7 @@ export type IndexerProgram = {
 export type IndexerBatchResult = {
   ok: true;
   source: string;
+  platformMetrics: PlatformMetricSnapshot;
   programs: Array<{
     programId: string;
     kind: IndexerProgram["kind"];
@@ -22,6 +23,37 @@ export type IndexerBatchResult = {
     migrationJobsQueued: number;
     lastSlot: number;
   }>;
+};
+
+export type PlatformMetricSnapshot = {
+  id: string;
+  collected_at: string;
+  source: string;
+  total_value_locked_usdc: string;
+  bonding_value_locked_usdc: string;
+  graduated_value_locked_usdc: string;
+  treasury_value_usdc: string;
+  total_mission_token_volume_usdc: string;
+  total_mission_token_market_value_usdc: string;
+  circulating_mission_token_market_value_usdc: string;
+  funding_requested_value_usdc: string;
+  missions_count: string;
+  launched_missions_count: string;
+  bonding_missions_count: string;
+  graduated_missions_count: string;
+  dbc_pools_count: string;
+  damm_pools_count: string;
+  funding_requests_count: string;
+  active_funding_requests_count: string;
+  accepted_funding_requests_count: string;
+  rejected_funding_requests_count: string;
+  expired_funding_requests_count: string;
+  registered_councillors_count: string;
+  unique_councillor_wallets_count: string;
+  price_points_count: string;
+  raw_chain_events_count: string;
+  indexed_transactions_count: string;
+  metadata: Record<string, unknown>;
 };
 
 export function configuredPrograms(env: NodeJS.ProcessEnv): IndexerProgram[] {
@@ -59,8 +91,9 @@ export async function runIndexerBatch(input: {
     results.push(await indexProgram({ ...input, source, batchSize, maxPages, program }));
   }
   await syncMissionMarketMetrics(input);
+  const platformMetrics = await collectPlatformMetrics(input.pool, source);
 
-  return { ok: true, source, programs: results };
+  return { ok: true, source, platformMetrics, programs: results };
 }
 
 async function syncMissionMarketMetrics(input: { connection: Connection; pool: pg.Pool; env: NodeJS.ProcessEnv }) {
@@ -126,7 +159,7 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
     await input.pool.query(
       `
         insert into price_points (mission_id, timestamp, price_usdc, volume_usdc, source)
-        select $1, now(), $2, 0, 'meteora-dbc-indexer'
+        select $1, now(), $2, 0, $3
         where not exists (
           select 1 from price_points where mission_id = $1 and source = $3 and timestamp > now() - interval '5 minutes'
         )
@@ -134,6 +167,124 @@ async function syncMissionMarketMetrics(input: { connection: Connection; pool: p
       [mission.id, snapshot.currentPrice, `${snapshot.route}-indexer`],
     );
   }
+}
+
+async function collectPlatformMetrics(pool: pg.Pool, source: string) {
+  const result = await pool.query<PlatformMetricSnapshot>(
+    `
+      with mission_stats as (
+        select
+          count(*) as missions_count,
+          count(*) filter (
+            where m.lifecycle_state <> 'draft' or m.token_mint is not null or m.dbc_pool is not null or m.damm_pool is not null
+          ) as launched_missions_count,
+          count(*) filter (where m.lifecycle_state = 'bonding') as bonding_missions_count,
+          count(*) filter (where m.lifecycle_state = 'graduated') as graduated_missions_count,
+          count(*) filter (where m.dbc_pool is not null) as dbc_pools_count,
+          count(*) filter (where m.damm_pool is not null) as damm_pools_count,
+          coalesce(sum(mm.liquidity_usdc) filter (where m.dbc_pool is not null or m.damm_pool is not null), 0) as total_value_locked_usdc,
+          coalesce(sum(mm.liquidity_usdc) filter (where m.lifecycle_state = 'bonding' and m.dbc_pool is not null), 0) as bonding_value_locked_usdc,
+          coalesce(sum(mm.liquidity_usdc) filter (where m.lifecycle_state = 'graduated' and m.damm_pool is not null), 0) as graduated_value_locked_usdc,
+          coalesce(sum(mm.treasury_usdc), 0) as treasury_value_usdc,
+          coalesce(sum(mm.volume_usdc), 0) as total_mission_token_volume_usdc,
+          coalesce(sum(coalesce(mm.token_price_usdc, 0) * coalesce(m.total_supply, 0)), 0) as total_mission_token_market_value_usdc,
+          coalesce(sum(coalesce(mm.token_price_usdc, 0) * greatest(coalesce(m.total_supply, 0) - coalesce(mm.treasury_tokens, 0), 0)), 0) as circulating_mission_token_market_value_usdc
+        from missions m
+        left join mission_metrics mm on mm.mission_id = m.id
+      ),
+      funding_stats as (
+        select
+          count(*) as funding_requests_count,
+          count(*) filter (where status = 'active') as active_funding_requests_count,
+          count(*) filter (where status = 'accepted') as accepted_funding_requests_count,
+          count(*) filter (where status = 'rejected') as rejected_funding_requests_count,
+          count(*) filter (where status = 'expired') as expired_funding_requests_count,
+          coalesce(sum(derived_usd_estimate), 0) as funding_requested_value_usdc
+        from funding_requests
+      ),
+      council_stats as (
+        select
+          count(*) filter (where status = 'registered') as registered_councillors_count,
+          count(distinct owner_wallet) filter (where status = 'registered') as unique_councillor_wallets_count
+        from council_candidates
+      ),
+      activity_stats as (
+        select
+          (select count(*) from price_points) as price_points_count,
+          (select count(*) from raw_chain_events) as raw_chain_events_count,
+          (select count(distinct signature) from raw_chain_events) as indexed_transactions_count
+      )
+      insert into platform_metric_snapshots (
+        source,
+        total_value_locked_usdc,
+        bonding_value_locked_usdc,
+        graduated_value_locked_usdc,
+        treasury_value_usdc,
+        total_mission_token_volume_usdc,
+        total_mission_token_market_value_usdc,
+        circulating_mission_token_market_value_usdc,
+        funding_requested_value_usdc,
+        missions_count,
+        launched_missions_count,
+        bonding_missions_count,
+        graduated_missions_count,
+        dbc_pools_count,
+        damm_pools_count,
+        funding_requests_count,
+        active_funding_requests_count,
+        accepted_funding_requests_count,
+        rejected_funding_requests_count,
+        expired_funding_requests_count,
+        registered_councillors_count,
+        unique_councillor_wallets_count,
+        price_points_count,
+        raw_chain_events_count,
+        indexed_transactions_count,
+        metadata
+      )
+      select
+        $1,
+        ms.total_value_locked_usdc,
+        ms.bonding_value_locked_usdc,
+        ms.graduated_value_locked_usdc,
+        ms.treasury_value_usdc,
+        ms.total_mission_token_volume_usdc,
+        ms.total_mission_token_market_value_usdc,
+        ms.circulating_mission_token_market_value_usdc,
+        fs.funding_requested_value_usdc,
+        ms.missions_count,
+        ms.launched_missions_count,
+        ms.bonding_missions_count,
+        ms.graduated_missions_count,
+        ms.dbc_pools_count,
+        ms.damm_pools_count,
+        fs.funding_requests_count,
+        fs.active_funding_requests_count,
+        fs.accepted_funding_requests_count,
+        fs.rejected_funding_requests_count,
+        fs.expired_funding_requests_count,
+        cs.registered_councillors_count,
+        cs.unique_councillor_wallets_count,
+        ast.price_points_count,
+        ast.raw_chain_events_count,
+        ast.indexed_transactions_count,
+        jsonb_build_object(
+          'tvlSource', 'mission_metrics.liquidity_usdc',
+          'missionTokenVolumeSource', 'mission_metrics.volume_usdc',
+          'missionTokenMarketValueSource', 'mission_metrics.token_price_usdc * missions.total_supply',
+          'fundingValueSource', 'funding_requests.derived_usd_estimate',
+          'collectedAfterMarketSync', true
+        )
+      from mission_stats ms
+      cross join funding_stats fs
+      cross join council_stats cs
+      cross join activity_stats ast
+      returning *
+    `,
+    [source],
+  );
+
+  return result.rows[0];
 }
 
 async function indexProgram(input: {

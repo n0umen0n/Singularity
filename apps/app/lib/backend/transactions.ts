@@ -31,10 +31,12 @@ import {
   latestBlockhash,
   meteoraDbcPartnerFeeClaimInstruction,
   meteoraDbcPartnerFeeClaimInstructions,
+  prepareMeteoraDammV2Trade,
   prepareMeteoraDbcDammV2Migration,
   prepareMeteoraDbcLaunchInstructions,
   prepareMeteoraDbcTreasuryAllocationClaim,
   prepareMeteoraDbcTrade,
+  quoteMeteoraDammV2Trade,
   quoteMeteoraDbcTrade,
   requireProgramConfig,
   resolveMeteoraDbcLaunchConfig,
@@ -54,6 +56,9 @@ type TransactionResult =
 
 const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_JUPITER_API_URL = "https://lite-api.jup.ag/swap/v1";
+const FALLBACK_JUPITER_API_URL = "https://api.jup.ag/swap/v1";
+const JUPITER_QUOTE_TIMEOUT_MS = 2_500;
+const JUPITER_SWAP_TIMEOUT_MS = 8_000;
 type NotConfiguredTransaction = { kind: string; status: "not_configured"; message: string; instructions: unknown[] };
 
 export type JupiterTradeResult = {
@@ -91,6 +96,23 @@ export type MeteoraDbcTradeQuoteResult = {
     quoteReserve: number;
     liquidityUsd: number;
     poolProgressPercent: number;
+  };
+  transaction: TransactionResult;
+};
+
+export type MeteoraDammV2TradeQuoteResult = {
+  route: "meteora-damm-v2";
+  inputMint: string;
+  outputMint: string;
+  inputAmount: number;
+  estimatedOutput: number;
+  minimumAmountOut: number;
+  priceImpactPercent: number;
+  currentPrice: number;
+  market: {
+    dammPool: string;
+    tokenMint: string;
+    quoteMint: string;
   };
   transaction: TransactionResult;
 };
@@ -135,6 +157,23 @@ function meteoraDbcTradeErrorMessage(input: { side: "buy" | "sell"; error: unkno
   return message;
 }
 
+function priceImpactFromReferenceOutput(input: { referenceOutput: number; estimatedOutput: number }) {
+  if (!Number.isFinite(input.referenceOutput) || input.referenceOutput <= 0) return Number.NaN;
+  if (!Number.isFinite(input.estimatedOutput) || input.estimatedOutput <= 0) return Number.NaN;
+  return ((input.estimatedOutput - input.referenceOutput) / input.referenceOutput) * 100;
+}
+
+function jupiterTradeErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "Jupiter trade preparation failed.";
+  if (message.includes("CANNOT_COMPUTE_OTHER_AMOUNT_THRESHOLD")) {
+    return "This amount is too small for AMM routing. Try a larger amount.";
+  }
+  if (message.includes("NO_ROUTES_FOUND")) {
+    return "No AMM route was found for this amount. Try a larger amount.";
+  }
+  return message;
+}
+
 function pda(programId: string, namespace: string, id: string) {
   const [address] = PublicKey.findProgramAddressSync(
     [Buffer.from(namespace), createHash("sha256").update(id).digest().subarray(0, 32)],
@@ -175,6 +214,10 @@ function candidatePda(councilProgramId: string, mission: string, owner: string) 
   );
 
   return address.toBase58();
+}
+
+export function candidateRegistrationPda(input: { councilProgramId: string; registryProgramId: string; missionId: string; owner: string }) {
+  return candidatePda(input.councilProgramId, missionPda(input.registryProgramId, input.missionId), input.owner);
 }
 
 function treasuryAuthorityPda(programId: string, mission: string) {
@@ -282,18 +325,35 @@ function tokenAmountBaseUnits(amount: number, decimals = 6) {
   return Math.floor(Math.max(amount, 0) * 10 ** decimals);
 }
 
-async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
+class HttpStatusError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function jupiterApiUrls() {
+  return Array.from(new Set([process.env.JUPITER_API_URL, DEFAULT_JUPITER_API_URL, FALLBACK_JUPITER_API_URL].filter(Boolean).map((url) => url!.replace(/\/$/, ""))));
+}
+
+async function jsonFetch<T>(url: string, init?: RequestInit, options: { timeoutMs?: number } = {}): Promise<T> {
+  const controller = new AbortController();
+  const timeout = options.timeoutMs ? setTimeout(() => controller.abort(), options.timeoutMs) : null;
   let response: Response;
   try {
-    response = await fetch(url, init);
+    response = await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
     const host = new URL(url).host;
-    const message = error instanceof Error ? error.message : "fetch failed";
+    const message = error instanceof Error && error.name === "AbortError" ? "timed out" : error instanceof Error ? error.message : "fetch failed";
     throw new Error(`Could not reach ${host}: ${message}`);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Request failed (${response.status}): ${body || response.statusText}`);
+    throw new HttpStatusError(response.status, `Request failed (${response.status}): ${body || response.statusText}`);
   }
 
   return (await response.json()) as T;
@@ -572,32 +632,52 @@ export async function prepareJupiterTradeTransaction(input: {
     const outputMint = input.side === "buy" ? input.tokenMint : quoteMint;
     const amount = tokenAmountBaseUnits(input.amount);
     if (amount <= 0) throw new Error("amount must be greater than zero.");
-
-    const apiUrl = (process.env.JUPITER_API_URL || DEFAULT_JUPITER_API_URL).replace(/\/$/, "");
-    const quoteUrl = new URL(`${apiUrl}/quote`);
-    quoteUrl.searchParams.set("inputMint", inputMint);
-    quoteUrl.searchParams.set("outputMint", outputMint);
-    quoteUrl.searchParams.set("amount", String(amount));
-    quoteUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
-    const quoteResponse = await jsonFetch<{
-      outAmount?: string;
-      otherAmountThreshold?: string;
-      priceImpactPct?: string;
-    }>(quoteUrl.toString());
-    const estimatedOutput = Number(quoteResponse.outAmount || 0) / 1_000_000;
-    const minimumAmountOut = quoteResponse.otherAmountThreshold ? Number(quoteResponse.otherAmountThreshold) / 1_000_000 : null;
-    const jupiterImpactRaw = quoteResponse.priceImpactPct;
-    const jupiterImpactNumeric = jupiterImpactRaw !== undefined && jupiterImpactRaw !== null && jupiterImpactRaw !== "" ? Number(jupiterImpactRaw) : Number.NaN;
-    const jupiterPriceImpactPercent = Number.isFinite(jupiterImpactNumeric) ? Math.max(jupiterImpactNumeric * 100, 0) : Number.NaN;
     const referenceOutput =
       input.referencePrice && input.referencePrice > 0
         ? input.side === "buy"
           ? input.amount / input.referencePrice
           : input.amount * input.referencePrice
         : 0;
-    const fallbackPriceImpactPercent =
-      referenceOutput > 0 && estimatedOutput > 0 ? Math.max(((referenceOutput - estimatedOutput) / referenceOutput) * 100, 0) : 0;
-    const priceImpactPercent = Number.isFinite(jupiterPriceImpactPercent) ? jupiterPriceImpactPercent : fallbackPriceImpactPercent;
+    if (input.side === "sell" && referenceOutput > 0 && tokenAmountBaseUnits(referenceOutput) <= 0) {
+      throw new Error("This amount is too small for AMM routing. Try a larger amount.");
+    }
+
+    type JupiterQuoteResponse = {
+      outAmount?: string;
+      otherAmountThreshold?: string;
+      priceImpactPct?: string;
+    };
+    let apiUrl = "";
+    let quoteResponse: JupiterQuoteResponse | null = null;
+    let lastQuoteError: unknown = null;
+    for (const candidateApiUrl of jupiterApiUrls()) {
+      const quoteUrl = new URL(`${candidateApiUrl}/quote`);
+      quoteUrl.searchParams.set("inputMint", inputMint);
+      quoteUrl.searchParams.set("outputMint", outputMint);
+      quoteUrl.searchParams.set("amount", String(amount));
+      quoteUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
+      try {
+        quoteResponse = await jsonFetch<JupiterQuoteResponse>(quoteUrl.toString(), undefined, { timeoutMs: JUPITER_QUOTE_TIMEOUT_MS });
+        apiUrl = candidateApiUrl;
+        break;
+      } catch (error) {
+        lastQuoteError = error;
+        if (error instanceof HttpStatusError && error.status < 500) throw error;
+      }
+    }
+    if (!quoteResponse) throw lastQuoteError || new Error("Jupiter quote failed.");
+
+    const estimatedOutput = Number(quoteResponse.outAmount || 0) / 1_000_000;
+    const minimumAmountOut = quoteResponse.otherAmountThreshold ? Number(quoteResponse.otherAmountThreshold) / 1_000_000 : null;
+    const jupiterImpactRaw = quoteResponse.priceImpactPct;
+    const jupiterImpactNumeric = jupiterImpactRaw !== undefined && jupiterImpactRaw !== null && jupiterImpactRaw !== "" ? Number(jupiterImpactRaw) : Number.NaN;
+    const jupiterPriceImpactPercent = Number.isFinite(jupiterImpactNumeric) ? Math.max(jupiterImpactNumeric * 100, 0) : Number.NaN;
+    const referencePriceImpactPercent = priceImpactFromReferenceOutput({ referenceOutput, estimatedOutput });
+    const priceImpactPercent = Number.isFinite(referencePriceImpactPercent)
+      ? referencePriceImpactPercent
+      : Number.isFinite(jupiterPriceImpactPercent)
+        ? jupiterPriceImpactPercent
+        : 0;
 
     if (!input.wallet) {
       return {
@@ -613,16 +693,20 @@ export async function prepareJupiterTradeTransaction(input: {
       };
     }
 
-    const swapResponse = await jsonFetch<{ swapTransaction?: string }>(`${apiUrl}/swap`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        quoteResponse,
-        userPublicKey: input.wallet,
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-      }),
-    });
+    const swapResponse = await jsonFetch<{ swapTransaction?: string }>(
+      `${apiUrl || jupiterApiUrls()[0]}/swap`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quoteResponse,
+          userPublicKey: input.wallet,
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+        }),
+      },
+      { timeoutMs: JUPITER_SWAP_TIMEOUT_MS },
+    );
     if (!swapResponse.swapTransaction) throw new Error("Jupiter swap response did not include a transaction.");
 
     return {
@@ -647,7 +731,7 @@ export async function prepareJupiterTradeTransaction(input: {
       quoteResponse,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Jupiter trade preparation failed.";
+    const message = jupiterTradeErrorMessage(error);
     return {
       kind,
       status: "not_configured",
@@ -715,6 +799,70 @@ export async function prepareMeteoraDbcTradeTransaction(input: {
     };
   } catch (error) {
     return notConfigured(kind, new Error(meteoraDbcTradeErrorMessage({ side: input.side, error }))) as NotConfiguredTransaction;
+  }
+}
+
+export async function prepareMeteoraDammV2TradeTransaction(input: {
+  wallet?: string;
+  side: "buy" | "sell";
+  amount: number;
+  dammPool?: string | null;
+  tokenMint?: string | null;
+  quoteMint?: string | null;
+  slippageBps?: number;
+  referencePrice?: number | null;
+}): Promise<MeteoraDammV2TradeQuoteResult | NotConfiguredTransaction> {
+  const kind = "trade";
+
+  try {
+    if (!input.dammPool) throw new Error("dammPool is required for Meteora DAMM v2 trading.");
+    if (!input.tokenMint) throw new Error("tokenMint is required for Meteora DAMM v2 trading.");
+    const config = requireProgramConfig(process.env);
+    const quoteOnly = await quoteMeteoraDammV2Trade({
+      rpcUrl: config.rpcUrl,
+      dammPool: input.dammPool,
+      baseMint: input.tokenMint,
+      quoteMint: input.quoteMint || process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT,
+      side: input.side,
+      amount: input.amount,
+      slippageBps: input.slippageBps,
+      referencePrice: input.referencePrice,
+    });
+    const transaction = input.wallet
+      ? (
+          await prepareMeteoraDammV2Trade({
+            rpcUrl: config.rpcUrl,
+            dammPool: input.dammPool,
+            baseMint: input.tokenMint,
+            quoteMint: input.quoteMint || process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT,
+            wallet: input.wallet,
+            side: input.side,
+            amount: input.amount,
+            recentBlockhash: (await latestBlockhash(config)).blockhash,
+            slippageBps: input.slippageBps,
+            referencePrice: input.referencePrice,
+          })
+        ).transaction
+      : (notConfigured(kind, new Error("wallet is required to prepare a Meteora DAMM v2 swap transaction.")) as NotConfiguredTransaction);
+
+    return {
+      route: "meteora-damm-v2",
+      inputMint: quoteOnly.inputMint,
+      outputMint: quoteOnly.outputMint,
+      inputAmount: quoteOnly.inputAmount,
+      estimatedOutput: quoteOnly.estimatedOutput,
+      minimumAmountOut: quoteOnly.minimumAmountOut,
+      priceImpactPercent: quoteOnly.priceImpactPercent,
+      currentPrice: quoteOnly.currentPrice,
+      market: {
+        dammPool: quoteOnly.dammPool,
+        tokenMint: quoteOnly.baseMint,
+        quoteMint: quoteOnly.quoteMint,
+      },
+      transaction,
+    };
+  } catch (error) {
+    return notConfigured(kind, error) as NotConfiguredTransaction;
   }
 }
 

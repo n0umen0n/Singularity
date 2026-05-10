@@ -5,6 +5,7 @@ export type Investor = {
   name: string;
   address: string;
   avatar: string;
+  description?: string;
   tokens: number;
   ownership: number;
   socials?: string;

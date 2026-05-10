@@ -194,6 +194,37 @@ create table if not exists migration_reconciliation_jobs (
   unique (dbc_pool, signature)
 );
 
+create table if not exists platform_metric_snapshots (
+  id bigserial primary key,
+  collected_at timestamptz not null default now(),
+  source text not null,
+  total_value_locked_usdc numeric(40, 6) not null default 0,
+  bonding_value_locked_usdc numeric(40, 6) not null default 0,
+  graduated_value_locked_usdc numeric(40, 6) not null default 0,
+  treasury_value_usdc numeric(40, 6) not null default 0,
+  total_mission_token_volume_usdc numeric(40, 6) not null default 0,
+  total_mission_token_market_value_usdc numeric(40, 6) not null default 0,
+  circulating_mission_token_market_value_usdc numeric(40, 6) not null default 0,
+  funding_requested_value_usdc numeric(40, 6) not null default 0,
+  missions_count bigint not null default 0,
+  launched_missions_count bigint not null default 0,
+  bonding_missions_count bigint not null default 0,
+  graduated_missions_count bigint not null default 0,
+  dbc_pools_count bigint not null default 0,
+  damm_pools_count bigint not null default 0,
+  funding_requests_count bigint not null default 0,
+  active_funding_requests_count bigint not null default 0,
+  accepted_funding_requests_count bigint not null default 0,
+  rejected_funding_requests_count bigint not null default 0,
+  expired_funding_requests_count bigint not null default 0,
+  registered_councillors_count bigint not null default 0,
+  unique_councillor_wallets_count bigint not null default 0,
+  price_points_count bigint not null default 0,
+  raw_chain_events_count bigint not null default 0,
+  indexed_transactions_count bigint not null default 0,
+  metadata jsonb not null default '{}'::jsonb
+);
+
 create index if not exists price_points_mission_timestamp_idx on price_points (mission_id, timestamp desc);
 create index if not exists missions_symbol_idx on missions (token_symbol);
 create index if not exists funding_requests_mission_status_idx on funding_requests (mission_id, status);
@@ -201,6 +232,7 @@ create index if not exists auth_nonces_expires_at_idx on auth_nonces (expires_at
 create index if not exists raw_chain_events_program_slot_idx on raw_chain_events (program_id, slot desc);
 create index if not exists migration_reconciliation_jobs_status_idx on migration_reconciliation_jobs (status, updated_at);
 create index if not exists pending_mission_launches_creator_status_idx on pending_mission_launches (creator_wallet, status);
+create index if not exists platform_metric_snapshots_collected_at_idx on platform_metric_snapshots (collected_at desc);
 
 alter table profiles add column if not exists balances jsonb not null default '{}'::jsonb;
 alter table profiles add column if not exists token_balances jsonb not null default '[]'::jsonb;

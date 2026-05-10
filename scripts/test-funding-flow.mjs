@@ -100,6 +100,23 @@ function votePda(request, voter) {
   return pdaFromSeeds(COUNCIL_PROGRAM_ID, [Buffer.from("vote"), request.toBuffer(), voter.toBuffer()]);
 }
 
+function candidatePda(mission, owner) {
+  return pdaFromSeeds(COUNCIL_PROGRAM_ID, [Buffer.from("candidate"), mission.toBuffer(), owner.toBuffer()]);
+}
+
+function buildRegisterCandidateInstruction({ owner, mission, candidate }) {
+  return new TransactionInstruction({
+    programId: new PublicKey(COUNCIL_PROGRAM_ID),
+    keys: [
+      { pubkey: new PublicKey(owner), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(mission), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(candidate), isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: anchorDiscriminator("register_candidate"),
+  });
+}
+
 function metadataHashFromString(s) {
   return createHash("sha256").update(s).digest();
 }
@@ -243,6 +260,28 @@ async function fundPhase(env) {
   console.log(`tx1: ${sig1}`);
   const sig2 = await sendV0(connection, payer, transferIxs.slice(half));
   console.log(`tx2: ${sig2}`);
+}
+
+async function registerPhase(env) {
+  const connection = new Connection(env.SOLANA_RPC_URL, "confirmed");
+  const voters = loadVoters().slice(0, 6);
+  const mission = missionPda(MISSION_ID);
+  for (let i = 0; i < voters.length; i += 1) {
+    const voter = voters[i];
+    const candidate = candidatePda(mission, voter.publicKey);
+    const existing = await connection.getAccountInfo(candidate, "confirmed");
+    if (existing) {
+      console.log(`  voter${i + 1} ${shortWallet(voter.publicKey.toBase58())} already registered (candidate=${candidate.toBase58()})`);
+      continue;
+    }
+    const ix = buildRegisterCandidateInstruction({
+      owner: voter.publicKey.toBase58(),
+      mission: mission.toBase58(),
+      candidate: candidate.toBase58(),
+    });
+    const sig = await sendV0(connection, voter, [ix]);
+    console.log(`  voter${i + 1} ${shortWallet(voter.publicKey.toBase58())} register_candidate -> ${sig}`);
+  }
 }
 
 async function dbPhase(env) {
@@ -618,6 +657,7 @@ if (!env.SOLANA_RPC_URL || !env.DATABASE_URL) {
 
 const phases = {
   fund: () => fundPhase(env),
+  register: () => registerPhase(env),
   db: () => dbPhase(env),
   "finalize-create": () => finalizeAndCreatePhase(env),
   vote: () => votePhase(env),
@@ -626,7 +666,7 @@ const phases = {
 
 async function main() {
   if (phase === "all") {
-    for (const name of ["fund", "db", "finalize-create", "vote", "verify"]) {
+    for (const name of ["fund", "register", "db", "finalize-create", "vote", "verify"]) {
       console.log(`\n=== phase: ${name} ===`);
       await phases[name]();
     }

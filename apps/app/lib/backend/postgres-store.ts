@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
-import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync, getMint, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { DEFAULT_COUNCIL_PROGRAM_ID, DEFAULT_DBC_TOTAL_SUPPLY, DEFAULT_REGISTRY_PROGRAM_ID, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
 import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
@@ -14,10 +15,10 @@ import {
   prepareFinalizeEpochCouncilTransaction,
   fetchMeteoraDbcMissionSnapshot,
   fetchMeteoraDammV2MissionSnapshot,
-  prepareJupiterTradeTransaction,
   prepareCouncilVoteTransaction,
   prepareFundingRequestTransaction,
   prepareLaunchTransaction,
+  prepareMeteoraDammV2TradeTransaction,
   prepareMeteoraDbcTradeTransaction,
   prepareMissionMarketGraduationTransaction,
   prepareMissionTreasuryAllocationClaimTransaction,
@@ -51,6 +52,14 @@ type MissionRow = {
   treasury_tokens: string | null;
 };
 
+type MissionTradeContextRow = Pick<MissionRow, "id" | "token_mint" | "dbc_pool" | "damm_pool" | "lifecycle_state"> & {
+  token_price_usdc: string | null;
+};
+
+const MISSION_TRADE_CONTEXT_CACHE_TTL_MS = 10_000;
+const missionTradeContextCache = new Map<string, { mission: MissionTradeContextRow; cachedAt: number }>();
+const missionTradeContextInflight = new Map<string, Promise<MissionTradeContextRow | null>>();
+
 type FundingRequestRow = {
   id: string;
   mission_id: string;
@@ -75,6 +84,7 @@ type CouncilCandidateRow = {
   created_at: string;
   display_name: string | null;
   avatar_url: string | null;
+  bio: string | null;
 };
 
 type PricePointRow = {
@@ -333,7 +343,31 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
   };
 }
 
-async function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandidateRow[]) {
+async function enrichCouncilWithProfiles(members: Mission["council"], tokenImage: string, client?: Queryable) {
+  const addresses = Array.from(new Set(members.map((member) => member.address).filter(Boolean)));
+  if (addresses.length === 0) return members;
+
+  const profiles = await (client || { query }).query<Pick<ProfileRow, "wallet_address" | "display_name" | "avatar_url" | "bio">>(
+    "select wallet_address, display_name, avatar_url, bio from profiles where wallet_address = any($1::text[])",
+    [addresses],
+  );
+  const profilesByWallet = new Map(profiles.rows.map((profile) => [profile.wallet_address.toLowerCase(), profile]));
+
+  return members.map((member) => {
+    const profile = profilesByWallet.get(member.address.toLowerCase());
+    const currentAvatar = member.avatar === tokenImage ? "" : member.avatar;
+    if (!profile) return { ...member, avatar: currentAvatar, description: member.description?.trim() || undefined };
+
+    return {
+      ...member,
+      name: profile.display_name || shortWallet(member.address),
+      avatar: profile.avatar_url || currentAvatar,
+      description: profile.bio?.trim() || undefined,
+    };
+  });
+}
+
+async function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandidateRow[], client?: Queryable) {
   const existing = new Map((row.council_json || []).map((member) => [member.address.toLowerCase(), member]));
   const totalSupply = num(row.total_supply);
   const merged = [...(row.council_json || [])];
@@ -356,20 +390,22 @@ async function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandid
       id: `${row.id}-candidate-${candidate.owner_wallet}`,
       name: candidate.display_name || shortWallet(candidate.owner_wallet),
       address: candidate.owner_wallet,
-      avatar: candidate.avatar_url || row.token_image_url,
+      avatar: candidate.avatar_url || "",
+      description: candidate.bio?.trim() || undefined,
       tokens,
       ownership: totalSupply > 0 ? (tokens / totalSupply) * 100 : 0,
     });
   }
 
-  return merged.sort((a, b) => b.tokens - a.tokens).slice(0, 6);
+  const enriched = await enrichCouncilWithProfiles(merged, row.token_image_url, client);
+  return enriched.sort((a, b) => b.tokens - a.tokens).slice(0, 6);
 }
 
 async function councilCandidateRows(missionIds: string[], client?: Queryable) {
   if (missionIds.length === 0) return new Map<string, CouncilCandidateRow[]>();
   const result = await (client || { query }).query<CouncilCandidateRow>(
     `
-      select cc.mission_id, cc.owner_wallet, cc.latest_checkpoint_balance, cc.created_at, p.display_name, p.avatar_url
+      select cc.mission_id, cc.owner_wallet, cc.latest_checkpoint_balance, cc.created_at, p.display_name, p.avatar_url, p.bio
       from council_candidates cc
       left join profiles p on p.wallet_address = cc.owner_wallet
       where cc.mission_id = any($1::text[]) and cc.status = 'registered'
@@ -394,76 +430,94 @@ async function refreshMissionCouncilFromTopHoldersInPostgres(mission: Mission, c
 
   const connection = new Connection(url, "confirmed");
   const mint = new PublicKey(mission.tokenMint);
-  const largestAccounts = await connection.getTokenLargestAccounts(mint);
-  const excludedTokenAccounts = configuredAddressSet(process.env.SINGULARITY_COUNCIL_EXCLUDED_TOKEN_ACCOUNTS);
+  const councilProgramId = process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID;
+  const missionAccount = missionPda(mission);
   const excludedOwners = configuredAddressSet(process.env.SINGULARITY_COUNCIL_EXCLUDED_OWNERS);
-  if (mission.treasuryVault) excludedTokenAccounts.add(mission.treasuryVault.toLowerCase());
 
-  const tokenAccounts = largestAccounts.value
-    .filter((account) => BigInt(account.amount) > 0n)
-    .filter((account) => !excludedTokenAccounts.has(account.address.toBase58().toLowerCase()));
+  // 1. Enumerate every on-chain Candidate PDA for this mission. memcmp at offset 8 = the mission key
+  // stored on the Candidate account immediately after Anchor's 8-byte discriminator.
+  const candidateAccounts = await connection.getProgramAccounts(new PublicKey(councilProgramId), {
+    commitment: "confirmed",
+    filters: [
+      { memcmp: { offset: 8, bytes: missionAccount.toBase58() } },
+    ],
+  });
 
-  const tokenAccountInfos = await Promise.all(tokenAccounts.map((account) => connection.getParsedAccountInfo(account.address, "confirmed")));
-  const ownerCandidates = tokenAccounts
-    .map((account, index) => {
-      const parsed = tokenAccountInfos[index].value?.data;
-      if (!parsed || typeof parsed === "string" || !("parsed" in parsed)) return null;
-      const owner = String(parsed.parsed?.info?.owner || "");
-      if (!owner || excludedOwners.has(owner.toLowerCase())) return null;
-      const decimals = account.decimals;
-      return {
-        owner,
-        amount: account.amount,
-        decimals,
-        tokens: tokenAccountAmountToNumber(account.amount, decimals),
-      };
-    })
-    .filter((candidate): candidate is { owner: string; amount: string; decimals: number; tokens: number } => Boolean(candidate));
-
-  if (ownerCandidates.length === 0) throw new Error("No eligible token holders were found for this mission.");
-
-  const ownerInfos = await connection.getMultipleAccountsInfo(ownerCandidates.map((candidate) => new PublicKey(candidate.owner)), "confirmed");
-  const walletCandidates = ownerCandidates.filter((candidate, index) => ownerInfos[index]?.owner.equals(SystemProgram.programId));
-  const grouped = new Map<string, { owner: string; amount: bigint; decimals: number }>();
-  for (const candidate of walletCandidates) {
-    const existing = grouped.get(candidate.owner);
-    grouped.set(candidate.owner, {
-      owner: candidate.owner,
-      amount: (existing?.amount || 0n) + BigInt(candidate.amount),
-      decimals: candidate.decimals,
-    });
+  // Anchor Candidate layout: [discriminator(8)][mission(32)][owner(32)][registered_at(8)][bump(1)] = 81 bytes.
+  // Other account types in this program (EpochCouncil, FundingRequest, RequestVote) have different
+  // sizes, so size-filtering here keeps only the Candidate accounts even if someone happens to write a
+  // matching memcmp prefix.
+  const CANDIDATE_ACCOUNT_SIZE = 8 + 32 + 32 + 8 + 1;
+  const candidateOwners: { owner: string }[] = [];
+  for (const entry of candidateAccounts) {
+    if (entry.account.data.length !== CANDIDATE_ACCOUNT_SIZE) continue;
+    const owner = new PublicKey(entry.account.data.subarray(8 + 32, 8 + 64)).toBase58();
+    if (excludedOwners.has(owner.toLowerCase())) continue;
+    candidateOwners.push({ owner });
   }
 
-  const ranked = [...grouped.values()]
-    .sort((a, b) => (a.amount === b.amount ? a.owner.localeCompare(b.owner) : a.amount > b.amount ? -1 : 1))
-    .slice(0, 6);
-  if (ranked.length < 6) {
-    throw new Error(`This mission has only ${ranked.length} eligible token holder${ranked.length === 1 ? "" : "s"}. At least 6 holders are required before a treasury council can be finalized.`);
+  if (candidateOwners.length === 0) {
+    throw new Error("No registered council candidates were found for this mission. Ask top holders to register before opening funding requests.");
   }
 
-  const profiles = await (client || { query }).query<Pick<ProfileRow, "wallet_address" | "display_name" | "avatar_url">>(
-    "select wallet_address, display_name, avatar_url from profiles where wallet_address = any($1::text[])",
-    [ranked.map((candidate) => candidate.owner)],
+  // 2. Look up each registered candidate's mission-token ATA balance. We treat the ATA as the source
+  // of voting weight; non-ATA token accounts are intentionally ignored (consistent with the existing
+  // FE which always uses ATAs).
+  const decimals = (await getMint(connection, mint, "confirmed", TOKEN_2022_PROGRAM_ID)).decimals;
+  const ownerAtas = candidateOwners.map((entry) =>
+    getAssociatedTokenAddressSync(mint, new PublicKey(entry.owner), false, TOKEN_2022_PROGRAM_ID),
+  );
+  const ataInfos = ownerAtas.length ? await connection.getMultipleAccountsInfo(ownerAtas, "confirmed") : [];
+  const balanced = candidateOwners.map((entry, index) => {
+    const info = ataInfos[index];
+    let amount = 0n;
+    if (info && info.data.length >= 72) {
+      // Token-2022 account: mint(32) + owner(32) + amount(8) starting at offset 64.
+      amount = info.data.readBigUInt64LE(64);
+    }
+    return { owner: entry.owner, amount, decimals };
+  });
+
+  // 3. Drop zero-balance candidates (the on-chain program rejects votes whose escrow_amount == 0)
+  // and rank the rest by balance, with address tiebreak for stability across calls.
+  const ranked = balanced
+    .filter((entry) => entry.amount > 0n)
+    .sort((a, b) => (a.amount === b.amount ? a.owner.localeCompare(b.owner) : a.amount > b.amount ? -1 : 1));
+  const top6 = ranked.slice(0, 6);
+  if (top6.length < 6) {
+    throw new Error(
+      `This mission has only ${top6.length} registered candidate${top6.length === 1 ? "" : "s"} with a non-zero GF balance. ` +
+        "At least 6 are required before a treasury council can be finalized. Ask more top holders to register and hold mission tokens.",
+    );
+  }
+
+  const profiles = await (client || { query }).query<Pick<ProfileRow, "wallet_address" | "display_name" | "avatar_url" | "bio">>(
+    "select wallet_address, display_name, avatar_url, bio from profiles where wallet_address = any($1::text[])",
+    [top6.map((entry) => entry.owner)],
   );
   const profilesByWallet = new Map(profiles.rows.map((profile) => [profile.wallet_address, profile]));
   const totalSupply = mission.totalSupply || DEFAULT_DBC_TOTAL_SUPPLY;
-  const council = ranked.map((candidate, index) => {
-    const profile = profilesByWallet.get(candidate.owner);
-    const tokens = tokenAccountAmountToNumber(candidate.amount.toString(), candidate.decimals);
+  const council = top6.map((entry, index) => {
+    const profile = profilesByWallet.get(entry.owner);
+    const tokens = tokenAccountAmountToNumber(entry.amount.toString(), entry.decimals);
     return {
       id: `${mission.id}-holder-${index + 1}`,
-      name: profile?.display_name || shortWallet(candidate.owner),
-      address: candidate.owner,
-      avatar: profile?.avatar_url || mission.tokenImage,
+      name: profile?.display_name || shortWallet(entry.owner),
+      address: entry.owner,
+      avatar: profile?.avatar_url || "",
+      description: profile?.bio?.trim() || undefined,
       tokens,
       ownership: totalSupply > 0 ? (tokens / totalSupply) * 100 : 0,
-      tokenBaseUnits: candidate.amount.toString(),
-      tokenDecimals: candidate.decimals,
+      tokenBaseUnits: entry.amount.toString(),
+      tokenDecimals: entry.decimals,
     } satisfies CouncilCheckpointMember;
   });
 
+  // Persist DB state. Status flips to 'registered' for everyone we just confirmed has a Candidate PDA;
+  // if there are stale rows for a wallet whose Candidate PDA was closed, mark them 'observed' on the
+  // next refresh by removing the unconditional registered upsert.
   await (client || { query }).query("update missions set council_json = $2 where id = $1", [mission.id, JSON.stringify(council)]);
-  for (const member of council) {
+  for (const entry of balanced) {
     await (client || { query }).query(
       `
         insert into council_candidates (mission_id, owner_wallet, latest_checkpoint_balance, status)
@@ -472,7 +526,7 @@ async function refreshMissionCouncilFromTopHoldersInPostgres(mission: Mission, c
           latest_checkpoint_balance = excluded.latest_checkpoint_balance,
           status = 'registered'
       `,
-      [mission.id, member.address, member.tokenBaseUnits],
+      [mission.id, entry.owner, entry.amount.toString()],
     );
   }
 
@@ -796,7 +850,7 @@ export async function getMissionByIdFromPostgres(missionId: string, client?: Que
 
   const requestsByMission = await requestRows([missionId], client);
   const candidatesByMission = await councilCandidateRows([missionId], client);
-  const councilJson = await candidateRowsToCouncil(row, candidatesByMission.get(missionId) || []);
+  const councilJson = await candidateRowsToCouncil(row, candidatesByMission.get(missionId) || [], client);
   return rowToMission(
     {
       ...row,
@@ -1055,34 +1109,63 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
   return { mission: refreshed || confirmed.mission };
 }
 
+async function getMissionTradeContextFromPostgres(missionId: string) {
+  const cached = missionTradeContextCache.get(missionId);
+  if (cached && Date.now() - cached.cachedAt < MISSION_TRADE_CONTEXT_CACHE_TTL_MS) return cached.mission;
+  const inflight = missionTradeContextInflight.get(missionId);
+  if (inflight) return inflight;
+
+  const promise = query<MissionTradeContextRow>(
+      `
+        select m.id, m.token_mint, m.dbc_pool, m.damm_pool, m.lifecycle_state, mm.token_price_usdc
+        from missions m
+        left join mission_metrics mm on mm.mission_id = m.id
+        where m.id = $1
+        limit 1
+      `,
+      [missionId],
+    )
+    .then((result) => {
+      const mission = result.rows[0] || null;
+      if (mission) missionTradeContextCache.set(missionId, { mission, cachedAt: Date.now() });
+      return mission;
+    })
+    .finally(() => missionTradeContextInflight.delete(missionId));
+  missionTradeContextInflight.set(missionId, promise);
+  return promise;
+}
+
 export async function quoteMissionTradeFromPostgres(missionId: string, input: { side?: string; amount?: number; wallet?: string; slippageBps?: number }) {
-  const mission = await getMissionByIdFromPostgres(missionId);
+  const mission = await getMissionTradeContextFromPostgres(missionId);
   if (!mission) throw new Error(`Mission not found: ${missionId}`);
 
   const amount = Math.max(Number(input.amount) || 0, 0);
   const side = input.side === "sell" ? "sell" : "buy";
-  const isBondingDbc = mission.lifecycle === "bonding" && Boolean(mission.dbcPool) && !mission.dammPool;
+  const lifecycle = mission.lifecycle_state || "draft";
+  const isBondingDbc = lifecycle === "bonding" && Boolean(mission.dbc_pool) && !mission.damm_pool;
   const chainQuote = isBondingDbc
     ? await prepareMeteoraDbcTradeTransaction({
         wallet: input.wallet,
         side,
         amount,
-        dbcPool: mission.dbcPool,
+        dbcPool: mission.dbc_pool,
         slippageBps: input.slippageBps,
       })
-    : await prepareJupiterTradeTransaction({
+    : await prepareMeteoraDammV2TradeTransaction({
         wallet: input.wallet,
         side,
         amount,
-        tokenMint: mission.tokenMint,
+        dammPool: mission.damm_pool,
+        tokenMint: mission.token_mint,
+        quoteMint: process.env.SINGULARITY_USDC_MINT,
         slippageBps: input.slippageBps,
-        referencePrice: mission.tokenPrice,
+        referencePrice: num(mission.token_price_usdc),
       });
 
   return {
     missionId,
     side,
-    route: "route" in chainQuote ? chainQuote.route : mission.lifecycle === "graduated" ? "amm" : "bonding-curve",
+    route: "route" in chainQuote ? chainQuote.route : lifecycle === "graduated" ? "amm" : "bonding-curve",
     inputAmount: "inputAmount" in chainQuote ? chainQuote.inputAmount : amount,
     requestedInputAmount: "requestedInputAmount" in chainQuote ? chainQuote.requestedInputAmount : undefined,
     partialFill: "partialFill" in chainQuote ? chainQuote.partialFill : undefined,
@@ -1090,12 +1173,11 @@ export async function quoteMissionTradeFromPostgres(missionId: string, input: { 
     estimatedOutput: "estimatedOutput" in chainQuote ? chainQuote.estimatedOutput : 0,
     minimumAmountOut: "minimumAmountOut" in chainQuote ? chainQuote.minimumAmountOut : null,
     priceImpactPercent: "priceImpactPercent" in chainQuote ? chainQuote.priceImpactPercent : null,
-    currentPrice: "currentPrice" in chainQuote ? chainQuote.currentPrice : mission.tokenPrice,
+    currentPrice: "currentPrice" in chainQuote ? chainQuote.currentPrice : num(mission.token_price_usdc),
     market: {
-      lifecycle: mission.lifecycle || "draft",
-      tokenMint: mission.tokenMint || null,
-      dbcPool: mission.dbcPool || null,
-      dammPool: mission.dammPool || null,
+      lifecycle,
+      dbcPool: mission.dbc_pool || null,
+      dammPool: mission.damm_pool || null,
       ...("market" in chainQuote ? chainQuote.market : {}),
     },
     transaction: "transaction" in chainQuote ? chainQuote.transaction : chainQuote,

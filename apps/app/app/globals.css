@@ -803,6 +803,61 @@ textarea {
   font-size: 0.86rem;
 }
 
+.price-impact-help {
+  position: relative;
+  display: inline-grid;
+  width: 1rem;
+  height: 1rem;
+  margin: 0 0.12rem;
+  border: 1px solid rgba(255, 247, 237, 0.18);
+  border-radius: 999px;
+  place-items: center;
+  color: var(--text-secondary);
+  background: rgba(255, 247, 237, 0.055);
+  cursor: help;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1;
+  vertical-align: 0.06rem;
+}
+
+.price-impact-help:hover,
+.price-impact-help:focus-visible {
+  color: var(--text-primary);
+  border-color: rgba(143, 124, 255, 0.5);
+  box-shadow: 0 0 18px rgba(118, 108, 255, 0.22);
+  outline: none;
+}
+
+.price-impact-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.55rem);
+  z-index: 30;
+  width: min(15rem, 72vw);
+  border: 1px solid rgba(255, 247, 237, 0.16);
+  border-radius: 0.9rem;
+  padding: 0.7rem 0.78rem;
+  color: var(--text-secondary);
+  background: rgba(9, 9, 13, 0.96);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38), 0 0 28px rgba(118, 108, 255, 0.14);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  text-transform: none;
+  transform: translate(-50%, 0.28rem);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.price-impact-help:hover .price-impact-tooltip,
+.price-impact-help:focus-visible .price-impact-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .inline-loader {
   display: inline-flex;
   align-items: center;
@@ -1500,10 +1555,26 @@ textarea {
 
 .flip-profile-back {
   justify-content: space-between;
+  gap: 1.15rem;
   background:
     radial-gradient(circle at 12% 8%, rgba(255, 106, 74, 0.18), transparent 9rem),
     radial-gradient(circle at 86% 90%, rgba(118, 108, 255, 0.2), transparent 11rem),
     rgba(8, 8, 11, 0.82);
+}
+
+.flip-profile-back-content,
+.flip-profile-footer {
+  display: grid;
+  width: 100%;
+  justify-items: center;
+}
+
+.flip-profile-back-content {
+  gap: 0.65rem;
+}
+
+.flip-profile-footer {
+  gap: 0.8rem;
 }
 
 .flip-profile-avatar {
@@ -1561,43 +1632,8 @@ textarea {
 }
 
 .flip-profile-description {
-  max-width: 24ch;
-  line-height: 1.45;
-}
-
-.flip-profile-socials {
-  width: 100%;
-  border: 1px solid rgba(255, 247, 237, 0.1);
-  border-radius: 16px;
-  padding: 0.95rem;
-  background: rgba(255, 247, 237, 0.05);
-}
-
-.flip-profile-socials a {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.55rem;
-}
-
-.flip-profile-socials a {
-  color: var(--text-primary);
-  font-size: 1rem;
-  font-weight: 850;
-  text-decoration: none;
-}
-
-.x-logo {
-  display: inline-grid;
-  width: 1.55rem;
-  height: 1.55rem;
-  border: 1px solid rgba(255, 247, 237, 0.18);
-  border-radius: 999px;
-  place-items: center;
-  background: rgba(255, 247, 237, 0.08);
-  font-size: 0.82rem;
-  font-weight: 950;
-  line-height: 1;
+  width: min(100%, 34ch);
+  line-height: 1.5;
 }
 
 .flip-profile-button {
@@ -2361,6 +2397,10 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .council-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .detail-grid,
   .form-two-col {
     grid-template-columns: 1fr;
@@ -2530,7 +2570,24 @@ textarea {
   .council-flip-card,
   .council-flip-card .animate-ui-flip-card-inner,
   .flip-profile-card {
-    min-height: 280px;
+    min-height: 300px;
+  }
+
+  .flip-profile-card {
+    padding: 1.25rem;
+  }
+
+  .flip-profile-front {
+    gap: 0.85rem;
+  }
+
+  .flip-profile-avatar {
+    width: 96px;
+    height: 96px;
+  }
+
+  .flip-profile-description {
+    width: min(100%, 38ch);
   }
 
   .request-card-toggle {

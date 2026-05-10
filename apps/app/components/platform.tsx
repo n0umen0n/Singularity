@@ -224,20 +224,18 @@ function CouncilMemberFlipCard({
   member,
   index,
   symbol,
+  tokenImage,
   isCurrentUser = false,
 }: {
   member: Mission["council"][number];
   index: number;
   symbol: string;
+  tokenImage: string;
   isCurrentUser?: boolean;
 }) {
-  const socialHandle = member.socials ?? `@${member.name.toLowerCase()}`;
-  const description =
-    isCurrentUser
-      ? "Your candidacy is registered. Your council position will update from checkpointed token balances."
-      : councilMemberDescriptions[member.name] ??
-        "Mission council member helping approve treasury funding for work that advances the mission.";
+  const description = member.description?.trim();
   const profileHref = `/profile/${encodeURIComponent(member.address)}`;
+  const avatar = member.avatar && member.avatar !== tokenImage ? member.avatar : "";
 
   return (
     <FlipCard
@@ -246,7 +244,11 @@ function CouncilMemberFlipCard({
         <article className="glass-card flip-profile-card flip-profile-front">
           <StatusPill>#{index + 1}</StatusPill>
           <span className="flip-profile-avatar">
-            <img src={member.avatar} alt="" decoding="async" loading="lazy" />
+            {avatar ? (
+              <img src={avatar} alt="" decoding="async" loading="lazy" />
+            ) : (
+              <img src={dicebearPersonaAvatar(member.address || member.name)} alt="" decoding="async" loading="lazy" />
+            )}
           </span>
           <div>
             <h3>{member.name}</h3>
@@ -259,29 +261,38 @@ function CouncilMemberFlipCard({
       back={
         <article className="glass-card flip-profile-card flip-profile-back">
           <StatusPill tone="council">{isCurrentUser ? "Registered" : "Councillor"}</StatusPill>
-          <div>
+          <div className="flip-profile-back-content">
             <h3>{member.name}</h3>
-            <p className="flip-profile-description">{description}</p>
+            {description ? <p className="flip-profile-description">{description}</p> : null}
           </div>
-          {isCurrentUser ? (
-            <p className="stat-note">{shortAddress(member.address)}</p>
-          ) : (
-            <div className="flip-profile-socials">
-              <a href={`https://x.com/${socialHandle.replace(/^@/, "")}`} target="_blank" rel="noreferrer">
-                <span className="x-logo" aria-hidden="true">
-                  X
-                </span>
-                {socialHandle}
-              </a>
-            </div>
-          )}
-          <Link className="button button-primary flip-profile-button" href={profileHref}>
-            Open profile
-          </Link>
+          <div className="flip-profile-footer">
+            <Link className="button button-primary flip-profile-button" href={profileHref}>
+              Open profile
+            </Link>
+          </div>
         </article>
       }
     />
   );
+}
+
+function dicebearPersonaAvatar(seed: string) {
+  const params = new URLSearchParams({
+    seed: seed || "singularity-councillor",
+    size: "180",
+    radius: "50",
+    scale: "88",
+    backgroundType: "gradientLinear",
+    backgroundColor: "08080b,11111a,171326,1e162f",
+    clothingColor: "171721,241d36,30244d,3b1f2f",
+    hair: "beanie,cap,bald,buzzcut,shortCombover,fade",
+    hairColor: "16141f,2b2438,362c47",
+    eyes: "sunglasses,open,sleep",
+    mouth: "smirk,frown,smile",
+    facialHairProbability: "35",
+  });
+
+  return `https://api.dicebear.com/9.x/personas/svg?${params.toString()}`;
 }
 
 function CouncilPlaceholderCard({ index, symbol }: { index: number; symbol: string }) {
@@ -296,15 +307,6 @@ function CouncilPlaceholderCard({ index, symbol }: { index: number; symbol: stri
     </article>
   );
 }
-
-const councilMemberDescriptions: Record<string, string> = {
-  Astra: "Backs high-conviction builders and pushes treasury funding toward measurable mission progress.",
-  Vector: "Reviews technical milestones and helps the council fund teams with clear delivery plans.",
-  Mira: "Connects mission contributors with ecosystem partners, research leads, and early demand.",
-  Halden: "Focuses on treasury discipline, funding scope, and keeping requests accountable after approval.",
-  Nyx: "Scouts emerging contributors and champions experimental work with a strong mission fit.",
-  Sable: "Tracks council sentiment and helps turn promising proposals into fundable execution plans.",
-};
 
 const defaultMissionImage = "https://images.unsplash.com/photo-1614728894747-a83421e2b9c9?auto=format&fit=crop&w=1400&q=85";
 const defaultTokenImage = "https://images.unsplash.com/photo-1614728263952-84ea256f9679?auto=format&fit=crop&w=300&q=80";
@@ -543,7 +545,8 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
   const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [registeredCandidateAddress, setRegisteredCandidateAddress] = useState<string | null>(null);
   const [walletTokenBalance, setWalletTokenBalance] = useState<number | null>(null);
-  const [walletAvatar, setWalletAvatar] = useState<string | null>(null);
+  const [walletProfile, setWalletProfile] = useState<api.Profile | null>(null);
+  const [councilProfiles, setCouncilProfiles] = useState<Record<string, api.Profile>>({});
   const userBalance = walletTokenBalance ?? mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
   const trackedBalance = Math.max(0, Math.floor(userBalance));
   const openCouncilSlots = Math.max(6 - mission.council.length, 0);
@@ -591,7 +594,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
 
   useEffect(() => {
     if (!wallet.address) {
-      setWalletAvatar(null);
+      setWalletProfile(null);
       return;
     }
 
@@ -599,10 +602,10 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     api
       .getProfile(wallet.address)
       .then(({ profile }) => {
-        if (alive) setWalletAvatar(profile.avatar || null);
+        if (alive) setWalletProfile(profile);
       })
       .catch(() => {
-        if (alive) setWalletAvatar(null);
+        if (alive) setWalletProfile(null);
       });
 
     return () => {
@@ -610,17 +613,47 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     };
   }, [wallet.address]);
 
+  useEffect(() => {
+    const addresses = Array.from(new Set(mission.council.map((member) => member.address))).filter(Boolean);
+    if (addresses.length === 0) {
+      setCouncilProfiles({});
+      return;
+    }
+
+    let alive = true;
+    Promise.all(
+      addresses.map((address) =>
+        api
+          .getProfile(address)
+          .then(({ profile }) => [address.toLowerCase(), profile] as const)
+          .catch(() => null),
+      ),
+    ).then((entries) => {
+      if (!alive) return;
+      setCouncilProfiles(
+        Object.fromEntries(entries.filter((entry): entry is readonly [string, api.Profile] => Boolean(entry))),
+      );
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [mission.council]);
+
   const displayedCouncil = useMemo(() => {
-    const members = mission.council.map((member) =>
-      wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase()
-        ? {
-            ...member,
-            name: "You",
-            avatar: walletAvatar || member.avatar,
-            tokens: trackedBalance > 0 ? trackedBalance : member.tokens,
-          }
-        : member,
-    );
+    const members = mission.council.map((member) => {
+      const profile = councilProfiles[member.address.toLowerCase()];
+      const isWalletMember = wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase();
+      const displayProfile = isWalletMember ? (walletProfile ?? profile) : profile;
+
+      return {
+        ...member,
+        name: isWalletMember ? "You" : displayProfile?.name || member.name,
+        avatar: displayProfile?.avatar || member.avatar,
+        description: displayProfile ? displayProfile.description || undefined : member.description,
+        tokens: isWalletMember && trackedBalance > 0 ? trackedBalance : member.tokens,
+      };
+    });
     const registeredAddress = registeredCandidateAddress || wallet.address;
     const isKnownCandidate =
       registeredAddress && members.some((member) => member.address.toLowerCase() === registeredAddress.toLowerCase());
@@ -630,7 +663,8 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
         id: `${mission.id}-${registeredAddress}`,
         name: "You",
         address: registeredAddress,
-        avatar: walletAvatar || mission.tokenImage,
+        avatar: walletProfile?.avatar || "",
+        description: walletProfile?.description || undefined,
         tokens: trackedBalance,
         ownership: 0,
       });
@@ -639,7 +673,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     return members
       .sort((left, right) => right.tokens - left.tokens)
       .slice(0, 6);
-  }, [mission.council, mission.id, mission.tokenImage, registeredCandidateAddress, trackedBalance, wallet.address, walletAvatar]);
+  }, [councilProfiles, mission.council, mission.id, registeredCandidateAddress, trackedBalance, wallet.address, walletProfile]);
 
   const councilSlots = useMemo<Array<Investor | null>>(
     () => Array.from({ length: 6 }, (_, index) => displayedCouncil[index] ?? null),
@@ -778,6 +812,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
               key={member.id}
               member={member}
               symbol={mission.tokenSymbol}
+              tokenImage={mission.tokenImage}
             />
           ) : (
             <CouncilPlaceholderCard index={index} key={`placeholder-${index}`} symbol={mission.tokenSymbol} />
@@ -1262,6 +1297,25 @@ function InlineSuccess() {
   );
 }
 
+function formatPriceImpactPercent(value: number) {
+  if (!Number.isFinite(value)) return "Unavailable";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  const absoluteValue = Math.abs(value);
+  if (absoluteValue > 0 && absoluteValue < 0.01) return `${sign}<0.01%`;
+  return `${sign}${number(absoluteValue)}%`;
+}
+
+function PriceImpactHelp() {
+  return (
+    <span className="price-impact-help" tabIndex={0} aria-label="Price impact compares this trade with the normal price. Plus means you get more. Minus means you get less.">
+      ?
+      <span className="price-impact-tooltip" role="tooltip">
+        Compared to the normal price: + means you get more, - means you get less.
+      </span>
+    </span>
+  );
+}
+
 function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionChange?: (mission: Mission) => void }) {
   const [mode, setMode] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
@@ -1273,6 +1327,8 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
   const [tradePending, setTradePending] = useState(false);
   const [tradeSucceeded, setTradeSucceeded] = useState(false);
   const [graduationPending, setGraduationPending] = useState(false);
+  const prewarmedMarketRef = useRef<string | null>(null);
+  const quoteRequestRef = useRef(0);
   const wallet = useSingularityWallet();
   const numeric = Number(amount) || 0;
   const hasAmount = numeric > 0;
@@ -1284,6 +1340,36 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
   // This avoids flashing a stale 0 right after navigating to a freshly created
   // mission, where the first fetch hasn't returned yet.
   const balancesLoading = Boolean(wallet.address) && !balances && !balancesError;
+  const approximateQuote = useCallback(
+    (side: "buy" | "sell", inputAmount: number): api.MissionQuote | null => {
+      if (!Number.isFinite(mission.tokenPrice) || mission.tokenPrice <= 0 || inputAmount <= 0) return null;
+      const estimatedOutput = side === "buy" ? inputAmount / mission.tokenPrice : inputAmount * mission.tokenPrice;
+      const minimumAmountOut = estimatedOutput * 0.99;
+
+      return {
+        missionId: mission.id,
+        side,
+        route: "estimate",
+        inputAmount,
+        estimatedOutput,
+        minimumAmountOut,
+        priceImpactPercent: null,
+        currentPrice: mission.tokenPrice,
+        market: {
+          lifecycle: mission.lifecycle,
+          tokenMint: mission.tokenMint,
+          dbcPool: mission.dbcPool,
+          dammPool: mission.dammPool,
+        },
+        transaction: {
+          kind: "trade",
+          status: "not_configured",
+          message: "Preparing exact quote...",
+        },
+      };
+    },
+    [mission.dbcPool, mission.dammPool, mission.id, mission.lifecycle, mission.tokenMint, mission.tokenPrice],
+  );
   const refreshBalances = useCallback(async () => {
     if (!wallet.address) {
       setBalances(null);
@@ -1302,32 +1388,53 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       return null;
     }
   }, [mission.id, wallet.address]);
-  const requestQuote = async () => {
+  const requestQuote = async (options: { prepareTransaction?: boolean } = {}) => {
     if (!hasAmount) {
       setQuote(null);
       setQuoteLoading(false);
       return null;
     }
+    const requestId = quoteRequestRef.current + 1;
+    quoteRequestRef.current = requestId;
+    let fallbackTimer: number | null = null;
     try {
       setQuoteLoading(true);
-      const next = await api.getMissionQuote(mission.id, { side: mode, amount: numeric, wallet: wallet.address });
+      fallbackTimer = options.prepareTransaction
+        ? null
+        : window.setTimeout(() => {
+            if (quoteRequestRef.current !== requestId) return;
+            const fallbackQuote = approximateQuote(mode, numeric);
+            if (!fallbackQuote) return;
+            setQuote(fallbackQuote);
+            setQuoteLoading(false);
+            setStatus(null);
+          }, 220);
+      const next = await api.getMissionQuote(mission.id, { side: mode, amount: numeric, wallet: options.prepareTransaction ? wallet.address : undefined });
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
+      if (quoteRequestRef.current !== requestId) return null;
       setQuote(next);
-      if (next.transaction.status !== "ready") {
-        setStatus(next.transaction.message);
-        return null;
-      }
-      setStatus(
+      const quoteStatus =
         next.partialFill && next.requestedInputAmount && next.inputAmount < next.requestedInputAmount
           ? `This purchase will use ${money(next.inputAmount)} USDC, the remaining bonding-curve capacity, and should trigger graduation.`
-          : null,
-      );
+          : null;
+      if (next.transaction.status !== "ready") {
+        if (options.prepareTransaction || next.estimatedOutput <= 0) {
+          setStatus(next.transaction.message);
+          return null;
+        }
+        setStatus(quoteStatus);
+        return next;
+      }
+      setStatus(quoteStatus);
       return next;
     } catch (error) {
+      if (quoteRequestRef.current !== requestId) return null;
       setQuote(null);
       setStatus(error instanceof Error ? error.message : "Quote failed.");
       return null;
     } finally {
-      setQuoteLoading(false);
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
+      if (quoteRequestRef.current === requestId) setQuoteLoading(false);
     }
   };
   const trade = async () => {
@@ -1339,7 +1446,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       setStatus(null);
       setTradeSucceeded(false);
       setTradePending(true);
-      const nextQuote = await requestQuote();
+      const nextQuote = await requestQuote({ prepareTransaction: true });
       if (nextQuote?.transaction.status !== "ready") return;
       const signature = await wallet.sendPreparedTransaction(nextQuote?.transaction);
       if (signature) {
@@ -1400,7 +1507,22 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
     setQuoteLoading(true);
     const timer = window.setTimeout(() => void requestQuote(), 350);
     return () => window.clearTimeout(timer);
-  }, [amount, mode, mission.id, wallet.address, hasAmount]);
+  }, [amount, mode, mission.id, hasAmount]);
+
+  useEffect(() => {
+    if (mission.lifecycle !== "graduated" || !mission.dammPool || !mission.tokenMint) return;
+    const prewarmKey = `${mission.id}:${mission.dammPool}`;
+    if (prewarmedMarketRef.current === prewarmKey) return;
+    prewarmedMarketRef.current = prewarmKey;
+
+    const timer = window.setTimeout(() => {
+      void api.getMissionQuote(mission.id, { side: "buy", amount: 1 }).catch(() => {
+        prewarmedMarketRef.current = null;
+      });
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [mission.id, mission.lifecycle, mission.dammPool, mission.tokenMint]);
 
   useEffect(() => {
     void refreshBalances();
@@ -1412,10 +1534,10 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       : mode === "buy"
         ? `${number(quote.minimumAmountOut)} ${mission.tokenSymbol}`
         : `${money(quote.minimumAmountOut)} USDC`;
-  const quoteUnavailable = hasAmount && !quoteLoading && quote?.transaction.status === "not_configured";
+  const hasExactPriceImpact = quote?.route !== "estimate" && quote?.priceImpactPercent !== null && quote?.priceImpactPercent !== undefined;
+  const quoteUnavailable = hasAmount && !quoteLoading && quote?.transaction.status === "not_configured" && quote.estimatedOutput <= 0;
   const minimumReceivedLabel = quoteLoading ? <InlineLoader /> : quoteUnavailable || !minimumReceived ? "Unavailable" : minimumReceived;
-  const priceImpactLabel =
-    quoteLoading ? <InlineLoader /> : quoteUnavailable || quote?.priceImpactPercent === null || quote?.priceImpactPercent === undefined ? "Unavailable" : `${number(quote.priceImpactPercent)}%`;
+  const priceImpactLabel = hasExactPriceImpact ? formatPriceImpactPercent(quote.priceImpactPercent as number) : null;
   const cappedBuyLabel =
     mode === "buy" && quote?.partialFill && quote.requestedInputAmount && quote.inputAmount < quote.requestedInputAmount
       ? `${money(quote.inputAmount)} USDC of ${money(quote.requestedInputAmount)} requested`
@@ -1470,7 +1592,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
         <>
           {cappedBuyLabel ? <p className="stat-note">Available purchase: {cappedBuyLabel}</p> : null}
           <p className="stat-note">Minimum received: {minimumReceivedLabel}</p>
-          <p className="stat-note">Price impact: {priceImpactLabel}</p>
+          {priceImpactLabel ? <p className="stat-note">Price impact <PriceImpactHelp />: {priceImpactLabel}</p> : null}
         </>
       ) : null}
       {tradePending ? null : tradeSucceeded ? (
@@ -1480,7 +1602,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       ) : null}
       <button
         className={cx("button", mode === "buy" ? "button-primary" : "button-danger")}
-        disabled={tradePending || graduationPending || (!marketGraduationReady && hasAmount && quote?.transaction.status === "not_configured")}
+        disabled={tradePending || graduationPending || (!marketGraduationReady && quoteUnavailable)}
         style={{ width: "100%" }}
         onClick={() => void (marketGraduationReady ? graduateMarket() : trade())}
       >

@@ -13,6 +13,11 @@ import {
   TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
 import {
+  CpAmm,
+  getPriceFromSqrtPrice as getCpAmmPriceFromSqrtPrice,
+  getTokenProgram as getCpAmmTokenProgram,
+} from "@meteora-ag/cp-amm-sdk";
+import {
   ActivationType,
   BaseFeeMode,
   buildCurveWithMarketCap,
@@ -44,14 +49,61 @@ export const DEFAULT_DBC_TREASURY_SUPPLY_PERCENT = 20;
 export const DEFAULT_DBC_INITIAL_MARKET_CAP = 25;
 export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 50;
 
+const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_DBC_BUY_AMOUNTS_USDC = [5, 10, 25, 100, 1_000];
 const DBC_LAUNCH_DUST_LIQUIDITY_USDC = 0.05;
+const CP_AMM_POOL_CACHE_TTL_MS = 10_000;
+const CP_AMM_SLOT_CACHE_TTL_MS = 3_000;
+const CP_AMM_POOL_RPC_TIMEOUT_MS = 2_000;
+const CP_AMM_SLOT_RPC_TIMEOUT_MS = 1_000;
 const DBC_GUARDRAILS = {
   maxTenUsdcTotalSupplyPercent: 100,
   maxHundredUsdcTotalSupplyPercent: 1_000,
   maxInitialPurchaseTotalSupplyPercent: 100,
   minMigrationMarketCapMultiple: 2,
 };
+
+type CpAmmPoolState = Awaited<ReturnType<CpAmm["fetchPoolState"]>>;
+
+const cpAmmPoolStateCache = new Map<string, { poolState: CpAmmPoolState; cachedAt: number }>();
+const cpAmmSlotCache = new Map<string, { slot: number; cachedAt: number }>();
+const cpAmmPoolStateInflight = new Map<string, Promise<CpAmmPoolState>>();
+const cpAmmSlotInflight = new Map<string, Promise<number>>();
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(`${label} timed out.`)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+function refreshCpAmmPoolState(input: { cpAmm: CpAmm; pool: PublicKey; cacheKey: string }) {
+  const inflight = cpAmmPoolStateInflight.get(input.cacheKey);
+  if (inflight) return inflight;
+
+  const promise = withTimeout(input.cpAmm.fetchPoolState(input.pool), CP_AMM_POOL_RPC_TIMEOUT_MS, "Meteora DAMM pool fetch").then((poolState) => {
+    cpAmmPoolStateCache.set(input.cacheKey, { poolState, cachedAt: Date.now() });
+    return poolState;
+  }).finally(() => cpAmmPoolStateInflight.delete(input.cacheKey));
+  cpAmmPoolStateInflight.set(input.cacheKey, promise);
+  return promise;
+}
+
+function refreshCpAmmSlot(input: { connection: Connection; cacheKey: string }) {
+  const inflight = cpAmmSlotInflight.get(input.cacheKey);
+  if (inflight) return inflight;
+
+  const promise = withTimeout(input.connection.getSlot("confirmed"), CP_AMM_SLOT_RPC_TIMEOUT_MS, "Solana slot fetch").then((slot) => {
+    cpAmmSlotCache.set(input.cacheKey, { slot, cachedAt: Date.now() });
+    return slot;
+  }).finally(() => cpAmmSlotInflight.delete(input.cacheKey));
+  cpAmmSlotInflight.set(input.cacheKey, promise);
+  return promise;
+}
 
 export type SolanaProgramConfig = {
   rpcUrl: string;
@@ -218,7 +270,28 @@ export type MeteoraDammV2MarketSnapshot = {
   updatedAt: string;
 };
 
+export type MeteoraDammV2Quote = {
+  route: "meteora-damm-v2";
+  side: MeteoraDbcTradeSide;
+  inputAmount: number;
+  estimatedOutput: number;
+  minimumAmountOut: number;
+  priceImpactPercent: number;
+  currentPrice: number;
+  inputMint: string;
+  outputMint: string;
+  baseMint: string;
+  quoteMint: string;
+  dammPool: string;
+  baseDecimals: number;
+  quoteDecimals: number;
+};
+
 export type MeteoraDbcTradeResult = MeteoraDbcQuote & {
+  transaction: PreparedSolanaTransaction;
+};
+
+export type MeteoraDammV2TradeResult = MeteoraDammV2Quote & {
   transaction: PreparedSolanaTransaction;
 };
 
@@ -367,7 +440,7 @@ function initialVirtualPool(curveConfig: ReturnType<typeof buildCurveWithMarketC
     baseMint: PublicKey.default,
     quoteVault: PublicKey.default,
     baseVault: PublicKey.default,
-  } as VirtualPool;
+  } as unknown as VirtualPool;
 }
 
 export function simulateMeteoraDbcLaunch(input: MeteoraDbcLaunchSimulationInput = {}): MeteoraDbcLaunchSimulation {
@@ -376,7 +449,7 @@ export function simulateMeteoraDbcLaunch(input: MeteoraDbcLaunchSimulationInput 
   const configForQuote = {
     ...curveConfig,
     migrationSqrtPrice: migrationSqrtPrice(curveConfig),
-  } as PoolConfig;
+  } as unknown as PoolConfig;
   const virtualPool = initialVirtualPool(curveConfig, marketSupply);
   const startingSpotPriceUsdc = spotPrice(virtualPool);
   const buyAmountsUsdc = input.buyAmountsUsdc?.length ? input.buyAmountsUsdc : DEFAULT_DBC_BUY_AMOUNTS_USDC;
@@ -864,6 +937,202 @@ export async function prepareMeteoraDbcDammV2Migration(input: {
         dammConfig: dammConfig.toBase58(),
         baseMint: baseMint.toBase58(),
         quoteMint: quoteMint.toBase58(),
+      },
+    }),
+  };
+}
+
+async function cachedCpAmmPoolState(input: { cpAmm: CpAmm; pool: PublicKey; cacheKey: string; useCache?: boolean }) {
+  const cached = cpAmmPoolStateCache.get(input.cacheKey);
+  if (input.useCache !== false && cached) {
+    if (Date.now() - cached.cachedAt >= CP_AMM_POOL_CACHE_TTL_MS) {
+      void refreshCpAmmPoolState(input).catch(() => undefined);
+    }
+    return cached.poolState;
+  }
+
+  return refreshCpAmmPoolState(input);
+}
+
+async function cachedCurrentSlot(input: { connection: Connection; cacheKey: string; useCache?: boolean }) {
+  const cached = cpAmmSlotCache.get(input.cacheKey);
+  if (input.useCache !== false && cached) {
+    if (Date.now() - cached.cachedAt >= CP_AMM_SLOT_CACHE_TTL_MS) {
+      void refreshCpAmmSlot(input).catch(() => undefined);
+    }
+    return cached.slot;
+  }
+
+  return refreshCpAmmSlot(input);
+}
+
+function cpAmmTokenPair(input: { poolState: CpAmmPoolState; baseMint: string; quoteMint: string }) {
+  const tokenAMint = input.poolState.tokenAMint;
+  const tokenBMint = input.poolState.tokenBMint;
+  const baseMint = new PublicKey(input.baseMint);
+  const quoteMint = new PublicKey(input.quoteMint);
+  const tokenAIsBase = tokenAMint.equals(baseMint);
+  const tokenBIsBase = tokenBMint.equals(baseMint);
+  const tokenAIsQuote = tokenAMint.equals(quoteMint);
+  const tokenBIsQuote = tokenBMint.equals(quoteMint);
+
+  if (!((tokenAIsBase && tokenBIsQuote) || (tokenBIsBase && tokenAIsQuote))) {
+    throw new Error("Meteora DAMM v2 pool tokens do not match this mission market.");
+  }
+
+  const tokenAPriceInTokenB = Number(getCpAmmPriceFromSqrtPrice(input.poolState.sqrtPrice, TokenDecimal.SIX, TokenDecimal.SIX).toString());
+  const currentPrice = tokenAIsBase ? tokenAPriceInTokenB : tokenAPriceInTokenB > 0 ? 1 / tokenAPriceInTokenB : 0;
+
+  return {
+    tokenAMint,
+    tokenBMint,
+    tokenAVault: input.poolState.tokenAVault,
+    tokenBVault: input.poolState.tokenBVault,
+    tokenAProgram: getCpAmmTokenProgram(input.poolState.tokenAFlag),
+    tokenBProgram: getCpAmmTokenProgram(input.poolState.tokenBFlag),
+    baseMint: baseMint.toBase58(),
+    quoteMint: quoteMint.toBase58(),
+    currentPrice,
+  };
+}
+
+function signedPriceImpactFromReference(input: { side: MeteoraDbcTradeSide; inputAmount: number; estimatedOutput: number; currentPrice: number }) {
+  if (!Number.isFinite(input.currentPrice) || input.currentPrice <= 0) return 0;
+  const referenceOutput = input.side === "buy" ? input.inputAmount / input.currentPrice : input.inputAmount * input.currentPrice;
+  if (!Number.isFinite(referenceOutput) || referenceOutput <= 0 || !Number.isFinite(input.estimatedOutput) || input.estimatedOutput <= 0) return 0;
+  return ((input.estimatedOutput - referenceOutput) / referenceOutput) * 100;
+}
+
+async function meteoraDammV2QuoteContext(input: {
+  rpcUrl: string;
+  dammPool: string;
+  baseMint: string;
+  quoteMint?: string | null;
+  side: MeteoraDbcTradeSide;
+  amount: number;
+  slippageBps?: number;
+  referencePrice?: number | null;
+  useCache?: boolean;
+}) {
+  if (input.amount <= 0) throw new Error("amount must be greater than zero.");
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const cpAmm = new CpAmm(connection);
+  const pool = new PublicKey(input.dammPool);
+  const quoteMint = input.quoteMint || MAINNET_USDC_MINT;
+  const poolState = await cachedCpAmmPoolState({ cpAmm, pool, cacheKey: input.dammPool, useCache: input.useCache });
+  const pair = cpAmmTokenPair({ poolState, baseMint: input.baseMint, quoteMint });
+  const currentPrice = input.referencePrice && Number.isFinite(input.referencePrice) && input.referencePrice > 0 ? input.referencePrice : pair.currentPrice;
+  const inputMint = input.side === "buy" ? new PublicKey(quoteMint) : new PublicKey(input.baseMint);
+  const outputMint = input.side === "buy" ? new PublicKey(input.baseMint) : new PublicKey(quoteMint);
+  const activationType = Number((poolState as { activationType?: number }).activationType ?? 0);
+  const currentSlot = activationType === 0 ? await cachedCurrentSlot({ connection, cacheKey: input.rpcUrl, useCache: input.useCache }) : 0;
+  const blockTime = Math.floor(Date.now() / 1000);
+  const amountIn = tokenAmount(input.amount);
+  const quote = cpAmm.getQuote({
+    inAmount: amountIn,
+    inputTokenMint: inputMint,
+    slippage: input.slippageBps ?? 100,
+    poolState,
+    currentTime: blockTime,
+    currentSlot,
+    tokenADecimal: TokenDecimal.SIX,
+    tokenBDecimal: TokenDecimal.SIX,
+    hasReferral: false,
+  });
+  const estimatedOutput = amountFromBaseUnits(quote.swapOutAmount);
+  const minimumAmountOut = amountFromBaseUnits(quote.minSwapOutAmount);
+
+  return {
+    connection,
+    cpAmm,
+    pool,
+    poolState,
+    pair,
+    inputMint,
+    outputMint,
+    amountIn,
+    minimumAmountOutRaw: quote.minSwapOutAmount,
+    quote: {
+      route: "meteora-damm-v2" as const,
+      side: input.side,
+      inputAmount: input.amount,
+      estimatedOutput,
+      minimumAmountOut,
+      priceImpactPercent: signedPriceImpactFromReference({
+        side: input.side,
+        inputAmount: input.amount,
+        estimatedOutput,
+        currentPrice,
+      }),
+      currentPrice,
+      inputMint: inputMint.toBase58(),
+      outputMint: outputMint.toBase58(),
+      baseMint: input.baseMint,
+      quoteMint,
+      dammPool: input.dammPool,
+      baseDecimals: 6,
+      quoteDecimals: 6,
+    } satisfies MeteoraDammV2Quote,
+  };
+}
+
+export async function quoteMeteoraDammV2Trade(input: {
+  rpcUrl: string;
+  dammPool: string;
+  baseMint: string;
+  quoteMint?: string | null;
+  side: MeteoraDbcTradeSide;
+  amount: number;
+  slippageBps?: number;
+  referencePrice?: number | null;
+}) {
+  const context = await meteoraDammV2QuoteContext({ ...input, useCache: true });
+  return context.quote;
+}
+
+export async function prepareMeteoraDammV2Trade(input: {
+  rpcUrl: string;
+  dammPool: string;
+  baseMint: string;
+  quoteMint?: string | null;
+  wallet: string;
+  side: MeteoraDbcTradeSide;
+  amount: number;
+  recentBlockhash: string;
+  slippageBps?: number;
+  referencePrice?: number | null;
+}): Promise<MeteoraDammV2TradeResult> {
+  const context = await meteoraDammV2QuoteContext({ ...input, useCache: false });
+  const owner = new PublicKey(input.wallet);
+  const transaction = await context.cpAmm.swap({
+    payer: owner,
+    pool: context.pool,
+    inputTokenMint: context.inputMint,
+    outputTokenMint: context.outputMint,
+    amountIn: context.amountIn,
+    minimumAmountOut: context.minimumAmountOutRaw,
+    tokenAVault: context.pair.tokenAVault,
+    tokenBVault: context.pair.tokenBVault,
+    tokenAMint: context.pair.tokenAMint,
+    tokenBMint: context.pair.tokenBMint,
+    tokenAProgram: context.pair.tokenAProgram,
+    tokenBProgram: context.pair.tokenBProgram,
+    referralTokenAccount: null,
+    poolState: context.poolState,
+  });
+
+  return {
+    ...context.quote,
+    transaction: buildPreparedTransaction({
+      kind: "trade",
+      feePayer: input.wallet,
+      recentBlockhash: input.recentBlockhash,
+      instructions: transaction.instructions,
+      requiredSigners: [input.wallet],
+      accounts: {
+        dammPool: input.dammPool,
+        inputMint: context.quote.inputMint,
+        outputMint: context.quote.outputMint,
       },
     }),
   };
