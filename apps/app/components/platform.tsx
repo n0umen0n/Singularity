@@ -361,14 +361,17 @@ function dicebearPersonaAvatar(seed: string) {
   return `https://api.dicebear.com/9.x/personas/svg?${params.toString()}`;
 }
 
-function CouncilPlaceholderCard({ index, symbol }: { index: number; symbol: string }) {
+const councilPlaceholderPortrait = "/council-placeholder-portrait.png";
+
+function CouncilPlaceholderCard({ index }: { index: number }) {
   return (
     <article className="glass-card flip-profile-card council-placeholder-card">
       <StatusPill>#{index + 1}</StatusPill>
-      <span className="flip-profile-avatar placeholder-avatar">{symbol.slice(0, 2).toUpperCase()}</span>
+      <span className="flip-profile-avatar placeholder-avatar">
+        <img src={councilPlaceholderPortrait} alt="" decoding="async" loading="lazy" />
+      </span>
       <div>
         <h3>Open council slot</h3>
-        <p>Waiting for registered candidates</p>
       </div>
     </article>
   );
@@ -476,7 +479,7 @@ function MissionHero({ mission }: { mission: Mission }) {
       <div className="hero-content">
         <div className="hero-title-row">
           <div>
-            <h1>{mission.statement}</h1>
+            <h1 className={missionTitleClass(mission.statement)}>{mission.statement}</h1>
             <p>{mission.description}</p>
           </div>
           <span className="token-avatar" style={{ width: 72, height: 72 }}>
@@ -486,6 +489,11 @@ function MissionHero({ mission }: { mission: Mission }) {
       </div>
     </section>
   );
+}
+
+function missionTitleClass(statement: string) {
+  const length = statement.trim().length;
+  return cx("hero-title", length > 118 && "hero-title-very-long", length > 68 && length <= 118 && "hero-title-long");
 }
 
 function StatsGrid({ mission }: { mission: Mission }) {
@@ -903,7 +911,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
               tokenImage={mission.tokenImage}
             />
           ) : (
-            <CouncilPlaceholderCard index={index} key={`placeholder-${index}`} symbol={mission.tokenSymbol} />
+            <CouncilPlaceholderCard index={index} key={`placeholder-${index}`} />
           )
         ))}
       </div>

@@ -866,6 +866,18 @@ textarea {
   line-height: 0.98;
 }
 
+.hero-content h1.hero-title-long {
+  max-width: 20ch;
+  font-size: clamp(1.85rem, 3.6vw, 2.95rem);
+  line-height: 0.97;
+}
+
+.hero-content h1.hero-title-very-long {
+  max-width: 24ch;
+  font-size: clamp(1.55rem, 2.9vw, 2.35rem);
+  line-height: 0.98;
+}
+
 .hero-content p {
   max-width: 46rem;
   margin: 1rem 0 0;
@@ -1714,13 +1726,17 @@ textarea {
 .placeholder-avatar {
   display: inline-grid;
   place-items: center;
-  color: rgba(255, 247, 237, 0.5);
+  border-color: rgba(255, 247, 237, 0.16);
   background:
-    radial-gradient(circle at 50% 15%, rgba(255, 247, 237, 0.1), transparent 58%),
+    radial-gradient(circle at 50% 12%, rgba(255, 247, 237, 0.12), transparent 54%),
+    radial-gradient(circle at 68% 74%, rgba(118, 108, 255, 0.2), transparent 58%),
     rgba(255, 247, 237, 0.045);
-  font-size: 1.4rem;
-  font-weight: 950;
-  letter-spacing: 0.08em;
+}
+
+.placeholder-avatar img {
+  object-position: 50% 36%;
+  transform: scale(1.14);
+  filter: grayscale(0.12) saturate(0.72) contrast(1.22) brightness(0.82);
 }
 
 .council-placeholder-card {
@@ -2692,6 +2708,11 @@ textarea {
 
   .hero-content h1 {
     max-width: 14ch;
+  }
+
+  .hero-content h1.hero-title-long,
+  .hero-content h1.hero-title-very-long {
+    max-width: 100%;
   }
 
   .hero-content p {
