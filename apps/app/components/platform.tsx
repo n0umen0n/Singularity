@@ -1750,7 +1750,7 @@ export function LaunchMissionPage() {
     description: description || "Live preview of how your mission will appear in discovery.",
     image: missionImage,
     tokenImage,
-    tokenPrice: 0.0002,
+    tokenPrice: 0.001,
     liquidity: 10000,
     holders: 1800,
     treasuryUsdc: 0,

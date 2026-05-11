@@ -1092,7 +1092,7 @@ export async function prepareMissionLaunchInPostgres(input: {
   const id = `${idBase}-${randomBytes(2).toString("hex")}`;
   const seed = fixtureMissions[0];
   const metadata = {
-    name: statement,
+    name: tokenSymbol,
     symbol: tokenSymbol,
     description,
     image: input.missionImage,
@@ -1113,7 +1113,7 @@ export async function prepareMissionLaunchInPostgres(input: {
     missionId: id,
     metadataHash,
     metadataUri,
-    tokenName: statement,
+    tokenName: tokenSymbol,
     tokenSymbol,
     totalSupply: launchConfig.totalSupply,
     initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,

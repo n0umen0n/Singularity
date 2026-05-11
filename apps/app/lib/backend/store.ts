@@ -338,7 +338,7 @@ export async function prepareMissionLaunch(input: {
     const idBase = slugify(statement);
     const id = state.missions.some((mission) => mission.id === idBase) ? `${idBase}-${randomBytes(2).toString("hex")}` : idBase;
     const metadata = {
-      name: statement,
+      name: tokenSymbol,
       symbol: tokenSymbol,
       description,
       image: input.missionImage,
@@ -389,7 +389,7 @@ export async function prepareMissionLaunch(input: {
       missionId: mission.id,
       metadataHash: hash,
       metadataUri,
-      tokenName: statement,
+      tokenName: tokenSymbol,
       tokenSymbol,
       totalSupply: mission.totalSupply,
       initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
