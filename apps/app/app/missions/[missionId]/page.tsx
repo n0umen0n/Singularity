@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import { cache } from "react";
 import { MissionDetailPage } from "@/components/platform";
-import { getMissionById } from "@/lib/backend/store";
+import { getMissionById, refreshMissionMarketData } from "@/lib/backend/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const fetchMission = cache(async (missionId: string) => {
   try {
-    return await getMissionById(missionId);
+    return (await refreshMissionMarketData(missionId)) || (await getMissionById(missionId));
   } catch {
     return null;
   }

@@ -23,6 +23,8 @@ import {
   prepareMissionMarketGraduationTransaction,
   prepareMissionTreasuryAllocationClaimTransaction,
   prepareMissionGraduationTransaction,
+  recoverDammV2FeePositions,
+  submitBackendDammV2FeeDistribution,
   submitBackendMissionFeeDistribution,
   submitFinalizeEpochCouncilTransaction,
 } from "@/lib/backend/transactions";
@@ -212,6 +214,27 @@ async function walletBalances(address: string, missionList: Mission[]) {
 
 function rpcUrl() {
   return process.env.SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_MAINNET_RPC_URL;
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function assertSuccessfulOnchainTransaction(signature: string) {
+  if (!signature) throw new Error("signature is required.");
+  const url = rpcUrl();
+  if (!url) throw new Error("Solana RPC is required to verify the transaction before saving data.");
+
+  const connection = new Connection(url, "confirmed");
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+    if (status?.err) throw new Error("The on-chain transaction failed. No changes were saved.");
+    if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized" || status?.confirmations === null) return;
+    await wait(500);
+  }
+
+  throw new Error("The on-chain transaction could not be verified. No changes were saved.");
 }
 
 function configuredAddressSet(value?: string) {
@@ -713,7 +736,12 @@ async function recordEpochCouncilInPostgres(input: {
   );
 }
 
-async function performanceFromPricePoints(missionId: string, currentPrice: number, client?: Queryable): Promise<Mission["performance"]> {
+async function performanceFromPricePoints(
+  missionId: string,
+  currentPrice: number,
+  client?: Queryable,
+  options: { fallbackBaselinePrice?: number | null; fallbackAgoLabel?: string; previous?: Mission["performance"] } = {},
+): Promise<Mission["performance"]> {
   const result = await (client || { query }).query<PricePointRow>(
     `
       select timestamp, price_usdc
@@ -729,18 +757,29 @@ async function performanceFromPricePoints(missionId: string, currentPrice: numbe
 
   return Object.fromEntries(
     Object.entries(performanceFrames).map(([key, frame]) => {
+      const frameKey = key as keyof Mission["performance"];
       const cutoff = now - frame.ms;
       const olderPoint = [...points].reverse().find((point) => point.timestamp <= cutoff);
       const hasHistoryForFrame = olderPoint !== undefined || oldestTimestamp <= cutoff;
+      const fallbackBaseline =
+        Number.isFinite(options.fallbackBaselinePrice) && (options.fallbackBaselinePrice || 0) > 0
+          ? Number(options.fallbackBaselinePrice)
+          : null;
+      const previousPoint = options.previous?.[frameKey];
       const baseline = hasHistoryForFrame
         ? olderPoint?.price || points[0]?.price || currentPrice || 1
-        : currentPrice || 1;
+        : fallbackBaseline || currentPrice || 1;
+
+      if (!hasHistoryForFrame && !fallbackBaseline && previousPoint) {
+        return [key, previousPoint];
+      }
+
       const value = baseline > 0 && currentPrice > 0 ? (currentPrice / baseline) * 100 : 100;
       return [
         key,
         {
           label: frame.label,
-          agoLabel: frame.agoLabel,
+          agoLabel: hasHistoryForFrame ? frame.agoLabel : options.fallbackAgoLabel || frame.agoLabel,
           value: Number(value.toFixed(2)),
           change: Number((value - 100).toFixed(2)),
         },
@@ -844,7 +883,11 @@ export async function refreshMissionMarketDataInPostgres(missionId: string, clie
     );
   }
 
-  const performance = await performanceFromPricePoints(missionId, snapshot.currentPrice, client);
+  const performance = await performanceFromPricePoints(missionId, snapshot.currentPrice, client, {
+    fallbackBaselinePrice: snapshot.route === "meteora-dbc" ? snapshot.launchPrice : null,
+    fallbackAgoLabel: snapshot.route === "meteora-dbc" ? "at launch" : undefined,
+    previous: mission.performance,
+  });
   await (client || { query }).query("update missions set performance_json = $2 where id = $1", [missionId, JSON.stringify(performance)]);
 
   const refreshed = await getMissionByIdFromPostgres(missionId, client);
@@ -891,7 +934,7 @@ async function requestRows(missionIds: string[], client?: Queryable) {
   return byMission;
 }
 
-export async function listMissionsFromPostgres(options: { q?: string; sort?: MissionSort; includeDetails?: boolean }) {
+export async function listMissionsFromPostgres(options: { q?: string; sort?: MissionSort; includeDetails?: boolean; limit?: number; offset?: number }) {
   const values: unknown[] = [];
   const where: string[] = [];
   const queryText = options.q?.trim();
@@ -903,10 +946,23 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
 
   const orderBy =
     options.sort === "most-holders"
-      ? "coalesce(mm.holders, 0) desc"
+      ? "coalesce(mm.holders, 0) desc, m.id asc"
       : options.sort === "newest"
-        ? "m.created_at desc"
-        : "coalesce(mm.liquidity_usdc, 0) desc";
+        ? "m.created_at desc, m.id asc"
+        : "coalesce(mm.liquidity_usdc, 0) desc, m.id asc";
+  const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : undefined;
+  const offset = Math.max(Math.floor(options.offset ?? 0), 0);
+  let pagination = "";
+
+  if (limit) {
+    values.push(limit);
+    pagination += ` limit $${values.length}`;
+  }
+
+  if (offset) {
+    values.push(offset);
+    pagination += ` offset $${values.length}`;
+  }
 
   const result = await query<MissionRow>(
     `
@@ -928,6 +984,7 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
       left join mission_metrics mm on mm.mission_id = m.id
       ${where.length ? `where ${where.join(" and ")}` : ""}
       order by ${orderBy}
+      ${pagination}
     `,
     values,
   );
@@ -1185,6 +1242,7 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
   if (!input.launchId) throw new Error("launchId is required.");
   if (!input.signature) throw new Error("signature is required.");
   if (!input.wallet) throw new Error("wallet is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
 
   const confirmed = await transaction(async (client) => {
     const pendingResult = await client.query<PendingMissionLaunchRow>(
@@ -1400,6 +1458,7 @@ export async function prepareMissionMarketGraduationInPostgres(missionId: string
 export async function confirmMissionMarketGraduationInPostgres(missionId: string, input: { signature?: string; dammPool?: string; wallet?: string }) {
   if (!input.signature) throw new Error("signature is required.");
   if (!input.dammPool) throw new Error("dammPool is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
   const mission = await getMissionByIdFromPostgres(missionId);
   if (!mission) throw new Error(`Mission not found: ${missionId}`);
 
@@ -1427,6 +1486,10 @@ export async function confirmMissionMarketGraduationInPostgres(missionId: string
     `,
     [missionId, input.dammPool, input.signature],
   );
+  await syncDammFeePositionsInPostgres(missionId, { dammPool: input.dammPool, signature: input.signature }).catch((error) => {
+    const message = error instanceof Error ? error.message : "Could not sync DAMM fee positions.";
+    console.error("DAMM fee position sync failed", { missionId, error: message });
+  });
 
   const refreshed = await getMissionByIdFromPostgres(missionId);
   if (!refreshed) throw new Error(`Mission not found: ${missionId}`);
@@ -1449,6 +1512,7 @@ export async function prepareMissionTreasuryAllocationClaimInPostgres(missionId:
 
 export async function confirmMissionTreasuryAllocationClaimInPostgres(missionId: string, input: { signature?: string; wallet?: string }) {
   if (!input.signature) throw new Error("signature is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
   const mission = await getMissionByIdFromPostgres(missionId);
   if (!mission) throw new Error(`Mission not found: ${missionId}`);
 
@@ -1468,22 +1532,86 @@ export async function confirmMissionTreasuryAllocationClaimInPostgres(missionId:
   return { mission: refreshed };
 }
 
+async function syncDammFeePositionsInPostgres(missionId: string, input: { dammPool?: string | null; signature?: string | null }) {
+  if (!input.dammPool || !input.signature) return [];
+  const positions = await recoverDammV2FeePositions({ dammPool: input.dammPool, signature: input.signature });
+  for (const position of positions) {
+    await query(
+      `
+        insert into mission_damm_fee_positions (
+          position_nft_mint,
+          mission_id,
+          damm_pool,
+          position_account,
+          position_nft_account,
+          owner_wallet,
+          source_signature
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (position_nft_mint) do update set
+          mission_id = excluded.mission_id,
+          damm_pool = excluded.damm_pool,
+          position_account = excluded.position_account,
+          position_nft_account = excluded.position_nft_account,
+          owner_wallet = excluded.owner_wallet,
+          source_signature = coalesce(mission_damm_fee_positions.source_signature, excluded.source_signature),
+          updated_at = now()
+      `,
+      [position.positionNftMint, missionId, input.dammPool, position.position, position.positionNftAccount, position.owner, input.signature],
+    );
+  }
+  return positions;
+}
+
+async function ensureDammFeePositionsForMission(missionId: string, dammPool: string) {
+  const existing = await query<{ count: string }>("select count(*) from mission_damm_fee_positions where mission_id = $1", [missionId]);
+  if (Number(existing.rows[0]?.count || 0) > 0) return;
+  const graduation = await query<{ signature: string }>(
+    "select signature from transactions where mission_id = $1 and type = 'mission-market-graduation' order by created_at desc limit 1",
+    [missionId],
+  );
+  await syncDammFeePositionsInPostgres(missionId, { dammPool, signature: graduation.rows[0]?.signature });
+}
+
+async function getBackendOwnedDammFeePositions(missionId: string) {
+  const distributorWallet = process.env.SINGULARITY_FEE_DISTRIBUTOR_PUBKEY?.trim() || null;
+  const result = await query<{
+    position_nft_mint: string;
+    position_account: string;
+    position_nft_account: string;
+    owner_wallet: string;
+  }>(
+    `
+      select position_nft_mint, position_account, position_nft_account, owner_wallet
+      from mission_damm_fee_positions
+      where mission_id = $1
+        and ($2::text is null or owner_wallet = $2)
+      order by created_at asc
+    `,
+    [missionId, distributorWallet || null],
+  );
+  return result.rows.map((row) => ({
+    positionNftMint: row.position_nft_mint,
+    position: row.position_account,
+    positionNftAccount: row.position_nft_account,
+    owner: row.owner_wallet,
+  }));
+}
+
 export async function distributeMissionFeesInPostgres(input: { limit?: number } = {}) {
   const limit = Math.max(1, Math.min(input.limit || 50, 100));
   const result = await query<{
     id: string;
     creator_wallet: string;
-    token_mint: string;
+    token_mint: string | null;
     dbc_pool: string;
-    treasury_vault: string;
+    damm_pool: string | null;
   }>(
     `
-      select id, creator_wallet, token_mint, dbc_pool, treasury_vault
+      select id, creator_wallet, token_mint, dbc_pool, damm_pool
       from missions
-      where lifecycle_state = 'bonding'
-        and token_mint is not null
+      where lifecycle_state in ('bonding', 'graduated')
         and dbc_pool is not null
-        and treasury_vault is not null
       order by created_at asc
       limit $1
     `,
@@ -1497,9 +1625,7 @@ export async function distributeMissionFeesInPostgres(input: { limit?: number } 
       const distribution = await submitBackendMissionFeeDistribution({
         missionId: mission.id,
         creatorWallet: mission.creator_wallet,
-        tokenMint: mission.token_mint,
         dbcPool: mission.dbc_pool,
-        treasuryVault: mission.treasury_vault,
       });
       if (distribution.distributionSignature) {
         await query(
@@ -1512,6 +1638,31 @@ export async function distributeMissionFeesInPostgres(input: { limit?: number } 
       const message = error instanceof Error ? error.message : "Mission fee distribution failed.";
       console.error("Mission fee distribution failed", { missionId: mission.id, error: message });
       results.push({ status: "failed" as const, missionId: mission.id, error: message });
+    }
+
+    if (mission.damm_pool && mission.token_mint) {
+      try {
+        await ensureDammFeePositionsForMission(mission.id, mission.damm_pool);
+        const positions = await getBackendOwnedDammFeePositions(mission.id);
+        const distribution = await submitBackendDammV2FeeDistribution({
+          missionId: mission.id,
+          creatorWallet: mission.creator_wallet,
+          tokenMint: mission.token_mint,
+          dammPool: mission.damm_pool,
+          positions,
+        });
+        if (distribution.distributionSignature) {
+          await query(
+            "insert into transactions (signature, wallet, mission_id, type, status) values ($1, $2, $3, 'mission-fee-distribution', 'confirmed') on conflict (signature) do nothing",
+            [distribution.distributionSignature, process.env.SINGULARITY_FEE_DISTRIBUTOR_PUBKEY || "backend-fee-distributor", mission.id],
+          );
+        }
+        results.push(distribution);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "DAMM fee distribution failed.";
+        console.error("DAMM fee distribution failed", { missionId: mission.id, error: message });
+        results.push({ status: "failed" as const, missionId: mission.id, source: "damm-v2" as const, error: message });
+      }
     }
   }
 
@@ -1566,21 +1717,28 @@ export async function prepareFundingRequestInPostgres(input: {
     metadataHash,
   });
 
-  const result = await query<FundingRequestRow>(
-    `
-      insert into funding_requests (
-        id, request_pda, mission_id, requester_wallet, recipient_wallet, mission_token_amount,
-        derived_usd_estimate, status, metadata_hash, title, description, epoch_number
-      )
-      values ($1, $2, $3, $4, $4, $5, $6, 'active', $7, $8, $9, $10)
-      returning *, 0::bigint as approvals, 0::bigint as rejections
-    `,
-    [id, requestPdaAddress, mission.id, requesterWallet, tokenAmount, amountUsd, metadataHash, name, description, epoch],
-  );
+  const requestRow: FundingRequestRow = {
+    id,
+    request_pda: requestPdaAddress,
+    mission_id: mission.id,
+    requester_wallet: requesterWallet,
+    recipient_wallet: requesterWallet,
+    mission_token_amount: String(tokenAmount),
+    derived_usd_estimate: String(amountUsd),
+    status: "active",
+    metadata_hash: metadataHash,
+    title: name,
+    description,
+    epoch_number: epoch,
+    approvals: "0",
+    rejections: "0",
+    executed_at: null,
+  };
 
   return {
-    request: rowToRequest(result.rows[0]),
+    request: rowToRequest(requestRow),
     metadataHash,
+    epochNumber: epoch,
     transaction: await prepareFundingRequestTransaction({
       requesterWallet,
       missionId: mission.id,
@@ -1592,6 +1750,77 @@ export async function prepareFundingRequestInPostgres(input: {
       epoch,
     }),
   };
+}
+
+export async function confirmFundingRequestInPostgres(input: {
+  requestId?: string;
+  missionId?: string;
+  requesterWallet?: string;
+  name?: string;
+  description?: string;
+  amountUsd?: number;
+  metadataHash?: string;
+  epochNumber?: number;
+  signature?: string;
+}) {
+  if (!input.requestId) throw new Error("requestId is required.");
+  if (!input.missionId) throw new Error("missionId is required.");
+  if (!input.signature) throw new Error("signature is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
+
+  const mission = await getMissionByIdFromPostgres(input.missionId);
+  if (!mission) throw new Error(`Mission not found: ${input.missionId}`);
+
+  const name = input.name?.trim();
+  const description = input.description?.trim();
+  const amountUsd = Math.max(Number(input.amountUsd) || 0, 0);
+  const requesterWallet = input.requesterWallet || currentUser.address;
+  if (!name) throw new Error("Request name is required.");
+  if (!description) throw new Error("Request description is required.");
+  if (amountUsd <= 0) throw new Error("Request amount must be greater than zero.");
+  if (!Number.isFinite(mission.tokenPrice) || mission.tokenPrice <= 0) throw new Error("Mission token price is not available yet.");
+
+  const tokenAmount = amountUsd / mission.tokenPrice;
+  const metadataHash = input.metadataHash || contentHash({ name, description, tokenAmount, amountUsd, requesterWallet });
+  const requestPdaAddress = fundingRequestPda({
+    registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+    councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+    missionId: mission.id,
+    metadataHash,
+  });
+  const epoch = Math.max(Number(input.epochNumber) || 1, 1);
+
+  const inserted = await query<FundingRequestRow>(
+    `
+      insert into funding_requests (
+        id, request_pda, mission_id, requester_wallet, recipient_wallet, mission_token_amount,
+        derived_usd_estimate, status, metadata_hash, title, description, epoch_number
+      )
+      values ($1, $2, $3, $4, $4, $5, $6, 'active', $7, $8, $9, $10)
+      on conflict (id) do nothing
+      returning *, 0::bigint as approvals, 0::bigint as rejections
+    `,
+    [input.requestId, requestPdaAddress, mission.id, requesterWallet, tokenAmount, amountUsd, metadataHash, name, description, epoch],
+  );
+  const row =
+    inserted.rows[0] ||
+    (
+      await query<FundingRequestRow>(
+        `
+          select
+            fr.*,
+            count(*) filter (where frv.vote = 'approve') as approvals,
+            count(*) filter (where frv.vote = 'reject') as rejections
+          from funding_requests fr
+          left join funding_request_votes frv on frv.request_id = fr.id
+          where fr.id = $1
+          group by fr.id
+        `,
+        [input.requestId],
+      )
+    ).rows[0];
+  if (!row) throw new Error("Funding request confirmation failed.");
+  return { request: rowToRequest(row) };
 }
 
 export async function voteFundingRequestInPostgres(requestId: string, input: { wallet?: string; vote?: "approve" | "reject" }) {
@@ -1741,6 +1970,7 @@ export async function executeFundingRequestInPostgres(
 
 export async function confirmFundingRequestExecutionInPostgres(requestId: string, input: { signature?: string; wallet?: string }) {
   if (!input.signature) throw new Error("signature is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
 
   const result = await transaction(async (client) => {
     const currentResult = await client.query<FundingRequestRow>(
@@ -1838,12 +2068,23 @@ export async function registerCouncilCandidateInPostgres(input: { missionId?: st
   if (!input.missionId) throw new Error("missionId is required.");
   const wallet = input.wallet || currentUser.address;
 
-  // Snapshot the candidate's current on-chain balance so the council list can
-  // rank them correctly even before the next epoch checkpoint runs.
-  const mintRow = await query<{ token_mint: string | null }>(
-    "select token_mint from missions where id = $1",
-    [input.missionId],
-  );
+  return {
+    missionId: input.missionId,
+    wallet,
+    tokenAccounts: input.tokenAccounts || [],
+    transaction: await prepareCandidateRegistrationTransaction({ wallet, missionId: input.missionId }),
+  };
+}
+
+export async function confirmCouncilCandidateRegistrationInPostgres(input: { missionId?: string; wallet?: string; signature?: string; tokenAccounts?: string[] }) {
+  if (!input.missionId) throw new Error("missionId is required.");
+  if (!input.signature) throw new Error("signature is required.");
+  const wallet = input.wallet || currentUser.address;
+  await assertSuccessfulOnchainTransaction(input.signature);
+
+  // Snapshot the candidate's current on-chain balance only after registration
+  // succeeds, so failed wallet transactions do not appear in the council list.
+  const mintRow = await query<{ token_mint: string | null }>("select token_mint from missions where id = $1", [input.missionId]);
   const tokenMint = mintRow.rows[0]?.token_mint || null;
   const balanceBaseUnits = tokenMint ? await fetchTokenBalanceBaseUnits(wallet, tokenMint) : "0";
 
@@ -1862,7 +2103,6 @@ export async function registerCouncilCandidateInPostgres(input: { missionId?: st
     missionId: input.missionId,
     wallet,
     tokenAccounts: input.tokenAccounts || [],
-    transaction: await prepareCandidateRegistrationTransaction({ wallet, missionId: input.missionId }),
   };
 }
 

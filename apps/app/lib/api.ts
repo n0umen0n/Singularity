@@ -95,11 +95,13 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export function listMissions(params: { q?: string; sort?: string } = {}, init?: Pick<RequestInit, "signal">) {
+export function listMissions(params: { q?: string; sort?: string; limit?: number; offset?: number } = {}, init?: Pick<RequestInit, "signal">) {
   const search = new URLSearchParams();
   if (params.q) search.set("q", params.q);
   if (params.sort) search.set("sort", params.sort);
-  return api<{ missions: Mission[] }>(`/api/missions${search.size ? `?${search}` : ""}`, init);
+  if (params.limit) search.set("limit", String(params.limit));
+  if (params.offset) search.set("offset", String(params.offset));
+  return api<{ missions: Mission[]; pagination: { limit: number; offset: number; hasMore: boolean } }>(`/api/missions${search.size ? `?${search}` : ""}`, init);
 }
 
 export function getMission(missionId: string, init?: Pick<RequestInit, "signal"> & { refresh?: boolean }) {
@@ -194,7 +196,23 @@ export function getMissionBalances(missionId: string, wallet: string) {
 }
 
 export function prepareFundingRequest(input: { missionId: string; name: string; description: string; amountUsd: number }) {
-  return api<{ request: FundingRequest; transaction: PreparedTransaction }>("/api/funding-requests/prepare", {
+  return api<{ request: FundingRequest; metadataHash: string; epochNumber: number; transaction: PreparedTransaction }>("/api/funding-requests/prepare", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function confirmFundingRequest(input: {
+  requestId: string;
+  missionId: string;
+  name: string;
+  description: string;
+  amountUsd: number;
+  metadataHash: string;
+  epochNumber: number;
+  signature: string;
+}) {
+  return api<{ request: FundingRequest }>("/api/funding-requests/confirm", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -225,5 +243,12 @@ export function registerCouncilCandidate(missionId: string) {
   return api<{ transaction: PreparedTransaction }>(`/api/council-candidates/register`, {
     method: "POST",
     body: JSON.stringify({ missionId }),
+  });
+}
+
+export function confirmCouncilCandidateRegistration(missionId: string, input: { signature: string }) {
+  return api<{ missionId: string; wallet: string }>(`/api/council-candidates/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ missionId, ...input }),
   });
 }

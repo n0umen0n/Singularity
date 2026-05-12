@@ -210,6 +210,18 @@ create table if not exists migration_reconciliation_jobs (
   unique (dbc_pool, signature)
 );
 
+create table if not exists mission_damm_fee_positions (
+  position_nft_mint text primary key,
+  mission_id text not null references missions(id),
+  damm_pool text not null,
+  position_account text not null,
+  position_nft_account text not null,
+  owner_wallet text not null,
+  source_signature text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_mission_metrics_liquidity_usdc on mission_metrics (liquidity_usdc desc);
 create index if not exists idx_mission_metrics_holders on mission_metrics (holders desc);
 create index if not exists idx_missions_created_at on missions (created_at desc);
@@ -255,6 +267,8 @@ create index if not exists funding_requests_mission_status_idx on funding_reques
 create index if not exists auth_nonces_expires_at_idx on auth_nonces (expires_at);
 create index if not exists raw_chain_events_program_slot_idx on raw_chain_events (program_id, slot desc);
 create index if not exists migration_reconciliation_jobs_status_idx on migration_reconciliation_jobs (status, updated_at);
+create index if not exists mission_damm_fee_positions_mission_idx on mission_damm_fee_positions (mission_id);
+create index if not exists mission_damm_fee_positions_owner_idx on mission_damm_fee_positions (owner_wallet);
 create index if not exists pending_mission_launches_creator_status_idx on pending_mission_launches (creator_wallet, status);
 create index if not exists platform_metric_snapshots_collected_at_idx on platform_metric_snapshots (collected_at desc);
 

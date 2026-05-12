@@ -9,10 +9,12 @@ import {
 } from "@solana/web3.js";
 import {
   createInitializeMint2Instruction,
+  getAccount,
   getAssociatedTokenAddressSync,
   TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
 import {
+  CP_AMM_PROGRAM_ID,
   CpAmm,
   getPriceFromSqrtPrice as getCpAmmPriceFromSqrtPrice,
   getTokenProgram as getCpAmmTokenProgram,
@@ -238,6 +240,7 @@ export type MeteoraDbcMarketSnapshot = {
   baseMint: string;
   quoteMint: string;
   currentPrice: number;
+  launchPrice: number;
   baseReserve: number;
   quoteReserve: number;
   liquidityUsd: number;
@@ -304,6 +307,25 @@ export type MeteoraDbcDammV2MigrationResult = {
   quoteMint: string;
   alreadyMigrated: boolean;
   transaction: PreparedSolanaTransaction;
+};
+
+export type MeteoraDammV2FeePosition = {
+  positionNftMint: string;
+  position: string;
+  positionNftAccount: string;
+  owner: string;
+};
+
+export type MeteoraDammV2PositionFeeClaim = {
+  dammPool: string;
+  positionNftMint: string;
+  position: string;
+  positionNftAccount: string;
+  tokenAMint: string;
+  tokenBMint: string;
+  tokenAVault: string;
+  tokenBVault: string;
+  instructions: TransactionInstruction[];
 };
 
 export type MeteoraDbcTreasuryAllocationClaimResult = {
@@ -384,7 +406,7 @@ function buildMeteoraDbcCurveConfig(input: Partial<MeteoraDbcLaunchConfig>) {
         },
       },
       dynamicFeeEnabled: true,
-      collectFeeMode: CollectFeeMode.OutputToken,
+      collectFeeMode: CollectFeeMode.QuoteToken,
       creatorTradingFeePercentage: 0,
       poolCreationFee: 0,
       enableFirstSwapWithMinFee: launchConfig.initialPurchaseUsdc > 0,
@@ -396,9 +418,9 @@ function buildMeteoraDbcCurveConfig(input: Partial<MeteoraDbcLaunchConfig>) {
     },
     liquidityDistribution: {
       partnerLiquidityPercentage: 0,
-      partnerPermanentLockedLiquidityPercentage: 50,
+      partnerPermanentLockedLiquidityPercentage: 100,
       creatorLiquidityPercentage: 0,
-      creatorPermanentLockedLiquidityPercentage: 50,
+      creatorPermanentLockedLiquidityPercentage: 0,
     },
     lockedVesting: {
       totalLockedVestingAmount: 0,
@@ -937,6 +959,12 @@ export async function prepareMeteoraDbcDammV2Migration(input: {
         dammConfig: dammConfig.toBase58(),
         baseMint: baseMint.toBase58(),
         quoteMint: quoteMint.toBase58(),
+        firstPositionNftMint: migration.firstPositionNftKeypair.publicKey.toBase58(),
+        firstPosition: deriveMeteoraDammV2PositionAddress(migration.firstPositionNftKeypair.publicKey.toBase58()),
+        firstPositionNftAccount: deriveMeteoraDammV2PositionNftAccount(migration.firstPositionNftKeypair.publicKey.toBase58()),
+        secondPositionNftMint: migration.secondPositionNftKeypair.publicKey.toBase58(),
+        secondPosition: deriveMeteoraDammV2PositionAddress(migration.secondPositionNftKeypair.publicKey.toBase58()),
+        secondPositionNftAccount: deriveMeteoraDammV2PositionNftAccount(migration.secondPositionNftKeypair.publicKey.toBase58()),
       },
     }),
   };
@@ -993,6 +1021,94 @@ function cpAmmTokenPair(input: { poolState: CpAmmPoolState; baseMint: string; qu
     baseMint: baseMint.toBase58(),
     quoteMint: quoteMint.toBase58(),
     currentPrice,
+  };
+}
+
+export function deriveMeteoraDammV2PositionAddress(positionNftMint: string) {
+  const [address] = PublicKey.findProgramAddressSync([Buffer.from("position"), new PublicKey(positionNftMint).toBuffer()], CP_AMM_PROGRAM_ID);
+  return address.toBase58();
+}
+
+export function deriveMeteoraDammV2PositionNftAccount(positionNftMint: string) {
+  const [address] = PublicKey.findProgramAddressSync([Buffer.from("position_nft_account"), new PublicKey(positionNftMint).toBuffer()], CP_AMM_PROGRAM_ID);
+  return address.toBase58();
+}
+
+export async function recoverMeteoraDammV2FeePositions(input: {
+  rpcUrl: string;
+  signature: string;
+  dammPool: string;
+}): Promise<MeteoraDammV2FeePosition[]> {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const cpAmm = new CpAmm(connection);
+  const transaction = await connection.getTransaction(input.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  if (!transaction) return [];
+
+  const pool = new PublicKey(input.dammPool);
+  const signers = transaction.transaction.message.staticAccountKeys.filter((_, index) => transaction.transaction.message.isAccountSigner(index));
+  const positions: MeteoraDammV2FeePosition[] = [];
+
+  for (const signer of signers) {
+    const position = new PublicKey(deriveMeteoraDammV2PositionAddress(signer.toBase58()));
+    const positionNftAccount = new PublicKey(deriveMeteoraDammV2PositionNftAccount(signer.toBase58()));
+    const state = await cpAmm.fetchPositionState(position).catch(() => null);
+    if (!state || !(state as { pool: PublicKey }).pool.equals(pool)) continue;
+    const account = await getAccount(connection, positionNftAccount, "confirmed", TOKEN_2022_PROGRAM_ID).catch(() => null);
+    if (!account) continue;
+    positions.push({
+      positionNftMint: signer.toBase58(),
+      position: position.toBase58(),
+      positionNftAccount: positionNftAccount.toBase58(),
+      owner: account.owner.toBase58(),
+    });
+  }
+
+  return positions;
+}
+
+export async function prepareMeteoraDammV2PositionFeeClaim(input: {
+  rpcUrl: string;
+  dammPool: string;
+  baseMint: string;
+  quoteMint?: string | null;
+  owner: string;
+  receiver: string;
+  feePayer?: string;
+  positionNftMint: string;
+}): Promise<MeteoraDammV2PositionFeeClaim> {
+  const connection = new Connection(input.rpcUrl, "confirmed");
+  const cpAmm = new CpAmm(connection);
+  const pool = new PublicKey(input.dammPool);
+  const poolState = await cpAmm.fetchPoolState(pool);
+  const quoteMint = input.quoteMint || MAINNET_USDC_MINT;
+  const pair = cpAmmTokenPair({ poolState, baseMint: input.baseMint, quoteMint });
+  const position = new PublicKey(deriveMeteoraDammV2PositionAddress(input.positionNftMint));
+  const positionNftAccount = new PublicKey(deriveMeteoraDammV2PositionNftAccount(input.positionNftMint));
+  const transaction = await cpAmm.claimPositionFee2({
+    owner: new PublicKey(input.owner),
+    pool,
+    position,
+    positionNftAccount,
+    tokenAMint: pair.tokenAMint,
+    tokenBMint: pair.tokenBMint,
+    tokenAVault: pair.tokenAVault,
+    tokenBVault: pair.tokenBVault,
+    tokenAProgram: pair.tokenAProgram,
+    tokenBProgram: pair.tokenBProgram,
+    receiver: new PublicKey(input.receiver),
+    feePayer: input.feePayer ? new PublicKey(input.feePayer) : undefined,
+  });
+
+  return {
+    dammPool: input.dammPool,
+    positionNftMint: input.positionNftMint,
+    position: position.toBase58(),
+    positionNftAccount: positionNftAccount.toBase58(),
+    tokenAMint: pair.tokenAMint.toBase58(),
+    tokenBMint: pair.tokenBMint.toBase58(),
+    tokenAVault: pair.tokenAVault.toBase58(),
+    tokenBVault: pair.tokenBVault.toBase58(),
+    instructions: transaction.instructions,
   };
 }
 
@@ -1258,6 +1374,7 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     baseMint,
     quoteMint,
     currentPrice,
+    launchPrice,
     baseReserve,
     quoteReserve,
     liquidityUsd,

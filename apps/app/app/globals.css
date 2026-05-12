@@ -585,6 +585,19 @@ textarea {
   gap: 1.25rem;
 }
 
+.mission-list-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.4rem;
+}
+
+.mission-count {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
 .mission-card-link {
   display: flex;
   height: 100%;
@@ -2663,8 +2676,14 @@ textarea {
     flex-direction: column;
   }
 
+  .mission-list-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .section-heading > .button,
   .section-heading > a,
+  .mission-list-actions .button,
   .council-actions,
   .council-actions .button {
     width: 100%;

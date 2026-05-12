@@ -27,6 +27,19 @@ type CropRequest = {
   shape: "rect" | "circle";
 };
 
+const FIELD_LIMITS = {
+  search: 120,
+  moneyAmount: 16,
+  missionStatement: 96,
+  missionDescription: 1200,
+  tokenSymbol: 8,
+  fundingRequestName: 120,
+  fundingRequestDescription: 2000,
+  profileName: 80,
+  profileDescription: 500,
+  socialHandle: 80,
+} as const;
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -156,12 +169,16 @@ function missionListKey(query: string, sort: string) {
   return `${query.trim()}\u0000${sort}`;
 }
 
-export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] }) {
+const MISSION_PAGE_SIZE = 24;
+
+export function MissionsPage({ initialMissions, initialHasMore = false }: { initialMissions?: Mission[]; initialHasMore?: boolean }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("Highest liquidity");
   const [missions, setMissions] = useState<Mission[]>(initialMissions ?? []);
+  const [hasMore, setHasMore] = useState(initialHasMore);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!initialMissions);
+  const [loadingMore, setLoadingMore] = useState(false);
   const sort = filter === "Newest" ? "newest" : filter === "Most holders" ? "most-holders" : "highest-liquidity";
   const loadedKey = useRef<string | null>(initialMissions ? missionListKey("", sort) : null);
 
@@ -177,10 +194,11 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
     setError(null);
     const timer = window.setTimeout(() => {
       api
-        .listMissions({ q: query, sort }, { signal: controller.signal })
-        .then(({ missions }) => {
+        .listMissions({ q: query, sort, limit: MISSION_PAGE_SIZE }, { signal: controller.signal })
+        .then(({ missions, pagination }) => {
           if (!controller.signal.aborted) {
             setMissions(missions);
+            setHasMore(pagination.hasMore);
             setError(null);
             loadedKey.current = key;
             setLoading(false);
@@ -199,6 +217,23 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
       controller.abort();
     };
   }, [query, sort]);
+
+  const loadMoreMissions = useCallback(() => {
+    if (loading || loadingMore || !hasMore) return;
+
+    const key = missionListKey(query, sort);
+    setLoadingMore(true);
+    setError(null);
+    api
+      .listMissions({ q: query, sort, limit: MISSION_PAGE_SIZE, offset: missions.length })
+      .then(({ missions: nextMissions, pagination }) => {
+        if (loadedKey.current !== key) return;
+        setMissions((current) => [...current, ...nextMissions]);
+        setHasMore(pagination.hasMore);
+      })
+      .catch((error: Error) => setError(error.message))
+      .finally(() => setLoadingMore(false));
+  }, [hasMore, loading, loadingMore, missions.length, query, sort]);
 
   if (loading && !missions.length && !error) {
     return (
@@ -223,6 +258,7 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
             <span className="form-label">Search missions</span>
             <input
               className="search-box"
+              maxLength={FIELD_LIMITS.search}
               placeholder="Search missions, tokens, descriptions..."
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -230,18 +266,33 @@ export function MissionsPage({ initialMissions }: { initialMissions?: Mission[] 
           </label>
           <div className="filter-pills" aria-label="Mission filters">
             {["Highest liquidity", "Newest", "Most holders"].map((entry) => (
-              <button className={cx("filter-pill", filter === entry && "active")} key={entry} onClick={() => setFilter(entry)}>
+              <button className={cx("filter-pill", filter === entry && "active")} key={entry} type="button" onClick={() => setFilter(entry)}>
                 {entry}
               </button>
             ))}
           </div>
         </div>
-        <div className="mission-grid">
+        <div className="mission-grid" aria-busy={loading}>
           {error ? <GlassCard className="section-card">{error}</GlassCard> : null}
           {missions.map((mission, index) => (
             <MissionCard key={mission.id} mission={mission} priority={index < 2} />
           ))}
         </div>
+        {!loading && !error && !missions.length ? (
+          <EmptyState title="No missions found" description="Try a different search term or switch the mission sort." />
+        ) : null}
+        {missions.length ? (
+          <div className="mission-list-actions">
+            <span className="mission-count">
+              Showing {number(missions.length, true)} mission{missions.length === 1 ? "" : "s"}
+            </span>
+            {hasMore ? (
+              <button className="button button-primary" type="button" onClick={loadMoreMissions} disabled={loadingMore}>
+                {loadingMore ? "Loading..." : "Load more missions"}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </section>
     </AppShell>
   );
@@ -605,6 +656,7 @@ function PerformanceCard({ mission }: { mission: Mission }) {
               <input
                 aria-label="Investment amount"
                 inputMode="decimal"
+                maxLength={FIELD_LIMITS.moneyAmount}
                 style={{ width: `${Math.min(Math.max(investmentInput.length || 1, 3), 7)}ch` }}
                 type="text"
                 value={investmentInput}
@@ -809,6 +861,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
       const result = await api.registerCouncilCandidate(mission.id);
       const signature = await wallet.sendPreparedTransaction(result.transaction);
       if (signature) {
+        await api.confirmCouncilCandidateRegistration(mission.id, { signature });
         setRegisteredCandidateAddress(wallet.address);
         setRegistrationSucceeded(true);
         window.setTimeout(() => setRegistrationSucceeded(false), 1600);
@@ -884,7 +937,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
           <h2>Treasury Council</h2>
           <p>
             This mission&apos;s treasury council is made up of the top 6 registered investors. Trading fees are distributed between
-            registered investors.
+            Singularity and the mission creator.
           </p>
         </div>
         <div className="council-actions">
@@ -1511,7 +1564,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
       return null;
     }
   }, [mission.id, wallet.address]);
-  const requestQuote = async (options: { prepareTransaction?: boolean } = {}) => {
+  const requestQuote = async (options: { prepareTransaction?: boolean; showInlineLoading?: boolean } = {}) => {
     if (!hasAmount) {
       setQuote(null);
       setQuoteLoading(false);
@@ -1519,9 +1572,10 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
     }
     const requestId = quoteRequestRef.current + 1;
     quoteRequestRef.current = requestId;
+    const showInlineLoading = options.showInlineLoading ?? !options.prepareTransaction;
     let fallbackTimer: number | null = null;
     try {
-      setQuoteLoading(true);
+      setQuoteLoading(showInlineLoading);
       fallbackTimer = options.prepareTransaction
         ? null
         : window.setTimeout(() => {
@@ -1681,6 +1735,7 @@ function TradePanel({ mission, onMissionChange }: { mission: Mission; onMissionC
         <input
           className="field"
           inputMode="decimal"
+          maxLength={FIELD_LIMITS.moneyAmount}
           placeholder={mode === "buy" ? "0.00" : "0"}
           value={amount}
           onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))}
@@ -1854,7 +1909,7 @@ export function LaunchMissionPage() {
         <PageHeader
           eyebrow="Create"
           title="Launch a mission market"
-          description="A mission can be anything: a product, research goal, community, protocol, creative project, public good, or ambitious outcome. Trading fees are shared between the creator, Singularity, councillors, and registered candidates."
+          description="A mission can be anything: a product, research goal, community, protocol, creative project, public good, or ambitious outcome. USDC trading fees are shared between the creator and Singularity."
         />
         <div className="form-two-col">
           <div>
@@ -1878,7 +1933,7 @@ export function LaunchMissionPage() {
                 <span className="form-label">Mission statement</span>
                 <input
                   className="field"
-                  maxLength={96}
+                  maxLength={FIELD_LIMITS.missionStatement}
                   placeholder="Coordinate the first open-source lunar robotics network."
                   value={statement}
                   onChange={(event) => setStatement(event.target.value)}
@@ -1896,7 +1951,7 @@ export function LaunchMissionPage() {
                 <span className="form-label">Mission description</span>
                 <textarea
                   className="textarea"
-                  maxLength={1200}
+                  maxLength={FIELD_LIMITS.missionDescription}
                   placeholder="Explain what the mission is, why it matters, and what funded work should advance."
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
@@ -1906,7 +1961,7 @@ export function LaunchMissionPage() {
                 <span className="form-label">Token symbol</span>
                 <input
                   className="field"
-                  maxLength={8}
+                  maxLength={FIELD_LIMITS.tokenSymbol}
                   placeholder="NOVA"
                   value={symbol}
                   onChange={(event) => setSymbol(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -1923,7 +1978,7 @@ export function LaunchMissionPage() {
               />
               <label>
                 <span className="form-label">Initial purchase in USDC (optional)</span>
-                <input className="field" placeholder="0" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
+                <input className="field" maxLength={FIELD_LIMITS.moneyAmount} placeholder="0" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
               </label>
               {launchSucceeded ? (
                 <p className="stat-note">Success <InlineSuccess /></p>
@@ -2236,7 +2291,22 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
       setStatus("Preparing funding request...");
       const result = await api.prepareFundingRequest({ missionId: mission.id, name, description, amountUsd: usd });
       const signature = await wallet.sendPreparedTransaction(result.transaction);
-      setStatus(signature ? `Request submitted: ${shortAddress(signature)}` : result.transaction.status === "not_configured" ? result.transaction.message : "Funding request created.");
+      if (!signature) {
+        setStatus(result.transaction.status === "not_configured" ? result.transaction.message : "Funding request transaction was not submitted.");
+        return;
+      }
+      setStatus("Confirming funding request...");
+      await api.confirmFundingRequest({
+        requestId: result.request.id,
+        missionId: mission.id,
+        name,
+        description,
+        amountUsd: usd,
+        metadataHash: result.metadataHash,
+        epochNumber: result.epochNumber,
+        signature,
+      });
+      setStatus(`Request submitted: ${shortAddress(signature)}`);
       router.push(`/missions/${mission.id}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Funding request failed.");
@@ -2269,7 +2339,7 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
             <div className="form-grid">
               <label>
                 <span className="form-label">Request name</span>
-                <input className="field" placeholder="Build the first community analytics dashboard" value={name} onChange={(event) => setName(event.target.value)} />
+                <input className="field" maxLength={FIELD_LIMITS.fundingRequestName} placeholder="Build the first community analytics dashboard" value={name} onChange={(event) => setName(event.target.value)} />
               </label>
               <label>
                 <span className="form-label">Request description</span>
@@ -2277,6 +2347,7 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
                   ref={descriptionRef}
                   aria-invalid={descriptionError}
                   className={cx("textarea", descriptionError && "field-error")}
+                  maxLength={FIELD_LIMITS.fundingRequestDescription}
                   placeholder="Describe what will be delivered, who will do the work, why it advances the mission, and what success looks like."
                   value={description}
                   onChange={(event) => {
@@ -2287,7 +2358,7 @@ export function RequestFundingPage({ missionId, initialMission }: { missionId: s
               </label>
               <label>
                 <span className="form-label">Request amount in USD</span>
-                <input className="field" placeholder="10000" value={amount} onChange={(event) => setAmount(event.target.value)} />
+                <input className="field" maxLength={FIELD_LIMITS.moneyAmount} placeholder="10000" value={amount} onChange={(event) => setAmount(event.target.value)} />
               </label>
               <GlassCard className="stat-card">
                 <span className="stat-label">Conversion preview</span>
@@ -2496,24 +2567,24 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
               <div className="profile-edit-form">
                 <label>
                   <span className="form-label">Display name</span>
-                  <input className="field" placeholder="Your name" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
+                  <input className="field" maxLength={FIELD_LIMITS.profileName} placeholder="Your name" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
                 </label>
                 <label>
                   <span className="form-label">About you</span>
-                  <textarea className="textarea profile-textarea" placeholder="Add a short description about yourself." value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
+                  <textarea className="textarea profile-textarea" maxLength={FIELD_LIMITS.profileDescription} placeholder="Add a short description about yourself." value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
                 </label>
                 <div className="profile-social-fields">
                   <label>
                     <span className="form-label">X</span>
-                    <input className="field" placeholder="@handle" value={draft.x} onChange={(event) => setDraft((current) => ({ ...current, x: event.target.value }))} />
+                    <input className="field" maxLength={FIELD_LIMITS.socialHandle} placeholder="@handle" value={draft.x} onChange={(event) => setDraft((current) => ({ ...current, x: event.target.value }))} />
                   </label>
                   <label>
                     <span className="form-label">Telegram</span>
-                    <input className="field" placeholder="@handle" value={draft.telegram} onChange={(event) => setDraft((current) => ({ ...current, telegram: event.target.value }))} />
+                    <input className="field" maxLength={FIELD_LIMITS.socialHandle} placeholder="@handle" value={draft.telegram} onChange={(event) => setDraft((current) => ({ ...current, telegram: event.target.value }))} />
                   </label>
                   <label>
                     <span className="form-label">GitHub</span>
-                    <input className="field" placeholder="github.com/handle" value={draft.github} onChange={(event) => setDraft((current) => ({ ...current, github: event.target.value }))} />
+                    <input className="field" maxLength={FIELD_LIMITS.socialHandle} placeholder="github.com/handle" value={draft.github} onChange={(event) => setDraft((current) => ({ ...current, github: event.target.value }))} />
                   </label>
                 </div>
               </div>
@@ -2573,9 +2644,7 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
             <h2>Balances</h2>
           </div>
           <div className="balance-grid">
-            {(profile.balances.usdc || 0) >= 0.0001 ? (
-              <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
-            ) : null}
+            <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
             {profile.tokenBalances
               .filter((balance) => (balance.balance || 0) >= 0.0001 && (balance.usd || 0) >= 0.0001)
               .map((balance) => {

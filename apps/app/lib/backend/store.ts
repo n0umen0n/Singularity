@@ -7,6 +7,8 @@ import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/back
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
 import {
   backendHealthFromPostgres,
+  confirmCouncilCandidateRegistrationInPostgres,
+  confirmFundingRequestInPostgres,
   confirmFundingRequestExecutionInPostgres,
   confirmMissionLaunchInPostgres,
   createAuthNonceInPostgres,
@@ -213,7 +215,7 @@ function findRequestOrThrow(state: BackendState, requestId: string) {
   throw new Error(`Funding request not found: ${requestId}`);
 }
 
-export async function listMissions(options: { q?: string; sort?: MissionSort; includeDetails?: boolean }) {
+export async function listMissions(options: { q?: string; sort?: MissionSort; includeDetails?: boolean; limit?: number; offset?: number }) {
   if (storageMode() === "postgres") return listMissionsFromPostgres(options);
 
   const state = await readState();
@@ -228,11 +230,15 @@ export async function listMissions(options: { q?: string; sort?: MissionSort; in
     : [...state.missions];
 
   if (options.sort === "most-holders") filtered.sort((a, b) => b.holders - a.holders);
-  else filtered.sort((a, b) => b.liquidity - a.liquidity);
+  else if (options.sort !== "newest") filtered.sort((a, b) => b.liquidity - a.liquidity);
+
+  const offset = Math.max(Math.floor(options.offset ?? 0), 0);
+  const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : undefined;
+  const page = limit ? filtered.slice(offset, offset + limit) : filtered.slice(offset);
 
   return options.includeDetails
-    ? filtered
-    : filtered.map((mission) => ({
+    ? page
+    : page.map((mission) => ({
         ...mission,
         council: [],
         requests: [],
@@ -601,6 +607,28 @@ export async function prepareFundingRequest(input: {
   });
 }
 
+export async function confirmFundingRequest(input: {
+  requestId?: string;
+  missionId?: string;
+  requesterWallet?: string;
+  requesterName?: string;
+  requesterAvatar?: string;
+  name?: string;
+  description?: string;
+  amountUsd?: number;
+  metadataHash?: string;
+  epochNumber?: number;
+  signature?: string;
+}) {
+  if (storageMode() === "postgres") return confirmFundingRequestInPostgres(input);
+  if (!input.requestId) throw new Error("requestId is required.");
+  if (!input.signature) throw new Error("signature is required.");
+
+  const state = await readState();
+  const found = findRequestOrThrow(state, input.requestId);
+  return { request: found.request };
+}
+
 export async function voteFundingRequest(requestId: string, input: { wallet?: string; vote?: "approve" | "reject" }) {
   if (storageMode() === "postgres") return voteFundingRequestInPostgres(requestId, input);
 
@@ -749,6 +777,17 @@ export async function registerCouncilCandidate(input: { missionId?: string; wall
       transaction: await prepareCandidateRegistrationTransaction({ wallet, missionId: mission.id }),
     };
   });
+}
+
+export async function confirmCouncilCandidateRegistration(input: { missionId?: string; wallet?: string; signature?: string; tokenAccounts?: string[] }) {
+  if (storageMode() === "postgres") return confirmCouncilCandidateRegistrationInPostgres(input);
+  if (!input.missionId) throw new Error("missionId is required.");
+  if (!input.signature) throw new Error("signature is required.");
+  return {
+    missionId: input.missionId,
+    wallet: input.wallet || currentUser.address,
+    tokenAccounts: input.tokenAccounts || [],
+  };
 }
 
 function councilEscrowAmounts(candidates: Array<{ tokens: number }>) {

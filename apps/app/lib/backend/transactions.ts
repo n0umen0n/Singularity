@@ -17,6 +17,7 @@ import {
   getAssociatedTokenAddressSync,
   getMint,
   TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import {
@@ -26,6 +27,7 @@ import {
   DEFAULT_DBC_MIGRATION_MARKET_CAP,
   DEFAULT_DBC_TOTAL_SUPPLY,
   DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
+  prepareMeteoraDammV2PositionFeeClaim,
   fetchMeteoraDbcMarketSnapshot,
   fetchMeteoraDammV2MarketSnapshot,
   latestBlockhash,
@@ -38,8 +40,10 @@ import {
   prepareMeteoraDbcTrade,
   quoteMeteoraDammV2Trade,
   quoteMeteoraDbcTrade,
+  recoverMeteoraDammV2FeePositions,
   requireProgramConfig,
   resolveMeteoraDbcLaunchConfig,
+  type MeteoraDammV2FeePosition,
   type MeteoraDammV2MarketSnapshot,
   type MeteoraDbcMarketSnapshot,
   type PreparedSolanaTransaction,
@@ -1429,9 +1433,9 @@ export async function prepareClaimMissionFeesTransaction(input: {
   }
 }
 
-async function tokenAccountBalance(connection: Connection, account: PublicKey) {
+async function tokenAccountBalance(connection: Connection, account: PublicKey, programId = TOKEN_2022_PROGRAM_ID) {
   try {
-    return (await getAccount(connection, account, "confirmed", TOKEN_2022_PROGRAM_ID)).amount;
+    return (await getAccount(connection, account, "confirmed", programId)).amount;
   } catch {
     return 0n;
   }
@@ -1440,9 +1444,7 @@ async function tokenAccountBalance(connection: Connection, account: PublicKey) {
 export async function submitBackendMissionFeeDistribution(input: {
   missionId: string;
   creatorWallet: string;
-  tokenMint: string;
   dbcPool: string;
-  treasuryVault: string;
 }) {
   const config = requireProgramConfig(process.env);
   const distributor = feeDistributorKeypair();
@@ -1450,14 +1452,13 @@ export async function submitBackendMissionFeeDistribution(input: {
   if (!platformWallet) throw new Error("SINGULARITY_PLATFORM_FEE_RECIPIENT is required for backend mission fee distribution.");
 
   const connection = new Connection(config.rpcUrl, "confirmed");
-  const mint = new PublicKey(input.tokenMint);
-  const mintInfo = await getMint(connection, mint, "confirmed", TOKEN_2022_PROGRAM_ID);
+  const quoteMint = new PublicKey(process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT);
+  const quoteMintInfo = await getMint(connection, quoteMint, "confirmed", TOKEN_PROGRAM_ID);
   const creator = new PublicKey(input.creatorWallet);
   const platform = new PublicKey(platformWallet);
-  const treasuryVault = new PublicKey(input.treasuryVault);
-  const distributorTokenAccount = getAssociatedTokenAddressSync(mint, distributor.publicKey, false, TOKEN_2022_PROGRAM_ID);
-  const creatorTokenAccount = getAssociatedTokenAddressSync(mint, creator, true, TOKEN_2022_PROGRAM_ID);
-  const platformTokenAccount = getAssociatedTokenAddressSync(mint, platform, true, TOKEN_2022_PROGRAM_ID);
+  const distributorTokenAccount = getAssociatedTokenAddressSync(quoteMint, distributor.publicKey, false, TOKEN_PROGRAM_ID);
+  const creatorTokenAccount = getAssociatedTokenAddressSync(quoteMint, creator, true, TOKEN_PROGRAM_ID);
+  const platformTokenAccount = getAssociatedTokenAddressSync(quoteMint, platform, true, TOKEN_PROGRAM_ID);
 
   const claimInstructions = await meteoraDbcPartnerFeeClaimInstructions({
     rpcUrl: config.rpcUrl,
@@ -1465,16 +1466,16 @@ export async function submitBackendMissionFeeDistribution(input: {
     feeClaimer: distributor.publicKey.toBase58(),
     payer: distributor.publicKey.toBase58(),
     receiver: distributor.publicKey.toBase58(),
-    maxBaseAmount: 9_000_000_000_000_000n,
-    maxQuoteAmount: 0n,
+    maxBaseAmount: 0n,
+    maxQuoteAmount: 9_000_000_000_000_000n,
   });
 
   const claimTransaction = new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, distributorTokenAccount, distributor.publicKey, mint, TOKEN_2022_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, distributorTokenAccount, distributor.publicKey, quoteMint, TOKEN_PROGRAM_ID),
     ...claimInstructions,
   );
   const claimSignature = await sendAndConfirmTransaction(connection, claimTransaction, [distributor], { commitment: "confirmed" });
-  const distributableAmount = await tokenAccountBalance(connection, distributorTokenAccount);
+  const distributableAmount = await tokenAccountBalance(connection, distributorTokenAccount, TOKEN_PROGRAM_ID);
 
   if (distributableAmount <= 0n) {
     return {
@@ -1485,41 +1486,30 @@ export async function submitBackendMissionFeeDistribution(input: {
     };
   }
 
-  const treasuryAmount = distributableAmount / 2n;
-  const creatorAmount = distributableAmount / 4n;
-  const platformAmount = distributableAmount - treasuryAmount - creatorAmount;
+  const creatorAmount = distributableAmount / 2n;
+  const platformAmount = distributableAmount - creatorAmount;
   const distributionTransaction = new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, creatorTokenAccount, creator, mint, TOKEN_2022_PROGRAM_ID),
-    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, platformTokenAccount, platform, mint, TOKEN_2022_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, creatorTokenAccount, creator, quoteMint, TOKEN_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, platformTokenAccount, platform, quoteMint, TOKEN_PROGRAM_ID),
     createTransferCheckedInstruction(
       distributorTokenAccount,
-      mint,
-      treasuryVault,
-      distributor.publicKey,
-      treasuryAmount,
-      mintInfo.decimals,
-      [],
-      TOKEN_2022_PROGRAM_ID,
-    ),
-    createTransferCheckedInstruction(
-      distributorTokenAccount,
-      mint,
+      quoteMint,
       creatorTokenAccount,
       distributor.publicKey,
       creatorAmount,
-      mintInfo.decimals,
+      quoteMintInfo.decimals,
       [],
-      TOKEN_2022_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
     ),
     createTransferCheckedInstruction(
       distributorTokenAccount,
-      mint,
+      quoteMint,
       platformTokenAccount,
       distributor.publicKey,
       platformAmount,
-      mintInfo.decimals,
+      quoteMintInfo.decimals,
       [],
-      TOKEN_2022_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
     ),
   );
   const distributionSignature = await sendAndConfirmTransaction(connection, distributionTransaction, [distributor], { commitment: "confirmed" });
@@ -1530,8 +1520,140 @@ export async function submitBackendMissionFeeDistribution(input: {
     claimSignature,
     distributionSignature,
     distributedAmount: distributableAmount.toString(),
-    treasuryAmount: treasuryAmount.toString(),
     creatorAmount: creatorAmount.toString(),
     platformAmount: platformAmount.toString(),
   };
+}
+
+async function distributeBackendUsdcFees(input: {
+  connection: Connection;
+  distributor: Keypair;
+  quoteMint: PublicKey;
+  creator: PublicKey;
+  platform: PublicKey;
+  amount: bigint;
+}) {
+  const quoteMintInfo = await getMint(input.connection, input.quoteMint, "confirmed", TOKEN_PROGRAM_ID);
+  const distributorTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.distributor.publicKey, false, TOKEN_PROGRAM_ID);
+  const creatorTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.creator, true, TOKEN_PROGRAM_ID);
+  const platformTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.platform, true, TOKEN_PROGRAM_ID);
+  const creatorAmount = input.amount / 2n;
+  const platformAmount = input.amount - creatorAmount;
+  const distributionTransaction = new Transaction().add(
+    createAssociatedTokenAccountIdempotentInstruction(input.distributor.publicKey, creatorTokenAccount, input.creator, input.quoteMint, TOKEN_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(input.distributor.publicKey, platformTokenAccount, input.platform, input.quoteMint, TOKEN_PROGRAM_ID),
+    createTransferCheckedInstruction(
+      distributorTokenAccount,
+      input.quoteMint,
+      creatorTokenAccount,
+      input.distributor.publicKey,
+      creatorAmount,
+      quoteMintInfo.decimals,
+      [],
+      TOKEN_PROGRAM_ID,
+    ),
+    createTransferCheckedInstruction(
+      distributorTokenAccount,
+      input.quoteMint,
+      platformTokenAccount,
+      input.distributor.publicKey,
+      platformAmount,
+      quoteMintInfo.decimals,
+      [],
+      TOKEN_PROGRAM_ID,
+    ),
+  );
+  const distributionSignature = await sendAndConfirmTransaction(input.connection, distributionTransaction, [input.distributor], { commitment: "confirmed" });
+  return {
+    distributionSignature,
+    creatorAmount,
+    platformAmount,
+  };
+}
+
+export async function submitBackendDammV2FeeDistribution(input: {
+  missionId: string;
+  creatorWallet: string;
+  tokenMint: string;
+  dammPool: string;
+  positions: MeteoraDammV2FeePosition[];
+}) {
+  const config = requireProgramConfig(process.env);
+  const distributor = feeDistributorKeypair();
+  const distributorWallet = distributor.publicKey.toBase58();
+  const platformWallet = process.env.SINGULARITY_PLATFORM_FEE_RECIPIENT?.trim();
+  if (!platformWallet) throw new Error("SINGULARITY_PLATFORM_FEE_RECIPIENT is required for backend DAMM fee distribution.");
+
+  const ownedPositions = input.positions.filter((position) => position.owner === distributorWallet);
+  if (!ownedPositions.length) {
+    return {
+      status: "no_positions" as const,
+      missionId: input.missionId,
+      source: "damm-v2" as const,
+      distributedAmount: "0",
+    };
+  }
+
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const quoteMint = new PublicKey(process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT);
+  const distributorTokenAccount = getAssociatedTokenAddressSync(quoteMint, distributor.publicKey, false, TOKEN_PROGRAM_ID);
+  const beforeBalance = await tokenAccountBalance(connection, distributorTokenAccount, TOKEN_PROGRAM_ID);
+  const claimSignatures = [];
+
+  for (const position of ownedPositions) {
+    const claim = await prepareMeteoraDammV2PositionFeeClaim({
+      rpcUrl: config.rpcUrl,
+      dammPool: input.dammPool,
+      baseMint: input.tokenMint,
+      quoteMint: quoteMint.toBase58(),
+      owner: distributorWallet,
+      receiver: distributorWallet,
+      feePayer: distributorWallet,
+      positionNftMint: position.positionNftMint,
+    });
+    const transaction = new Transaction().add(...claim.instructions);
+    const signature = await sendAndConfirmTransaction(connection, transaction, [distributor], { commitment: "confirmed" });
+    claimSignatures.push(signature);
+  }
+
+  const afterBalance = await tokenAccountBalance(connection, distributorTokenAccount, TOKEN_PROGRAM_ID);
+  const distributableAmount = afterBalance > beforeBalance ? afterBalance - beforeBalance : 0n;
+  if (distributableAmount <= 0n) {
+    return {
+      status: "no_fees" as const,
+      missionId: input.missionId,
+      source: "damm-v2" as const,
+      claimSignatures,
+      distributedAmount: "0",
+    };
+  }
+
+  const distribution = await distributeBackendUsdcFees({
+    connection,
+    distributor,
+    quoteMint,
+    creator: new PublicKey(input.creatorWallet),
+    platform: new PublicKey(platformWallet),
+    amount: distributableAmount,
+  });
+
+  return {
+    status: "distributed" as const,
+    missionId: input.missionId,
+    source: "damm-v2" as const,
+    claimSignatures,
+    distributionSignature: distribution.distributionSignature,
+    distributedAmount: distributableAmount.toString(),
+    creatorAmount: distribution.creatorAmount.toString(),
+    platformAmount: distribution.platformAmount.toString(),
+  };
+}
+
+export async function recoverDammV2FeePositions(input: { signature: string; dammPool: string }) {
+  const config = requireProgramConfig(process.env);
+  return recoverMeteoraDammV2FeePositions({
+    rpcUrl: config.rpcUrl,
+    signature: input.signature,
+    dammPool: input.dammPool,
+  });
 }

@@ -23,26 +23,11 @@ export const metadata: Metadata = {
     siteName: "Singularity",
     title: "Singularity | Fundraising redefined",
     description: "Singularity is a platform that connects investors with builders to grow capital together.",
-    images: [
-      {
-        url: "/og-image.svg",
-        type: "image/svg+xml",
-        width: 1200,
-        height: 630,
-        alt: "Singularity fundraising redefined social preview card",
-      },
-    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Singularity | Fundraising redefined",
     description: "Singularity is a platform that connects investors with builders to grow capital together.",
-    images: [
-      {
-        url: "/og-image.svg",
-        alt: "Singularity fundraising redefined social preview card",
-      },
-    ],
   },
 };
 

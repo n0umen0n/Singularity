@@ -266,7 +266,10 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
           throw await formatSendTransactionError(error, connection, transaction.kind);
         });
         signatures.push(submitted);
-        await connection.confirmTransaction(submitted, "confirmed");
+        const confirmation = await connection.confirmTransaction(submitted, "confirmed");
+        if (confirmation.value.err) {
+          throw new Error("The on-chain transaction failed. No changes were saved.");
+        }
       }
 
       const signature = signatures.at(-1) || null;
