@@ -42,7 +42,7 @@ const chapters: Chapter[] = [
   {
     eyebrow: "The solution",
     label: "Solution",
-    title: "Capital forms around missions",
+    title: "Instant capital formation around missions",
     body: "A mission becomes the market. Investors back the upside. Builders earn for moving it forward.",
     metric: "02",
   },

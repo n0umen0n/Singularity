@@ -730,6 +730,34 @@ async function tokenAccountAmount(connection: Connection, address: PublicKey) {
   return connection.getTokenAccountBalance(address).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0);
 }
 
+// Counts the number of unique wallets holding a positive balance of the given Token-2022 mint.
+// Uses getProgramAccounts with a memcmp on the mint field plus a dataSlice covering owner(32)+amount(8),
+// so we never pull the full token-account payload back. Pool/treasury vault token accounts whose owner
+// is a program-derived authority are still counted here — they appear as a small constant offset rather
+// than zero, but movements from real buyers correctly change the count.
+async function countTokenHolders(connection: Connection, mint: PublicKey, excludedOwners?: Set<string>) {
+  try {
+    const accounts = await connection.getProgramAccounts(TOKEN_2022_PROGRAM_ID, {
+      commitment: "confirmed",
+      filters: [{ memcmp: { offset: 0, bytes: mint.toBase58() } }],
+      dataSlice: { offset: 32, length: 40 },
+    });
+    const owners = new Set<string>();
+    for (const entry of accounts) {
+      const data = entry.account.data;
+      if (data.length < 40) continue;
+      const amount = data.readBigUInt64LE(32);
+      if (amount === 0n) continue;
+      const owner = new PublicKey(data.subarray(0, 32)).toBase58();
+      if (excludedOwners?.has(owner)) continue;
+      owners.add(owner);
+    }
+    return owners.size;
+  } catch {
+    return 0;
+  }
+}
+
 async function jupiterMarketSnapshot(input: { baseMint: string; fallbackPrice: number; fallbackLiquidityUsd: number }) {
   for (const baseUrl of ["https://lite-api.jup.ag/price/v3", "https://api.jup.ag/price/v3"]) {
     const priceUrl = new URL(baseUrl);
@@ -1356,6 +1384,7 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
   const quoteReserve = reserveAmount((virtualPool as { quoteReserve?: unknown }).quoteReserve);
   const supply = input.totalSupply ?? (await connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0));
   const treasuryVaultTokens = input.treasuryVault ? await tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : 0;
+  const holders = await countTokenHolders(connection, new PublicKey(baseMint));
   const configuredTreasuryTokens =
     input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
   const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
@@ -1381,7 +1410,7 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
     poolProgressPercent: Math.max(0, Math.min(progress * 100, 100)),
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
-    holders: 0,
+    holders,
     totalSupply: supply,
     circulatingTokens,
     marketTokens,
@@ -1405,13 +1434,14 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
   const dammPool = new PublicKey(input.dammPool);
   const baseVault = deriveDammV2TokenVaultAddress(dammPool, new PublicKey(baseMint));
   const quoteVault = deriveDammV2TokenVaultAddress(dammPool, new PublicKey(quoteMint));
-  const [baseReserve, quoteReserve, supply, treasuryVaultTokens] = await Promise.all([
+  const [baseReserve, quoteReserve, supply, treasuryVaultTokens, holders] = await Promise.all([
     tokenAccountAmount(connection, baseVault),
     tokenAccountAmount(connection, quoteVault),
     input.totalSupply
       ? Promise.resolve(input.totalSupply)
       : connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0),
     input.treasuryVault ? tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : Promise.resolve(0),
+    countTokenHolders(connection, new PublicKey(baseMint)),
   ]);
   const fallbackPrice = input.fallbackPrice && input.fallbackPrice > 0 ? input.fallbackPrice : quoteReserve > 0 && baseReserve > 0 ? quoteReserve / baseReserve : 0;
   const marketSnapshot = await jupiterMarketSnapshot({ baseMint, fallbackPrice, fallbackLiquidityUsd: quoteReserve });
@@ -1435,7 +1465,7 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
     treasuryAllocationClaimed: treasuryVaultTokens > 0,
-    holders: 0,
+    holders,
     totalSupply: supply,
     circulatingTokens,
     marketTokens,
