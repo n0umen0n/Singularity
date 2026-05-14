@@ -547,6 +547,34 @@ function executeFundingRequestInstruction(input: {
   });
 }
 
+function releaseVoteEscrowInstruction(input: {
+  programId: string;
+  payer: string;
+  request: string;
+  vote: string;
+  voteEscrowAuthority: string;
+  voteEscrowVault: string;
+  voter: string;
+  voterTokenAccount: string;
+  mint: string;
+}) {
+  return new TransactionInstruction({
+    programId: new PublicKey(input.programId),
+    keys: [
+      { pubkey: new PublicKey(input.payer), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(input.request), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.vote), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voteEscrowAuthority), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(input.voteEscrowVault), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voter), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voterTokenAccount), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.mint), isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+    ],
+    data: anchorDiscriminator("release_vote_escrow"),
+  });
+}
+
 export async function prepareLaunchTransaction(input: {
   creatorWallet?: string;
   missionId: string;
@@ -1297,6 +1325,53 @@ export async function submitFinalizeEpochCouncilTransaction(input: {
     authorityWallet: authority.publicKey.toBase58(),
     mission,
     epochCouncil,
+  };
+}
+
+export async function submitReleaseVoteEscrowTransaction(input: {
+  requestAccount: string;
+  voter: string;
+  mint: string;
+}) {
+  const config = requireProgramConfig(process.env);
+  const payer = keypairFromEnv("SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR", "backend vote escrow release");
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const blockhash = await connection.getLatestBlockhash();
+  const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, input.requestAccount);
+  const voteEscrowVault = getAssociatedTokenAddressSync(new PublicKey(input.mint), new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
+  const voterTokenAccount = getAssociatedTokenAddressSync(new PublicKey(input.mint), new PublicKey(input.voter), false, TOKEN_2022_PROGRAM_ID);
+  const vote = votePda(config.councilProgramId, input.requestAccount, input.voter);
+  const instructions: TransactionInstruction[] = [
+    createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, voterTokenAccount, new PublicKey(input.voter), new PublicKey(input.mint), TOKEN_2022_PROGRAM_ID),
+    releaseVoteEscrowInstruction({
+      programId: config.councilProgramId,
+      payer: payer.publicKey.toBase58(),
+      request: input.requestAccount,
+      vote,
+      voteEscrowAuthority,
+      voteEscrowVault: voteEscrowVault.toBase58(),
+      voter: input.voter,
+      voterTokenAccount: voterTokenAccount.toBase58(),
+      mint: input.mint,
+    }),
+  ];
+  const message = new TransactionMessage({
+    payerKey: payer.publicKey,
+    recentBlockhash: blockhash.blockhash,
+    instructions,
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  transaction.sign([payer]);
+  const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+  await connection.confirmTransaction({ signature, ...blockhash }, "confirmed");
+
+  return {
+    signature,
+    payer: payer.publicKey.toBase58(),
+    vote,
+    voteEscrowAuthority,
+    voteEscrowVault: voteEscrowVault.toBase58(),
+    voterTokenAccount: voterTokenAccount.toBase58(),
   };
 }
 

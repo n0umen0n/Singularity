@@ -207,6 +207,49 @@ pub mod singularity_council {
         Ok(())
     }
 
+    pub fn release_vote_escrow(ctx: Context<ReleaseVoteEscrow>) -> Result<()> {
+        let request = &ctx.accounts.request;
+        let vote = &ctx.accounts.vote;
+        require!(
+            is_terminal(request.status),
+            CouncilError::RequestNotTerminal
+        );
+
+        let request_key = request.key();
+        let voter = vote.voter;
+        let escrow_amount = vote.escrow_amount;
+        let signer_seeds: &[&[&[u8]]] = &[&[
+            b"vote_escrow_authority",
+            request_key.as_ref(),
+            &[ctx.bumps.vote_escrow_authority],
+        ]];
+
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vote_escrow_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.voter_token_account.to_account_info(),
+                    authority: ctx.accounts.vote_escrow_authority.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            escrow_amount,
+            ctx.accounts.mint.decimals,
+        )?;
+
+        emit!(VoteEscrowReleased {
+            request: request_key,
+            voter,
+            escrow_amount,
+            vote_escrow_vault: ctx.accounts.vote_escrow_vault.key(),
+            voter_token_account: ctx.accounts.voter_token_account.key(),
+        });
+
+        Ok(())
+    }
+
 }
 
 #[derive(Accounts)]
@@ -328,6 +371,42 @@ pub struct ExecuteRequest<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+#[derive(Accounts)]
+pub struct ReleaseVoteEscrow<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub request: Account<'info, FundingRequest>,
+    #[account(
+        mut,
+        has_one = request,
+        close = voter
+    )]
+    pub vote: Account<'info, RequestVote>,
+    /// CHECK: PDA authority that owns the request-specific vote escrow vault.
+    #[account(
+        seeds = [b"vote_escrow_authority", request.key().as_ref()],
+        bump
+    )]
+    pub vote_escrow_authority: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = vote_escrow_authority
+    )]
+    pub vote_escrow_vault: InterfaceAccount<'info, TokenAccount>,
+    /// CHECK: Refund recipient is fixed by the recorded vote account.
+    #[account(mut, address = vote.voter)]
+    pub voter: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = voter
+    )]
+    pub voter_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct Candidate {
@@ -426,6 +505,15 @@ pub struct FundingRequestExecuted {
     pub recipient_token_account: Pubkey,
 }
 
+#[event]
+pub struct VoteEscrowReleased {
+    pub request: Pubkey,
+    pub voter: Pubkey,
+    pub escrow_amount: u64,
+    pub vote_escrow_vault: Pubkey,
+    pub voter_token_account: Pubkey,
+}
+
 #[error_code]
 pub enum CouncilError {
     #[msg("Funding request amount must be greater than zero.")]
@@ -446,10 +534,16 @@ pub enum CouncilError {
     UnauthorizedAuthority,
     #[msg("Configured council authority public key is invalid.")]
     InvalidAuthorityConfig,
+    #[msg("Vote escrow can only be released after a funding request is executed or rejected.")]
+    RequestNotTerminal,
 }
 
 fn is_accepted(status: u8) -> bool {
     status == RequestStatus::Accepted as u8
+}
+
+fn is_terminal(status: u8) -> bool {
+    status == RequestStatus::Executed as u8 || status == RequestStatus::Rejected as u8
 }
 
 fn minimum_voting_period_met(created_at: i64, now: i64) -> bool {
@@ -486,6 +580,22 @@ mod tests {
         assert!(!is_accepted(RequestStatus::Active as u8));
         assert!(!is_accepted(RequestStatus::Rejected as u8));
         assert!(!is_accepted(RequestStatus::Executed as u8));
+    }
+
+    #[test]
+    fn only_terminal_statuses_can_release_vote_escrow() {
+        assert!(!is_terminal(RequestStatus::Active as u8));
+        assert!(!is_terminal(RequestStatus::Accepted as u8));
+        assert!(is_terminal(RequestStatus::Rejected as u8));
+        assert!(is_terminal(RequestStatus::Executed as u8));
+    }
+
+    #[test]
+    fn request_status_values_remain_stable() {
+        assert_eq!(RequestStatus::Active as u8, 0);
+        assert_eq!(RequestStatus::Accepted as u8, 1);
+        assert_eq!(RequestStatus::Rejected as u8, 2);
+        assert_eq!(RequestStatus::Executed as u8, 3);
     }
 
     #[test]

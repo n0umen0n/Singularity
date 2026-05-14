@@ -27,6 +27,7 @@ import {
   quoteMissionTradeFromPostgres,
   refreshMissionMarketDataInPostgres,
   registerCouncilCandidateInPostgres,
+  releaseFundingRequestVoteEscrowInPostgres,
   updateProfileInPostgres,
   verifyAuthInPostgres,
   voteFundingRequestInPostgres,
@@ -705,6 +706,16 @@ export async function confirmFundingRequestExecution(requestId: string, input: {
     request.paidAt = new Date().toISOString();
 
     return { request };
+  });
+}
+
+export async function releaseFundingRequestVoteEscrow(requestId: string) {
+  if (storageMode() === "postgres") return releaseFundingRequestVoteEscrowInPostgres(requestId);
+
+  return updateState(async (state) => {
+    const { request } = findRequestOrThrow(state, requestId);
+    if (request.status !== "rejected" && !request.paid) throw new Error("Vote escrow can only be released after a request is rejected or paid.");
+    return { request, releases: [] };
   });
 }
 

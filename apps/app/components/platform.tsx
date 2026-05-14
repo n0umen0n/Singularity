@@ -1059,7 +1059,13 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
         try {
           const confirmed = await api.confirmFundingRequestExecution(request.id, { signature });
           setIsPaid(Boolean(confirmed.request.paid));
-          setStatus(`Execution submitted: ${shortAddress(signature)}`);
+          try {
+            const release = await api.releaseFundingRequestVoteEscrow(request.id);
+            const releasedCount = release.releases.filter((entry) => !entry.skipped).length;
+            setStatus(`Execution submitted: ${shortAddress(signature)}. Released vote escrow for ${releasedCount} voter${releasedCount === 1 ? "" : "s"}.`);
+          } catch {
+            setStatus(`Execution submitted: ${shortAddress(signature)}. Vote escrow release is pending.`);
+          }
         } catch {
           setStatus(`Execution submitted: ${shortAddress(signature)}. Payment confirmation is pending.`);
         }

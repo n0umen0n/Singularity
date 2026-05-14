@@ -239,6 +239,16 @@ export function confirmFundingRequestExecution(requestId: string, input: { signa
   });
 }
 
+export function releaseFundingRequestVoteEscrow(requestId: string) {
+  return api<{ request: FundingRequest; releases: Array<{ voter: string; signature?: string; skipped?: boolean; reason?: string }> }>(
+    `/api/funding-requests/${requestId}/release-vote-escrow`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
 export function registerCouncilCandidate(missionId: string) {
   return api<{ transaction: PreparedTransaction }>(`/api/council-candidates/register`, {
     method: "POST",

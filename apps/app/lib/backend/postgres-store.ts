@@ -27,6 +27,7 @@ import {
   submitBackendDammV2FeeDistribution,
   submitBackendMissionFeeDistribution,
   submitFinalizeEpochCouncilTransaction,
+  submitReleaseVoteEscrowTransaction,
 } from "@/lib/backend/transactions";
 import type { MissionSort } from "@/lib/backend/store";
 
@@ -2026,6 +2027,69 @@ export async function confirmFundingRequestExecutionInPostgres(requestId: string
 
   if (!result) throw new Error(`Funding request not found: ${requestId}`);
   return { request: rowToRequest(result) };
+}
+
+export async function releaseFundingRequestVoteEscrowInPostgres(requestId: string) {
+  const result = await query<
+    FundingRequestRow & {
+      request_pda: string | null;
+      token_mint: string | null;
+    }
+  >(
+    `
+      select
+        fr.*,
+        m.token_mint,
+        count(*) filter (where frv.vote = 'approve') as approvals,
+        count(*) filter (where frv.vote = 'reject') as rejections
+      from funding_requests fr
+      join missions m on m.id = fr.mission_id
+      left join funding_request_votes frv on frv.request_id = fr.id
+      where fr.id = $1
+      group by fr.id, m.token_mint
+    `,
+    [requestId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error(`Funding request not found: ${requestId}`);
+  await hydrateFundingRequestExecutionState([row]);
+  if (row.status !== "rejected" && !row.executed_at) throw new Error("Vote escrow can only be released after a request is rejected or paid.");
+  if (!row.token_mint) throw new Error("Mission token mint is unavailable. Refresh the mission and try again.");
+
+  const requestAccount = requestAccountForRow(row);
+  const votes = await query<{ voter_wallet: string }>("select voter_wallet from funding_request_votes where request_id = $1 order by created_at asc", [requestId]);
+  const releases: Array<{ voter: string; signature: string; skipped?: false } | { voter: string; skipped: true; reason: string }> = [];
+
+  for (const vote of votes.rows) {
+    try {
+      const release = await submitReleaseVoteEscrowTransaction({
+        requestAccount,
+        voter: vote.voter_wallet,
+        mint: row.token_mint,
+      });
+      releases.push({ voter: vote.voter_wallet, signature: release.signature });
+      await query(
+        `
+          insert into transactions (signature, wallet, mission_id, type, status)
+          values ($1, $2, $3, 'funding-request-vote-escrow-release', 'confirmed')
+          on conflict (signature) do nothing
+        `,
+        [release.signature, vote.voter_wallet, row.mission_id],
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Vote escrow release failed.";
+      if (/AccountNotFound|could not find account|custom program error: 0xbc4|already in use/i.test(message)) {
+        releases.push({ voter: vote.voter_wallet, skipped: true, reason: message });
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return {
+    request: rowToRequest(row),
+    releases,
+  };
 }
 
 export async function createAuthNonceInPostgres(address?: string) {
