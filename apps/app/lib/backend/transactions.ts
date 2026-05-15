@@ -1528,12 +1528,10 @@ export async function submitBackendMissionFeeDistribution(input: {
 
   const connection = new Connection(config.rpcUrl, "confirmed");
   const quoteMint = new PublicKey(process.env.SINGULARITY_USDC_MINT || MAINNET_USDC_MINT);
-  const quoteMintInfo = await getMint(connection, quoteMint, "confirmed", TOKEN_PROGRAM_ID);
   const creator = new PublicKey(input.creatorWallet);
   const platform = new PublicKey(platformWallet);
   const distributorTokenAccount = getAssociatedTokenAddressSync(quoteMint, distributor.publicKey, false, TOKEN_PROGRAM_ID);
-  const creatorTokenAccount = getAssociatedTokenAddressSync(quoteMint, creator, true, TOKEN_PROGRAM_ID);
-  const platformTokenAccount = getAssociatedTokenAddressSync(quoteMint, platform, true, TOKEN_PROGRAM_ID);
+  const beforeBalance = await tokenAccountBalance(connection, distributorTokenAccount, TOKEN_PROGRAM_ID);
 
   const claimInstructions = await meteoraDbcPartnerFeeClaimInstructions({
     rpcUrl: config.rpcUrl,
@@ -1550,7 +1548,8 @@ export async function submitBackendMissionFeeDistribution(input: {
     ...claimInstructions,
   );
   const claimSignature = await sendAndConfirmTransaction(connection, claimTransaction, [distributor], { commitment: "confirmed" });
-  const distributableAmount = await tokenAccountBalance(connection, distributorTokenAccount, TOKEN_PROGRAM_ID);
+  const afterBalance = await tokenAccountBalance(connection, distributorTokenAccount, TOKEN_PROGRAM_ID);
+  const distributableAmount = afterBalance > beforeBalance ? afterBalance - beforeBalance : 0n;
 
   if (distributableAmount <= 0n) {
     return {
@@ -1561,42 +1560,23 @@ export async function submitBackendMissionFeeDistribution(input: {
     };
   }
 
-  const creatorAmount = distributableAmount / 2n;
-  const platformAmount = distributableAmount - creatorAmount;
-  const distributionTransaction = new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, creatorTokenAccount, creator, quoteMint, TOKEN_PROGRAM_ID),
-    createAssociatedTokenAccountIdempotentInstruction(distributor.publicKey, platformTokenAccount, platform, quoteMint, TOKEN_PROGRAM_ID),
-    createTransferCheckedInstruction(
-      distributorTokenAccount,
-      quoteMint,
-      creatorTokenAccount,
-      distributor.publicKey,
-      creatorAmount,
-      quoteMintInfo.decimals,
-      [],
-      TOKEN_PROGRAM_ID,
-    ),
-    createTransferCheckedInstruction(
-      distributorTokenAccount,
-      quoteMint,
-      platformTokenAccount,
-      distributor.publicKey,
-      platformAmount,
-      quoteMintInfo.decimals,
-      [],
-      TOKEN_PROGRAM_ID,
-    ),
-  );
-  const distributionSignature = await sendAndConfirmTransaction(connection, distributionTransaction, [distributor], { commitment: "confirmed" });
+  const distribution = await distributeBackendUsdcFees({
+    connection,
+    distributor,
+    quoteMint,
+    creator,
+    platform,
+    amount: distributableAmount,
+  });
 
   return {
     status: "distributed" as const,
     missionId: input.missionId,
     claimSignature,
-    distributionSignature,
+    distributionSignature: distribution.distributionSignature,
     distributedAmount: distributableAmount.toString(),
-    creatorAmount: creatorAmount.toString(),
-    platformAmount: platformAmount.toString(),
+    creatorAmount: distribution.creatorAmount.toString(),
+    platformAmount: distribution.platformAmount.toString(),
   };
 }
 
