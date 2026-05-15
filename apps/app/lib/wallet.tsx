@@ -144,9 +144,9 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     },
   });
 
-  const walletAddress = sessionAddress
-    ? (wallets.find((entry) => entry.address === sessionAddress)?.address ?? sessionAddress)
-    : (wallets[0]?.address ?? null);
+  const connectedWalletAddress = wallets[0]?.address ?? null;
+  const sessionWallet = sessionAddress ? (wallets.find((entry) => entry.address === sessionAddress) ?? null) : null;
+  const walletAddress = sessionWallet?.address ?? connectedWalletAddress;
   const wallet = walletAddress ? (wallets.find((entry) => entry.address === walletAddress) ?? null) : null;
   const address = sessionAddress;
   const ready = privyReady && !restoringSession;
@@ -173,15 +173,15 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     };
   }, []);
 
-  const verifyWalletSession = useCallback(async () => {
+  const verifyWalletSession = useCallback(async (targetAddress = connectedWalletAddress) => {
     if (verifyingSession.current) return null;
-    if (!walletAddress) {
+    if (!targetAddress) {
       setStatus("Connect a Solana wallet in Privy to continue.");
       return null;
     }
-    if (sessionAddress === walletAddress) {
+    if (sessionAddress === targetAddress) {
       setPendingSessionVerification(false);
-      return walletAddress;
+      return targetAddress;
     }
 
     verifyingSession.current = true;
@@ -191,11 +191,11 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       const accessToken = await getAccessToken();
       if (!accessToken) throw new Error("Privy session is not ready. Please try signing in again.");
 
-      await postJson("/api/auth/privy", { address: walletAddress }, { authorization: `Bearer ${accessToken}` });
-      setSessionAddress(walletAddress);
+      await postJson("/api/auth/privy", { address: targetAddress }, { authorization: `Bearer ${accessToken}` });
+      setSessionAddress(targetAddress);
       setPendingSessionVerification(false);
       setStatus("Wallet verified.");
-      return walletAddress;
+      return targetAddress;
     } catch (error) {
       setPendingSessionVerification(false);
       setStatus(error instanceof Error ? error.message : "Wallet verification could not be completed. Please try again.");
@@ -203,17 +203,17 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     } finally {
       verifyingSession.current = false;
     }
-  }, [getAccessToken, sessionAddress, walletAddress]);
+  }, [connectedWalletAddress, getAccessToken, sessionAddress]);
 
   useEffect(() => {
     if (!pendingSessionVerification || !privyReady || !privyAuthenticated) return;
-    if (!walletAddress) {
+    if (!connectedWalletAddress) {
       setStatus("Finishing wallet connection...");
       return;
     }
 
-    void verifyWalletSession();
-  }, [pendingSessionVerification, privyAuthenticated, privyReady, verifyWalletSession, walletAddress]);
+    void verifyWalletSession(connectedWalletAddress);
+  }, [connectedWalletAddress, pendingSessionVerification, privyAuthenticated, privyReady, verifyWalletSession]);
 
   const signIn = useCallback(async () => {
     setStatus(null);
@@ -228,8 +228,8 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       return null;
     }
 
-    return verifyWalletSession();
-  }, [login, privyAuthenticated, privyReady, verifyWalletSession]);
+    return verifyWalletSession(connectedWalletAddress);
+  }, [connectedWalletAddress, login, privyAuthenticated, privyReady, verifyWalletSession]);
 
   const signOut = useCallback(async () => {
     await postJson("/api/auth/logout");
