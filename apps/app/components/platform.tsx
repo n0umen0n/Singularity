@@ -735,21 +735,18 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
   const userBalance = walletTokenBalance ?? mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
   const trackedBalance = Math.max(0, Math.floor(userBalance));
   const openCouncilSlots = Math.max(6 - mission.council.length, 0);
-  const candidateRank =
-    openCouncilSlots > 0
-      ? mission.council.length + 1
-      : mission.council.filter((member) => member.tokens > trackedBalance).length + 1;
+  const candidateRank = mission.council.filter((member) => member.tokens > trackedBalance).length + 1;
   const candidateRankLabel = mission.council.length === 0 ? "TOP 6" : `#${candidateRank}`;
   const candidateRankDetail =
     mission.council.length === 0
       ? ""
-      : openCouncilSlots > 0
-        ? `You'd be ranked #${candidateRank} because there ${openCouncilSlots === 1 ? "is" : "are"} still ${
-            openCouncilSlots
-          } free council ${openCouncilSlots === 1 ? "spot" : "spots"}.`
-        : candidateRank <= 6
-          ? "You would be in the current top 6 council."
-          : `Increase your ${mission.tokenSymbol} balance to reach the top 6.`;
+      : candidateRank <= 6
+        ? openCouncilSlots > 0
+          ? `You would be in the current top 6 council. There ${openCouncilSlots === 1 ? "is" : "are"} still ${
+              openCouncilSlots
+            } free council ${openCouncilSlots === 1 ? "spot" : "spots"}.`
+          : "You would be in the current top 6 council."
+        : `Increase your ${mission.tokenSymbol} balance to reach the top 6.`;
   const [isCandidateModalOpen, setIsCandidateModalOpen] = useState(false);
 
   useEffect(() => {
