@@ -14,7 +14,20 @@ import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/moc
 import { money, number, shortAddress } from "@/lib/format";
 import { useSingularityWallet } from "@/lib/wallet";
 
-type CropKind = "mission" | "token";
+type CropKind = "mission" | "token" | "avatar";
+
+function circleImageCropRequest(kind: Extract<CropKind, "token" | "avatar">, label: string, sourceUrl: string, file: File): CropRequest {
+  return {
+    kind,
+    label,
+    sourceUrl,
+    file,
+    aspectRatio: 1,
+    outputWidth: 800,
+    outputHeight: 800,
+    shape: "circle",
+  };
+}
 
 type CropRequest = {
   kind: CropKind;
@@ -370,7 +383,7 @@ function CouncilMemberFlipCard({
           <div>
             <h3>{member.name}</h3>
             <p>
-              {member.tokens > 0 ? `${number(member.tokens, true)} ${symbol}` : "Registered candidate"}
+              {`${number(member.tokens, true)} ${symbol}`}
             </p>
           </div>
         </article>
@@ -1839,16 +1852,20 @@ export function LaunchMissionPage() {
     requests: [],
   };
   const openCropper = (kind: CropKind, url: string, file: File) => {
-    setCropRequest({
-      kind,
-      label: kind === "mission" ? "Crop mission image" : "Crop token image",
-      sourceUrl: url,
-      file,
-      aspectRatio: kind === "mission" ? 16 / 10 : 1,
-      outputWidth: kind === "mission" ? 1600 : 800,
-      outputHeight: kind === "mission" ? 1000 : 800,
-      shape: kind === "mission" ? "rect" : "circle",
-    });
+    if (kind === "mission") {
+      setCropRequest({
+        kind,
+        label: "Crop mission image",
+        sourceUrl: url,
+        file,
+        aspectRatio: 16 / 10,
+        outputWidth: 1600,
+        outputHeight: 1000,
+        shape: "rect",
+      });
+      return;
+    }
+    setCropRequest(circleImageCropRequest(kind, kind === "token" ? "Crop token image" : "Crop profile image", url, file));
   };
   const applyCroppedImage = ({ url, file, kind }: { url: string; file: File; kind: CropKind }) => {
     if (kind === "mission") {
@@ -2405,10 +2422,6 @@ function profileDraftFromProfile(profile: api.Profile) {
   };
 }
 
-function profileInitial(profile: api.Profile) {
-  return (profile.name || profile.address || "S").slice(0, 1).toUpperCase();
-}
-
 function socialHref(kind: "x" | "telegram" | "github", value: string) {
   const entry = value.trim();
   if (!entry) return "";
@@ -2441,11 +2454,18 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [cropRequest, setCropRequest] = useState<CropRequest | null>(null);
+  const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
   const [draft, setDraft] = useState(() => (initialProfile ? profileDraftFromProfile(initialProfile) : { name: "", description: "", avatar: "", x: "", telegram: "", github: "" }));
   const [requestFilter, setRequestFilter] = useState<"submitted" | "council">("submitted");
   const targetAddress = address || wallet.address;
   const loadedProfileAddress = useRef(initialProfile?.address.toLowerCase() ?? null);
+
+  useEffect(() => {
+    setModalRoot(document.body);
+  }, []);
+
   useEffect(() => {
     if (!targetAddress) return;
     if (loadedProfileAddress.current === targetAddress.toLowerCase()) return;
@@ -2502,8 +2522,8 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
   const submittedRequests = profile.submittedRequests || [];
   const councilRequests = profile.councilRequests || [];
   const visibleRequests = requestFilter === "submitted" ? submittedRequests : councilRequests;
-  const displayName = profile.name || "Unnamed profile";
-  const description = profile.description || "Add a short description about yourself.";
+  const displayName = profile.name.trim() ? profile.name : shortAddress(profile.address);
+  const description = profile.description || "Add a short description about yourself";
   const isOwnProfile = Boolean(wallet.address && profile.address.toLowerCase() === wallet.address.toLowerCase());
   const isEditingOwnProfile = isOwnProfile && editing;
   const saveProfile = async () => {
@@ -2525,9 +2545,14 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
       setSaving(false);
     }
   };
-  const uploadAvatar = async (event: ChangeEvent<HTMLInputElement>) => {
+  const openAvatarCropper = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
+    setCropRequest(circleImageCropRequest("avatar", "Crop profile image", URL.createObjectURL(file), file));
+  };
+  const applyCroppedAvatar = async ({ url, file }: { url: string; file: File; kind: CropKind }) => {
+    setCropRequest(null);
     try {
       setUploading(true);
       setStatus(null);
@@ -2538,7 +2563,7 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
       setStatus(error instanceof Error ? error.message : "Profile image upload failed.");
     } finally {
       setUploading(false);
-      event.target.value = "";
+      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
     }
   };
   const copyAddress = async () => {
@@ -2566,13 +2591,17 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
         <GlassCard className={cx("profile-hero", isEditingOwnProfile && "profile-hero-editing")}>
           <div className="profile-avatar-column">
             <span className="avatar profile-avatar">
-              {(isEditingOwnProfile ? draft.avatar : profile.avatar) ? <img src={isEditingOwnProfile ? draft.avatar : profile.avatar} alt="" decoding="async" loading="eager" /> : <span>{profileInitial(profile)}</span>}
+              {(isEditingOwnProfile ? draft.avatar : profile.avatar) ? (
+                <img src={isEditingOwnProfile ? draft.avatar : profile.avatar} alt="" decoding="async" loading="eager" />
+              ) : (
+                <img src={dicebearPersonaAvatar(profile.address)} alt="" decoding="async" loading="eager" />
+              )}
             </span>
             {isEditingOwnProfile ? (
               <label className="button profile-upload-button">
                 <Upload size={15} />
                 {uploading ? "Uploading..." : "Upload image"}
-                <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => void uploadAvatar(event)} />
+                <input type="file" accept="image/*" onChange={openAvatarCropper} />
               </label>
             ) : null}
           </div>
@@ -2585,7 +2614,7 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
                 </label>
                 <label>
                   <span className="form-label">About you</span>
-                  <textarea className="textarea profile-textarea" maxLength={FIELD_LIMITS.profileDescription} placeholder="Add a short description about yourself." value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
+                  <textarea className="textarea profile-textarea" maxLength={FIELD_LIMITS.profileDescription} placeholder="Add a short description about yourself" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
                 </label>
                 <div className="profile-social-fields">
                   <label>
@@ -2653,6 +2682,20 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
             </div>
           ) : null}
         </GlassCard>
+        {modalRoot && cropRequest
+          ? createPortal(
+              <ImageCropper
+                request={cropRequest}
+                onCancel={() => {
+                  URL.revokeObjectURL(cropRequest.sourceUrl);
+                  setCropRequest(null);
+                }}
+                onCropped={({ url, file }) => void applyCroppedAvatar({ url, file, kind: cropRequest.kind })}
+                onError={(message) => setStatus(message)}
+              />,
+              modalRoot,
+            )
+          : null}
         <GlassCard className="section-card">
           <div className="section-heading">
             <h2>Balances</h2>

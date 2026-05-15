@@ -2330,6 +2330,10 @@ textarea {
   gap: 0.7rem;
 }
 
+.profile-avatar-column {
+  align-items: center;
+}
+
 .profile-actions {
   align-items: stretch;
 }
@@ -2381,6 +2385,10 @@ textarea {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.8rem;
+}
+
+.profile-edit-form + .wallet-copy-button {
+  margin-top: 0.85rem;
 }
 
 .placeholder-copy,
