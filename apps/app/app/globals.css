@@ -1763,6 +1763,58 @@ textarea {
   gap: 0.35rem;
 }
 
+.council-loading-card {
+  gap: 1.15rem;
+}
+
+.council-loading-avatar,
+.council-loading-copy span {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(255, 247, 237, 0.06), rgba(255, 247, 237, 0.16), rgba(255, 247, 237, 0.06)),
+    rgba(255, 247, 237, 0.05);
+  background-size: 220% 100%;
+  animation: council-loading-shimmer 1.35s ease-in-out infinite;
+}
+
+.council-loading-avatar {
+  display: inline-block;
+  border-color: rgba(255, 247, 237, 0.14);
+}
+
+.council-loading-copy {
+  display: grid;
+  width: min(170px, 80%);
+  gap: 0.65rem;
+  justify-items: center;
+}
+
+.council-loading-copy span {
+  display: block;
+  height: 18px;
+  border-radius: 999px;
+}
+
+.council-loading-copy span:first-child {
+  width: 72%;
+}
+
+.council-loading-copy span:last-child {
+  width: 52%;
+  opacity: 0.72;
+}
+
+@keyframes council-loading-shimmer {
+  0% {
+    background-position: 140% 0;
+  }
+
+  100% {
+    background-position: -80% 0;
+  }
+}
+
 .flip-profile-card h3 {
   margin: 0;
   font-size: 1.45rem;

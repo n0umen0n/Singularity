@@ -441,6 +441,19 @@ function CouncilPlaceholderCard({ index }: { index: number }) {
   );
 }
 
+function CouncilLoadingCard({ index }: { index: number }) {
+  return (
+    <article className="glass-card flip-profile-card council-loading-card" aria-label={`Loading council slot ${index + 1}`}>
+      <StatusPill>#{index + 1}</StatusPill>
+      <span className="flip-profile-avatar council-loading-avatar" aria-hidden="true" />
+      <div className="council-loading-copy" aria-hidden="true">
+        <span />
+        <span />
+      </div>
+    </article>
+  );
+}
+
 const defaultMissionImage = "https://images.unsplash.com/photo-1614728894747-a83421e2b9c9?auto=format&fit=crop&w=1400&q=85";
 const defaultTokenImage = "https://images.unsplash.com/photo-1614728263952-84ea256f9679?auto=format&fit=crop&w=300&q=80";
 const previewPerformance: Mission["performance"] = {
@@ -708,6 +721,17 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
   const [walletTokenBalance, setWalletTokenBalance] = useState<number | null>(null);
   const [walletProfile, setWalletProfile] = useState<api.Profile | null>(null);
   const [councilProfiles, setCouncilProfiles] = useState<Record<string, api.Profile>>({});
+  const [councilTokenBalances, setCouncilTokenBalances] = useState<Record<string, number>>({});
+  const [loadedCouncilDetailsKey, setLoadedCouncilDetailsKey] = useState<string | null>(null);
+  const councilAddresses = useMemo(
+    () => Array.from(new Set(mission.council.map((member) => member.address).filter(Boolean))),
+    [mission.council],
+  );
+  const councilDetailsKey = useMemo(
+    () => `${mission.id}:${councilAddresses.map((address) => address.toLowerCase()).join("|")}`,
+    [councilAddresses, mission.id],
+  );
+  const councilDetailsLoading = councilAddresses.length > 0 && loadedCouncilDetailsKey !== councilDetailsKey;
   const userBalance = walletTokenBalance ?? mission.council.find((entry) => entry.address === wallet.address)?.tokens ?? 0;
   const trackedBalance = Math.max(0, Math.floor(userBalance));
   const openCouncilSlots = Math.max(6 - mission.council.length, 0);
@@ -775,44 +799,61 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
   }, [wallet.address]);
 
   useEffect(() => {
-    const addresses = Array.from(new Set(mission.council.map((member) => member.address))).filter(Boolean);
-    if (addresses.length === 0) {
+    if (councilAddresses.length === 0) {
       setCouncilProfiles({});
+      setCouncilTokenBalances({});
+      setLoadedCouncilDetailsKey(null);
+      return;
+    }
+    if (loadedCouncilDetailsKey === councilDetailsKey) {
       return;
     }
 
     let alive = true;
-    Promise.all(
-      addresses.map((address) =>
+    Promise.all([
+      Promise.all(councilAddresses.map((address) =>
         api
           .getProfile(address, { summary: true })
           .then(({ profile }) => [address.toLowerCase(), profile] as const)
           .catch(() => null),
-      ),
-    ).then((entries) => {
+      )),
+      Promise.all(councilAddresses.map((address) =>
+        api
+          .getMissionBalances(mission.id, address)
+          .then((balances) => [address.toLowerCase(), balances.missionToken] as const)
+          .catch(() => null),
+      )),
+    ]).then(([profileEntries, balanceEntries]) => {
       if (!alive) return;
       setCouncilProfiles(
-        Object.fromEntries(entries.filter((entry): entry is readonly [string, api.Profile] => Boolean(entry))),
+        Object.fromEntries(profileEntries.filter((entry): entry is readonly [string, api.Profile] => Boolean(entry))),
       );
+      setCouncilTokenBalances(
+        Object.fromEntries(balanceEntries.filter((entry): entry is readonly [string, number] => Boolean(entry))),
+      );
+      setLoadedCouncilDetailsKey(councilDetailsKey);
     });
 
     return () => {
       alive = false;
     };
-  }, [mission.council]);
+  }, [councilAddresses, councilDetailsKey, loadedCouncilDetailsKey, mission.id]);
 
   const displayedCouncil = useMemo(() => {
     const members = mission.council.map((member) => {
-      const profile = councilProfiles[member.address.toLowerCase()];
-      const isWalletMember = wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase();
+      const normalizedAddress = member.address.toLowerCase();
+      const profile = councilProfiles[normalizedAddress];
+      const liveBalance = councilTokenBalances[normalizedAddress];
+      const isWalletMember = wallet.address && normalizedAddress === wallet.address.toLowerCase();
       const displayProfile = isWalletMember ? (walletProfile ?? profile) : profile;
+      const tokens = liveBalance ?? (isWalletMember && trackedBalance > 0 ? trackedBalance : member.tokens);
 
       return {
         ...member,
         name: isWalletMember ? "You" : displayProfile?.name || member.name,
         avatar: displayProfile?.avatar || member.avatar,
         description: displayProfile ? displayProfile.description || undefined : member.description,
-        tokens: isWalletMember && trackedBalance > 0 ? trackedBalance : member.tokens,
+        tokens,
       };
     });
     const registeredAddress = registeredCandidateAddress || wallet.address;
@@ -834,7 +875,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     return members
       .sort((left, right) => right.tokens - left.tokens)
       .slice(0, 6);
-  }, [councilProfiles, mission.council, mission.id, registeredCandidateAddress, trackedBalance, wallet.address, walletProfile]);
+  }, [councilProfiles, councilTokenBalances, mission.council, mission.id, registeredCandidateAddress, trackedBalance, wallet.address, walletProfile]);
 
   const councilSlots = useMemo<Array<Investor | null>>(
     () => Array.from({ length: 6 }, (_, index) => displayedCouncil[index] ?? null),
@@ -974,8 +1015,10 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
         <p className="stat-note">{status}</p>
       ) : null}
       <div className="council-grid">
-        {councilSlots.map((member, index) => (
-          member ? (
+        {councilDetailsLoading ? (
+          Array.from({ length: 6 }, (_, index) => <CouncilLoadingCard index={index} key={`council-loading-${index}`} />)
+        ) : (
+          councilSlots.map((member, index) => member ? (
             <CouncilMemberFlipCard
               index={index}
               isCurrentUser={Boolean(wallet.address && member.address.toLowerCase() === wallet.address.toLowerCase())}
@@ -986,8 +1029,8 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
             />
           ) : (
             <CouncilPlaceholderCard index={index} key={`placeholder-${index}`} />
-          )
-        ))}
+          ))
+        )}
       </div>
       {modalRoot && candidateModal ? createPortal(candidateModal, modalRoot) : null}
     </GlassCard>
