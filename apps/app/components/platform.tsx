@@ -918,6 +918,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
             {candidateRankDetail ? <small>{candidateRankDetail}</small> : null}
           </div>
         </div>
+        {status ? <p className="stat-note">{status}</p> : null}
         <div className="modal-actions">
           <button className="button" type="button" onClick={() => setIsCandidateModalOpen(false)}>
             Cancel
@@ -942,14 +943,21 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
         </div>
         <div className="council-actions">
           <StatusPill tone="council">4/6 approvals required to access treasury</StatusPill>
-          <button className="button button-primary" disabled={isRegisteredCandidate} onClick={() => setIsCandidateModalOpen(true)}>
+          <button
+            className="button button-primary"
+            disabled={isRegisteredCandidate}
+            onClick={() => {
+              setStatus(null);
+              setIsCandidateModalOpen(true);
+            }}
+          >
             {isRegisteredCandidate ? "Registered" : wallet.address ? "Register" : "Sign in to register"}
           </button>
         </div>
       </div>
       {registrationSucceeded ? (
         <p className="stat-note">Success <InlineSuccess /></p>
-      ) : status ? (
+      ) : status && !isCandidateModalOpen ? (
         <p className="stat-note">{status}</p>
       ) : null}
       <div className="council-grid">
