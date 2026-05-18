@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type pg from "pg";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, getMint, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
-import { DEFAULT_COUNCIL_PROGRAM_ID, DEFAULT_DBC_TOTAL_SUPPLY, DEFAULT_REGISTRY_PROGRAM_ID, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
+import { DEFAULT_COUNCIL_PROGRAM_ID, DEFAULT_DBC_TOTAL_SUPPLY, DEFAULT_REGISTRY_PROGRAM_ID, requireProgramConfig, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
 import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
@@ -22,12 +22,14 @@ import {
   prepareMeteoraDbcTradeTransaction,
   prepareMissionMarketGraduationTransaction,
   prepareMissionTreasuryAllocationClaimTransaction,
+  prepareReleaseVoteEscrowTransaction,
   prepareMissionGraduationTransaction,
   recoverDammV2FeePositions,
   submitBackendDammV2FeeDistribution,
   submitBackendMissionFeeDistribution,
   submitFinalizeEpochCouncilTransaction,
   submitReleaseVoteEscrowTransaction,
+  voteEscrowPositionAddress,
 } from "@/lib/backend/transactions";
 import type { MissionSort } from "@/lib/backend/store";
 
@@ -109,6 +111,7 @@ type EscrowedBalanceRow = {
   mission_id: string;
   voter_wallet: string;
   escrowed_base_units: string;
+  locked_until: string | null;
 };
 
 type PricePointRow = {
@@ -251,6 +254,27 @@ async function assertSuccessfulOnchainTransaction(signature: string) {
   throw new Error("The on-chain transaction could not be verified. No changes were saved.");
 }
 
+const REQUEST_VOTE_APPROVE_OFFSET = 8 + 32 + 32;
+
+async function assertOnchainFundingRequestVote(requestAccount: string, voter: string, vote: "approve" | "reject") {
+  const url = rpcUrl();
+  if (!url) throw new Error("Solana RPC is required to verify the vote before saving data.");
+  const account = votePda(requestAccount, voter);
+  const connection = new Connection(url, "confirmed");
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const info = await connection.getAccountInfo(account, "confirmed");
+    if (info) {
+      const onchainVote = info.data[REQUEST_VOTE_APPROVE_OFFSET] === 1 ? "approve" : "reject";
+      if (onchainVote !== vote) throw new Error("The confirmed on-chain vote does not match the submitted vote. No changes were saved.");
+      return;
+    }
+    await wait(500);
+  }
+
+  throw new Error("The on-chain vote could not be verified. No changes were saved.");
+}
+
 function configuredAddressSet(value?: string) {
   return new Set(
     (value || "")
@@ -320,30 +344,45 @@ function tokenAccountAmountToNumber(amount: string, decimals: number) {
   return Number(amount) / 10 ** decimals;
 }
 
+type EscrowedVoteBalance = {
+  amount: bigint;
+  lockedUntil: string | null;
+};
+
 async function escrowedVoteBalancesByMission(missionIds: string[], client?: Queryable) {
-  if (missionIds.length === 0) return new Map<string, Map<string, bigint>>();
+  if (missionIds.length === 0) return new Map<string, Map<string, EscrowedVoteBalance>>();
 
   const result = await (client || { query }).query<EscrowedBalanceRow>(
     `
       select
         fr.mission_id,
         frv.voter_wallet,
-        max(coalesce((ec.escrow_amounts ->> (member_wallet.ordinality::int - 1))::numeric, 0))::numeric(40, 0) as escrowed_base_units
+        max(coalesce((ec.escrow_amounts ->> (member_wallet.ordinality::int - 1))::numeric, 0))::numeric(40, 0) as escrowed_base_units,
+        max(frv.created_at + interval '3 minutes') as locked_until
       from funding_request_votes frv
       join funding_requests fr on fr.id = frv.request_id
       join epoch_councils ec on ec.mission_id = fr.mission_id and ec.epoch_number = fr.epoch_number
+      left join transactions release_tx
+        on release_tx.mission_id = fr.mission_id
+        and lower(release_tx.wallet) = lower(frv.voter_wallet)
+        and release_tx.type = 'funding-request-vote-escrow-release'
+        and release_tx.status = 'confirmed'
+        and release_tx.created_at >= frv.created_at + interval '3 minutes'
       join jsonb_array_elements_text(ec.member_wallets) with ordinality as member_wallet(wallet, ordinality)
         on lower(member_wallet.wallet) = lower(frv.voter_wallet)
       where fr.mission_id = any($1::text[])
-        and coalesce(frv.escrow_locked_until, frv.created_at + interval '3 days') > now()
+        and release_tx.signature is null
       group by fr.mission_id, frv.voter_wallet
     `,
     [missionIds],
   );
-  const byMission = new Map<string, Map<string, bigint>>();
+  const byMission = new Map<string, Map<string, EscrowedVoteBalance>>();
   for (const row of result.rows) {
-    const missionMap = byMission.get(row.mission_id) || new Map<string, bigint>();
-    missionMap.set(row.voter_wallet.toLowerCase(), BigInt(row.escrowed_base_units || "0"));
+    const missionMap = byMission.get(row.mission_id) || new Map<string, EscrowedVoteBalance>();
+    missionMap.set(row.voter_wallet.toLowerCase(), {
+      amount: BigInt(row.escrowed_base_units || "0"),
+      lockedUntil: row.locked_until,
+    });
     byMission.set(row.mission_id, missionMap);
   }
 
@@ -369,6 +408,15 @@ function epochCouncilPda(mission: PublicKey, epoch: number) {
   epochBuffer.writeBigUInt64LE(BigInt(epoch));
   const [address] = PublicKey.findProgramAddressSync(
     [Buffer.from("epoch_council"), mission.toBuffer(), epochBuffer],
+    new PublicKey(process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID),
+  );
+
+  return address;
+}
+
+function votePda(request: string, voter: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("vote"), new PublicKey(request).toBuffer(), new PublicKey(voter).toBuffer()],
     new PublicKey(process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID),
   );
 
@@ -441,6 +489,24 @@ function requestAccountForRow(row: FundingRequestRow) {
       metadataHash: row.metadata_hash,
     })
   );
+}
+
+async function getFundingRequestRow(requestId: string) {
+  const result = await query<FundingRequestRow>(
+    `
+      select
+        fr.*,
+        count(*) filter (where frv.vote = 'approve') as approvals,
+        count(*) filter (where frv.vote = 'reject') as rejections
+      from funding_requests fr
+      left join funding_request_votes frv on frv.request_id = fr.id
+      where fr.id = $1
+      group by fr.id
+    `,
+    [requestId],
+  );
+
+  return result.rows[0] || null;
 }
 
 function executedAtFromFundingRequestAccount(data: Buffer) {
@@ -544,7 +610,7 @@ async function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandid
   const totalSupply = num(row.total_supply);
   const merged = [...(row.council_json || [])];
   const escrowedByMission = await escrowedVoteBalancesByMission([row.id], client);
-  const missionEscrowed = escrowedByMission.get(row.id) || new Map<string, bigint>();
+  const missionEscrowed = escrowedByMission.get(row.id) || new Map<string, EscrowedVoteBalance>();
   const decimals = row.token_mint ? await getMintDecimals(row.token_mint) : null;
   const divisor = decimals === null ? 1 : 10 ** decimals;
 
@@ -569,7 +635,7 @@ async function candidateRowsToCouncil(row: MissionRow, candidates: CouncilCandid
   }
 
   const escrowAdjusted = merged.map((member) => {
-    const escrowedBaseUnits = missionEscrowed.get(member.address.toLowerCase()) || 0n;
+    const escrowedBaseUnits = missionEscrowed.get(member.address.toLowerCase())?.amount || 0n;
     const escrowedTokens = tokenAccountAmountToNumber(escrowedBaseUnits.toString(), decimals ?? 0);
     const liquidTokens = Math.max(member.tokens - (member.escrowedTokens || 0), 0);
     const totalTokens = liquidTokens + escrowedTokens;
@@ -651,14 +717,17 @@ async function refreshMissionCouncilFromTopHoldersInPostgres(mission: Mission, c
     getAssociatedTokenAddressSync(mint, new PublicKey(entry.owner), false, TOKEN_2022_PROGRAM_ID),
   );
   const ataInfos = ownerAtas.length ? await connection.getMultipleAccountsInfo(ownerAtas, "confirmed") : [];
+  const escrowedByMission = await escrowedVoteBalancesByMission([mission.id], client);
+  const missionEscrowed = escrowedByMission.get(mission.id) || new Map<string, EscrowedVoteBalance>();
   const balanced = candidateOwners.map((entry, index) => {
     const info = ataInfos[index];
-    let amount = 0n;
+    let liquidAmount = 0n;
     if (info && info.data.length >= 72) {
       // Token-2022 account: mint(32) + owner(32) + amount(8) starting at offset 64.
-      amount = info.data.readBigUInt64LE(64);
+      liquidAmount = info.data.readBigUInt64LE(64);
     }
-    return { owner: entry.owner, amount, decimals };
+    const escrowedAmount = missionEscrowed.get(entry.owner.toLowerCase())?.amount || 0n;
+    return { owner: entry.owner, amount: liquidAmount + escrowedAmount, liquidAmount, escrowedAmount, decimals };
   });
 
   // 3. Drop zero-balance candidates (the on-chain program rejects votes whose escrow_amount == 0)
@@ -668,9 +737,10 @@ async function refreshMissionCouncilFromTopHoldersInPostgres(mission: Mission, c
     .sort((a, b) => (a.amount === b.amount ? a.owner.localeCompare(b.owner) : a.amount > b.amount ? -1 : 1));
   const top6 = ranked.slice(0, 6);
   if (top6.length < 6) {
+    const symbol = mission.tokenSymbol || "mission-token";
     throw new Error(
-      `This mission has only ${top6.length} registered candidate${top6.length === 1 ? "" : "s"} with a non-zero GF balance. ` +
-        "At least 6 are required before a treasury council can be finalized. Ask more top holders to register and hold mission tokens.",
+      `This mission has only ${top6.length} registered candidate${top6.length === 1 ? "" : "s"} with a non-zero ${symbol} position. ` +
+        `At least 6 are required before a treasury council can be finalized. Ask more top holders to register and hold ${symbol}.`,
     );
   }
 
@@ -1199,15 +1269,20 @@ export async function getProfileFromPostgres(address: string, options: { include
 
   const allMissions = await listMissionsFromPostgres({ sort: "highest-liquidity", includeDetails: true });
   const balances = await walletBalances(normalizedAddress, allMissions);
+  const escrowedByMission = await escrowedVoteBalancesByMission(allMissions.map((mission) => mission.id));
+  const tokenBalances = balances.tokenBalances.map((entry) => {
+    const escrow = escrowedByMission.get(entry.missionId)?.get(normalizedAddress.toLowerCase());
+    return {
+      ...entry,
+      escrowedUnlocksAt: escrow?.lockedUntil || null,
+      mission: allMissions.find((mission) => mission.id === entry.missionId) ?? null,
+    };
+  });
 
   if (!row) {
-    return { ...emptyProfile(normalizedAddress), ...balances };
+    return { ...emptyProfile(normalizedAddress), balances: balances.balances, tokenBalances };
   }
 
-  const tokenBalances = balances.tokenBalances.map((entry) => ({
-    ...entry,
-    mission: allMissions.find((mission) => mission.id === entry.missionId) ?? null,
-  }));
   const createdMissions = row.created_missions.map((entry) => ({
     ...entry,
     mission: allMissions.find((mission) => mission.id === entry.missionId) ?? null,
@@ -1958,27 +2033,90 @@ export async function voteFundingRequestInPostgres(requestId: string, input: { w
   if (input.vote !== "approve" && input.vote !== "reject") throw new Error("Choose approve or reject before submitting your vote.");
   const vote = input.vote;
 
+  const existing = await query<{
+    request_status: RequestStatus;
+    existing_vote: "approve" | "reject" | null;
+    request_pda: string | null;
+    mission_id: string;
+    metadata_hash: string;
+    token_mint: string | null;
+    epoch_number: number | null;
+  }>(
+    `
+      select
+        fr.status as request_status,
+        frv.vote as existing_vote,
+        fr.request_pda,
+        fr.mission_id,
+        fr.metadata_hash,
+        fr.epoch_number,
+        m.token_mint
+      from funding_requests fr
+      join missions m on m.id = fr.mission_id
+      left join funding_request_votes frv
+        on frv.request_id = fr.id
+        and lower(frv.voter_wallet) = lower($2)
+      where fr.id = $1
+    `,
+    [requestId, wallet],
+  );
+  const current = existing.rows[0];
+  if (!current) throw new Error("This funding request could not be found. Refresh the page and try again.");
+  if (current.existing_vote) {
+    const previousVote = current.existing_vote === "approve" ? "approved" : "rejected";
+    throw new Error(`You already ${previousVote} this funding request. Each council wallet can vote only once.`);
+  }
+  if (current.request_status !== "active") {
+    throw new Error(`This funding request is already ${current.request_status}. Only active requests can receive votes.`);
+  }
+
+  // Fall back to recomputing the request PDA if it wasn't persisted yet (legacy rows).
+  const requestAccount =
+    current.request_pda ||
+    fundingRequestPda({
+      registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+      councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+      missionId: current.mission_id,
+      metadataHash: current.metadata_hash,
+    });
+  const transaction = await prepareCouncilVoteTransaction({
+    wallet,
+    missionId: current.mission_id,
+    requestId,
+    vote,
+    requestAccount,
+    mint: current.token_mint,
+    epoch: Number(current.epoch_number ?? 1),
+  });
+  return {
+    request: rowToRequest((await getFundingRequestRow(requestId))!),
+    transaction,
+  };
+}
+
+export async function confirmFundingRequestVoteInPostgres(requestId: string, input: { wallet?: string; vote?: "approve" | "reject"; signature?: string }) {
+  const wallet = input.wallet || currentUser.address;
+  const vote = input.vote;
+  if (vote !== "approve" && vote !== "reject") throw new Error("Choose approve or reject before submitting your vote.");
+  if (!input.signature) throw new Error("signature is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
+
   return transaction(async (client) => {
     const existing = await client.query<{
       request_status: RequestStatus;
       existing_vote: "approve" | "reject" | null;
       request_pda: string | null;
-      mission_id: string;
       metadata_hash: string;
-      token_mint: string | null;
-      epoch_number: number | null;
+      mission_id: string;
     }>(
       `
         select
           fr.status as request_status,
           frv.vote as existing_vote,
           fr.request_pda,
-          fr.mission_id,
           fr.metadata_hash,
-          fr.epoch_number,
-          m.token_mint
+          fr.mission_id
         from funding_requests fr
-        join missions m on m.id = fr.mission_id
         left join funding_request_votes frv
           on frv.request_id = fr.id
           and lower(frv.voter_wallet) = lower($2)
@@ -1995,11 +2133,20 @@ export async function voteFundingRequestInPostgres(requestId: string, input: { w
     if (current.request_status !== "active") {
       throw new Error(`This funding request is already ${current.request_status}. Only active requests can receive votes.`);
     }
+    const requestAccount =
+      current.request_pda ||
+      fundingRequestPda({
+        registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
+        councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
+        missionId: current.mission_id,
+        metadataHash: current.metadata_hash,
+      });
+    await assertOnchainFundingRequestVote(requestAccount, wallet, vote);
 
     await client.query(
       `
         insert into funding_request_votes (request_id, voter_wallet, vote, escrow_locked_until)
-        values ($1, $2, $3, now() + interval '3 days')
+        values ($1, $2, $3, now() + interval '3 minutes')
       `,
       [requestId, wallet, vote],
     );
@@ -2024,28 +2171,17 @@ export async function voteFundingRequestInPostgres(requestId: string, input: { w
       `,
       [requestId, status, approvals, rejections],
     );
-
-    // Fall back to recomputing the request PDA if it wasn't persisted yet (legacy rows).
-    const requestAccount =
-      current.request_pda ||
-      fundingRequestPda({
-        registryProgramId: process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID,
-        councilProgramId: process.env.SINGULARITY_COUNCIL_PROGRAM_ID || DEFAULT_COUNCIL_PROGRAM_ID,
-        missionId: current.mission_id,
-        metadataHash: current.metadata_hash,
-      });
+    await client.query(
+      `
+        insert into transactions (signature, wallet, mission_id, type, status)
+        values ($1, $2, $3, 'funding-request-vote', 'confirmed')
+        on conflict (signature) do nothing
+      `,
+      [input.signature, wallet, current.mission_id],
+    );
 
     return {
       request: rowToRequest(result.rows[0]),
-      transaction: await prepareCouncilVoteTransaction({
-        wallet,
-        missionId: current.mission_id,
-        requestId,
-        vote,
-        requestAccount,
-        mint: current.token_mint,
-        epoch: Number(current.epoch_number ?? 1),
-      }),
     };
   });
 }
@@ -2161,7 +2297,58 @@ export async function confirmFundingRequestExecutionInPostgres(requestId: string
   return { request: rowToRequest(result) };
 }
 
+export async function prepareVoteEscrowWithdrawalInPostgres(missionId: string, input: { wallet?: string }) {
+  const wallet = input.wallet || currentUser.address;
+  const result = await query<{ id: string; token_mint: string | null }>(
+    "select id, token_mint from missions where id = $1 limit 1",
+    [missionId],
+  );
+  const mission = result.rows[0];
+  if (!mission) throw new Error(`Mission not found: ${missionId}`);
+  if (!mission.token_mint) throw new Error("Mission token mint is unavailable. Refresh your profile and try again.");
+
+  const escrowed = await escrowedVoteBalancesByMission([missionId]);
+  const escrow = escrowed.get(missionId)?.get(wallet.toLowerCase());
+  if (!escrow || escrow.amount <= 0n) throw new Error("No vote escrow is available to withdraw for this mission.");
+  const config = requireProgramConfig(process.env);
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const voteEscrowPosition = await voteEscrowPositionAddress({ missionId, voter: wallet });
+  const escrowPositionAccount = await connection.getAccountInfo(new PublicKey(voteEscrowPosition));
+  if (!escrowPositionAccount) {
+    throw new Error("This escrow was recorded before the on-chain escrow position was initialized. Submit a fresh approval after this fix, then test withdrawal again.");
+  }
+
+  return {
+    transaction: await prepareReleaseVoteEscrowTransaction({
+      wallet,
+      missionId,
+      mint: mission.token_mint,
+    }),
+  };
+}
+
+export async function confirmVoteEscrowWithdrawalInPostgres(missionId: string, input: { wallet?: string; signature?: string }) {
+  const wallet = input.wallet || currentUser.address;
+  if (!input.signature) throw new Error("signature is required.");
+  await assertSuccessfulOnchainTransaction(input.signature);
+  await query(
+    `
+      insert into transactions (signature, wallet, mission_id, type, status)
+      values ($1, $2, $3, 'funding-request-vote-escrow-release', 'confirmed')
+      on conflict (signature) do nothing
+    `,
+    [input.signature, wallet, missionId],
+  );
+
+  return { profile: await getProfileFromPostgres(wallet) };
+}
+
 export async function releaseFundingRequestVoteEscrowInPostgres(requestId: string) {
+  void requestId;
+  throw new Error("Vote escrow is withdrawn by each voter from their profile after the three-day lock expires.");
+}
+
+async function releaseFundingRequestVoteEscrowInPostgresLegacy(requestId: string) {
   const result = await query<
     FundingRequestRow & {
       request_pda: string | null;
@@ -2200,7 +2387,7 @@ export async function releaseFundingRequestVoteEscrowInPostgres(requestId: strin
           join funding_requests later_request on later_request.id = later_vote.request_id
           where later_request.mission_id = fr.mission_id
             and lower(later_vote.voter_wallet) = lower(frv.voter_wallet)
-            and coalesce(later_vote.escrow_locked_until, later_vote.created_at + interval '3 days') > now()
+            and later_vote.created_at + interval '3 minutes' > now()
         )
     `,
     [requestId],

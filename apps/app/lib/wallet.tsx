@@ -110,7 +110,13 @@ async function formatSendTransactionError(error: unknown, connection: Connection
         "Fee claim failed because one of the Meteora or mission fee token accounts is not initialized yet. Check the console logs for the exact account error.",
       );
     }
-    return new Error("This mission does not have 6 finalized councillors on-chain yet. Finalize the top 6 holders before submitting funding requests.");
+    if (details.includes("account: epoch_council")) {
+      return new Error("This mission does not have 6 finalized councillors on-chain yet. Finalize the top 6 holders before submitting funding requests.");
+    }
+    if (details.includes("account: voter_token_account")) {
+      return new Error("Your connected wallet does not have an initialized mission-token account for this vote. Refresh balances, reconnect the council wallet, and try again.");
+    }
+    return new Error("A required on-chain account is not initialized for this transaction. Check the console logs for the exact account and try again.");
   }
   if (details.includes("insufficient lamports") || details.includes("Attempt to debit an account")) {
     return new Error("Your wallet does not have enough SOL to pay for this transaction.");

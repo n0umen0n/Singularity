@@ -730,6 +730,11 @@ async function tokenAccountAmount(connection: Connection, address: PublicKey) {
   return connection.getTokenAccountBalance(address).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0);
 }
 
+async function tokenAccountAmountIfPresent(connection: Connection, address?: string | null) {
+  if (!address) return null;
+  return connection.getTokenAccountBalance(new PublicKey(address)).then((result) => Number(result.value.uiAmount || 0)).catch(() => null);
+}
+
 // Counts the number of unique wallets holding a positive balance of the given Token-2022 mint.
 // Uses getProgramAccounts with a memcmp on the mint field plus a dataSlice covering owner(32)+amount(8),
 // so we never pull the full token-account payload back. Pool/treasury vault token accounts whose owner
@@ -1383,11 +1388,11 @@ export async function fetchMeteoraDbcMarketSnapshot(input: {
   const baseReserve = reserveAmount((virtualPool as { baseReserve?: unknown }).baseReserve);
   const quoteReserve = reserveAmount((virtualPool as { quoteReserve?: unknown }).quoteReserve);
   const supply = input.totalSupply ?? (await connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0));
-  const treasuryVaultTokens = input.treasuryVault ? await tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : 0;
+  const treasuryVaultTokens = await tokenAccountAmountIfPresent(connection, input.treasuryVault);
   const holders = await countTokenHolders(connection, new PublicKey(baseMint));
   const configuredTreasuryTokens =
     input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
-  const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
+  const treasuryTokens = treasuryVaultTokens ?? configuredTreasuryTokens;
   const progress = await client.state.getPoolQuoteTokenCurveProgress(input.pool).catch(() => 0);
   const isLaunchDust = quoteReserve > 0 && quoteReserve <= DBC_LAUNCH_DUST_LIQUIDITY_USDC;
   const currentPrice = isLaunchDust && Number.isFinite(launchPrice) && launchPrice > 0 ? launchPrice : poolPrice;
@@ -1440,7 +1445,7 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
     input.totalSupply
       ? Promise.resolve(input.totalSupply)
       : connection.getTokenSupply(new PublicKey(baseMint)).then((result) => Number(result.value.uiAmount || 0)).catch(() => 0),
-    input.treasuryVault ? tokenAccountAmount(connection, new PublicKey(input.treasuryVault)) : Promise.resolve(0),
+    tokenAccountAmountIfPresent(connection, input.treasuryVault),
     countTokenHolders(connection, new PublicKey(baseMint)),
   ]);
   const fallbackPrice = input.fallbackPrice && input.fallbackPrice > 0 ? input.fallbackPrice : quoteReserve > 0 && baseReserve > 0 ? quoteReserve / baseReserve : 0;
@@ -1448,7 +1453,7 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
   const currentPrice = marketSnapshot.price;
   const configuredTreasuryTokens =
     input.treasurySupplyPercent && supply > 0 ? Math.floor((supply * input.treasurySupplyPercent) / 100) : 0;
-  const treasuryTokens = Math.max(treasuryVaultTokens, configuredTreasuryTokens);
+  const treasuryTokens = treasuryVaultTokens ?? configuredTreasuryTokens;
   const marketSupply = Math.max(supply - treasuryTokens, 0);
   const marketTokens = Math.max(0, Math.min(baseReserve, marketSupply));
   const circulatingTokens = Math.max(marketSupply - marketTokens, 0);
@@ -1464,7 +1469,7 @@ export async function fetchMeteoraDammV2MarketSnapshot(input: {
     liquidityUsd: marketSnapshot.liquidityUsd,
     treasuryTokens,
     treasuryUsdc: treasuryTokens * currentPrice,
-    treasuryAllocationClaimed: treasuryVaultTokens > 0,
+    treasuryAllocationClaimed: treasuryVaultTokens !== null,
     holders,
     totalSupply: supply,
     circulatingTokens,

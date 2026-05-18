@@ -1946,10 +1946,21 @@ textarea {
 
 .request-title {
   margin: 0.5rem 0 0.42rem;
+  max-width: 100%;
   font-size: 1.05rem;
   font-weight: 760;
   letter-spacing: -0.025em;
   line-height: 1.15;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.request-card.expanded .request-title {
+  -webkit-line-clamp: 3;
 }
 
 .request-meta {
@@ -2016,8 +2027,11 @@ textarea {
 
 .request-expanded-panel p {
   margin: 0.45rem 0 0;
+  max-width: 78ch;
   color: var(--text-secondary);
   line-height: 1.65;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .request-detail-grid {

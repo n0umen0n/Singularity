@@ -1096,8 +1096,8 @@ export async function prepareCouncilVoteTransaction(input: {
     const epochCouncil = epochCouncilPda(config.councilProgramId, mission, input.epoch ?? 1);
     const voterPubkey = new PublicKey(input.wallet);
     const mintPubkey = new PublicKey(input.mint);
-    const voteEscrowPosition = voteEscrowPositionPda(config.councilProgramId, mission, input.wallet);
     const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, mission, input.wallet);
+    const voteEscrowPosition = voteEscrowPositionPda(config.councilProgramId, mission, input.wallet);
     const voteEscrowVault = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
     const voterTokenAccount = getAssociatedTokenAddressSync(mintPubkey, voterPubkey, false, TOKEN_2022_PROGRAM_ID);
     const vote = votePda(config.councilProgramId, input.requestAccount, input.wallet);
@@ -1107,6 +1107,8 @@ export async function prepareCouncilVoteTransaction(input: {
       // pre-creation logic existed, or where a voter's ATA was closed for some reason.
       createAssociatedTokenAccountIdempotentInstruction(voterPubkey, voterTokenAccount, voterPubkey, mintPubkey, TOKEN_2022_PROGRAM_ID),
       createAssociatedTokenAccountIdempotentInstruction(voterPubkey, voteEscrowVault, new PublicKey(voteEscrowAuthority), mintPubkey, TOKEN_2022_PROGRAM_ID),
+    ];
+    instructions.push(
       voteInstruction({
         programId: config.councilProgramId,
         voter: input.wallet,
@@ -1120,7 +1122,7 @@ export async function prepareCouncilVoteTransaction(input: {
         mint: input.mint,
         approve: input.vote === "approve",
       }),
-    ];
+    );
 
     return buildPreparedTransaction({
       kind,
@@ -1326,6 +1328,68 @@ export async function submitFinalizeEpochCouncilTransaction(input: {
     mission,
     epochCouncil,
   };
+}
+
+export async function prepareReleaseVoteEscrowTransaction(input: {
+  wallet?: string;
+  missionId: string;
+  mint?: string | null;
+}) {
+  const kind = "funding-request-vote-escrow-release";
+
+  try {
+    if (!input.wallet) throw new Error("wallet is required to withdraw vote escrow.");
+    if (!input.mint) throw new Error("Mission token mint is unavailable. Refresh your profile and try again.");
+    const config = requireProgramConfig(process.env);
+    const blockhash = await latestBlockhash(config);
+    const payer = new PublicKey(input.wallet);
+    const mission = missionPda(config.registryProgramId, input.missionId);
+    const mint = new PublicKey(input.mint);
+    const voteEscrowPosition = voteEscrowPositionPda(config.councilProgramId, mission, input.wallet);
+    const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, mission, input.wallet);
+    const voteEscrowVault = getAssociatedTokenAddressSync(mint, new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
+    const voterTokenAccount = getAssociatedTokenAddressSync(mint, payer, false, TOKEN_2022_PROGRAM_ID);
+    const instructions = [
+      createAssociatedTokenAccountIdempotentInstruction(payer, voterTokenAccount, payer, mint, TOKEN_2022_PROGRAM_ID),
+      releaseVoteEscrowInstruction({
+        programId: config.councilProgramId,
+        payer: input.wallet,
+        voteEscrowPosition,
+        voteEscrowAuthority,
+        voteEscrowVault: voteEscrowVault.toBase58(),
+        voter: input.wallet,
+        voterTokenAccount: voterTokenAccount.toBase58(),
+        mint: input.mint,
+      }),
+    ];
+
+    return buildPreparedTransaction({
+      kind,
+      feePayer: input.wallet,
+      recentBlockhash: blockhash.blockhash,
+      instructions,
+      requiredSigners: [input.wallet],
+      accounts: {
+        mission,
+        voteEscrowPosition,
+        voteEscrowAuthority,
+        voteEscrowVault: voteEscrowVault.toBase58(),
+        voterTokenAccount: voterTokenAccount.toBase58(),
+        mint: input.mint,
+      },
+    });
+  } catch (error) {
+    return notConfigured(kind, error);
+  }
+}
+
+export async function voteEscrowPositionAddress(input: {
+  missionId: string;
+  voter: string;
+}) {
+  const config = requireProgramConfig(process.env);
+  const mission = missionPda(config.registryProgramId, input.missionId);
+  return voteEscrowPositionPda(config.councilProgramId, mission, input.voter);
 }
 
 export async function submitReleaseVoteEscrowTransaction(input: {

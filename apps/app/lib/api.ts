@@ -14,7 +14,7 @@ export type Profile = {
     sol?: number;
     solUsd?: number;
   };
-  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; escrowed?: number; total?: number; usd: number; council?: boolean; mission?: Mission | null }>;
+  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; escrowed?: number; escrowedUnlocksAt?: string | null; total?: number; usd: number; council?: boolean; mission?: Mission | null }>;
   createdMissions: Array<{ missionId: string; tradingFeesEarned: number; claimableFees?: number; mission?: Mission | null }>;
   submittedRequests?: Array<{ request: FundingRequest; symbol: string }>;
   councilRequests?: Array<{ request: FundingRequest; symbol: string }>;
@@ -118,6 +118,20 @@ export function getProfile(address: string, init?: Pick<RequestInit, "signal"> &
 
 export function updateProfile(input: { name?: string; description?: string; avatar?: string; socials?: string[] }) {
   return api<{ profile: Profile }>("/api/profile", { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function withdrawVoteEscrow(missionId: string) {
+  return api<{ transaction: PreparedTransaction }>(`/api/profile/vote-escrow/${missionId}/withdraw`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function confirmVoteEscrowWithdrawal(missionId: string, input: { signature: string }) {
+  return api<{ profile: Profile }>(`/api/profile/vote-escrow/${missionId}/confirm-withdrawal`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function uploadObject(input: { file: File; purpose: string }) {
@@ -224,6 +238,13 @@ export function voteFundingRequest(requestId: string, vote: "approve" | "reject"
   return api<{ request: FundingRequest; transaction: PreparedTransaction }>(`/api/funding-requests/${requestId}/vote`, {
     method: "POST",
     body: JSON.stringify({ vote }),
+  });
+}
+
+export function confirmFundingRequestVote(requestId: string, input: { vote: "approve" | "reject"; signature: string }) {
+  return api<{ request: FundingRequest }>(`/api/funding-requests/${requestId}/confirm-vote`, {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

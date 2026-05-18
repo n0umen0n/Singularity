@@ -75,6 +75,20 @@ function formatFundingRequestTimeLeft(request: FundingRequest, now: number) {
   return `${days}d ${hours}h ${minutes}m left`;
 }
 
+function formatDurationUntil(timestamp: string | null | undefined, now: number) {
+  if (!timestamp) return null;
+  const target = new Date(timestamp).getTime();
+  if (!Number.isFinite(target)) return null;
+  const totalMinutes = Math.max(0, Math.ceil((target - now) / 60_000));
+  if (totalMinutes <= 0) return "Ready to withdraw";
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `Withdrawable in ${days}d ${hours}h`;
+  if (hours > 0) return `Withdrawable in ${hours}h ${minutes}m`;
+  return `Withdrawable in ${minutes}m`;
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -1110,6 +1124,8 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<"vote" | "execute" | null>(null);
   const [isPaid, setIsPaid] = useState(Boolean(request.paid));
+  const [voteSucceeded, setVoteSucceeded] = useState(false);
+  const [pendingVoteChoice, setPendingVoteChoice] = useState<"approve" | "reject" | null>(null);
   const [now, setNow] = useState(Date.now());
   const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [pendingApproval, setPendingApproval] = useState(false);
@@ -1166,16 +1182,26 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
       return;
     }
     setPendingApproval(false);
+    setVoteSucceeded(false);
+    setPendingVoteChoice(choice);
     setBusy("vote");
     try {
       const result = await api.voteFundingRequest(request.id, choice);
       const signature = await wallet.sendPreparedTransaction(result.transaction);
-      setStatus(signature ? `Vote submitted: ${shortAddress(signature)}` : result.transaction.status === "not_configured" ? result.transaction.message : "Vote recorded.");
-      await onChange?.();
+      if (signature) {
+        await api.confirmFundingRequestVote(request.id, { vote: choice, signature });
+        setStatus(null);
+        await onChange?.();
+        setVoteSucceeded(true);
+        window.setTimeout(() => setVoteSucceeded(false), 2200);
+        return;
+      }
+      setStatus(result.transaction.status === "not_configured" ? result.transaction.message : "Vote was not submitted.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Vote failed.");
     } finally {
       setBusy(null);
+      setPendingVoteChoice(null);
     }
   };
   const execute = async () => {
@@ -1192,13 +1218,7 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
         try {
           const confirmed = await api.confirmFundingRequestExecution(request.id, { signature });
           setIsPaid(Boolean(confirmed.request.paid));
-          try {
-            const release = await api.releaseFundingRequestVoteEscrow(request.id);
-            const releasedCount = release.releases.filter((entry) => !entry.skipped).length;
-            setStatus(`Execution submitted: ${shortAddress(signature)}. Released vote escrow for ${releasedCount} voter${releasedCount === 1 ? "" : "s"}.`);
-          } catch {
-            setStatus(`Execution submitted: ${shortAddress(signature)}. Vote escrow release is pending.`);
-          }
+          setStatus(`Execution submitted: ${shortAddress(signature)}.`);
         } catch {
           setStatus(`Execution submitted: ${shortAddress(signature)}. Payment confirmation is pending.`);
         }
@@ -1241,7 +1261,11 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
             <small>Approving another active request may extend the current lock.</small>
           </div>
         </div>
-        {status ? <p className="stat-note">{status}</p> : null}
+        {voteSucceeded ? (
+          <p className="stat-note">Success <InlineSuccess /></p>
+        ) : status ? (
+          <p className="stat-note">{status}</p>
+        ) : null}
         <div className="modal-actions">
           <button className="button" type="button" onClick={() => setPendingApproval(false)}>
             Cancel
@@ -1329,10 +1353,10 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
             {request.status === "active" ? (
               <>
                 <button className="button button-danger" type="button" onClick={() => void vote("reject")} disabled={busy !== null}>
-                  Reject request
+                  {busy === "vote" && pendingVoteChoice === "reject" ? "Rejecting..." : "Reject request"}
                 </button>
                 <button className="button button-primary" type="button" onClick={() => setPendingApproval(true)} disabled={busy !== null}>
-                  Approve request
+                  {busy === "vote" && pendingVoteChoice === "approve" ? "Approving..." : "Approve request"}
                 </button>
               </>
             ) : request.status === "accepted" && !isPaid ? (
@@ -1341,6 +1365,13 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
               </button>
             ) : null}
           </div>
+          {busy === "vote" ? (
+            <p className="stat-note">Submitting vote <InlineLoader /></p>
+          ) : voteSucceeded ? (
+            <p className="stat-note">Success <InlineSuccess /></p>
+          ) : status ? (
+            <p className="stat-note">{status}</p>
+          ) : null}
           {request.status === "accepted" ? (
             <p className="stat-note">
               {isPaid
@@ -1348,7 +1379,6 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
                 : `Execution releases ${number(request.tokenAmount, true)} ${symbol} from the treasury once the 3-day voting window has elapsed. Earlier attempts will be rejected by the program.`}
             </p>
           ) : null}
-          {status ? <p className="stat-note">{status}</p> : null}
         </div>
       ) : null}
       {modalRoot && approvalModal ? createPortal(approvalModal, modalRoot) : null}
@@ -2612,16 +2642,23 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [withdrawingEscrowMissionId, setWithdrawingEscrowMissionId] = useState<string | null>(null);
   const [cropRequest, setCropRequest] = useState<CropRequest | null>(null);
   const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
   const [draft, setDraft] = useState(() => (initialProfile ? profileDraftFromProfile(initialProfile) : { name: "", description: "", avatar: "", x: "", telegram: "", github: "" }));
   const [requestFilter, setRequestFilter] = useState<"submitted" | "council">("submitted");
+  const [now, setNow] = useState(Date.now());
   const targetAddress = address || wallet.address;
   const loadedProfileAddress = useRef(initialProfile?.address.toLowerCase() ?? null);
 
   useEffect(() => {
     setModalRoot(document.body);
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -2722,6 +2759,27 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
     } finally {
       setUploading(false);
       if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+    }
+  };
+  const withdrawEscrow = async (missionId: string) => {
+    try {
+      setWithdrawingEscrowMissionId(missionId);
+      setStatus("Preparing escrow withdrawal...");
+      const result = await api.withdrawVoteEscrow(missionId);
+      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      if (!signature) {
+        setStatus(result.transaction.status === "not_configured" ? result.transaction.message : "Escrow withdrawal was not submitted.");
+        return;
+      }
+      const { profile: nextProfile } = await api.confirmVoteEscrowWithdrawal(missionId, { signature });
+      setProfile(nextProfile);
+      loadedProfileAddress.current = nextProfile.address.toLowerCase();
+      setDraft(profileDraftFromProfile(nextProfile));
+      setStatus(`Escrow withdrawn: ${shortAddress(signature)}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Escrow withdrawal failed.");
+    } finally {
+      setWithdrawingEscrowMissionId(null);
     }
   };
   const copyAddress = async () => {
@@ -2866,14 +2924,24 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
                 const mission = balance.mission ?? null;
                 const total = balance.total ?? balance.balance;
                 const escrowed = balance.escrowed || 0;
+                const escrowStatus = formatDurationUntil(balance.escrowedUnlocksAt, now);
+                const escrowUnlockTime = balance.escrowedUnlocksAt ? new Date(balance.escrowedUnlocksAt).getTime() : Number.NaN;
+                const canAttemptEscrowWithdrawal = isOwnProfile && escrowed > 0 && Number.isFinite(escrowUnlockTime);
                 return (
                   <BalanceCard
                     key={balance.symbol}
                     symbol={balance.symbol.slice(0, 1)}
                     label={balance.symbol}
                     value={`${number(total, true)} ${balance.symbol}`}
-                    note={money(balance.usd, false, 1)}
+                    note={[money(balance.usd, false, 1), escrowed > 0 ? escrowStatus : null].filter(Boolean).join(" · ")}
                     badge={escrowed > 0 ? `${number(escrowed, true)} in escrow` : undefined}
+                    action={
+                      canAttemptEscrowWithdrawal ? (
+                        <button className="button button-primary" type="button" onClick={() => void withdrawEscrow(balance.missionId)} disabled={withdrawingEscrowMissionId === balance.missionId}>
+                          {withdrawingEscrowMissionId === balance.missionId ? "Withdrawing..." : escrowUnlockTime > now ? "Try withdraw" : "Withdraw escrow"}
+                        </button>
+                      ) : undefined
+                    }
                     icon={mission?.tokenImage ? <img className="mission-token-logo" src={mission.tokenImage} alt={`${balance.symbol} logo`} /> : undefined}
                   />
                 );
@@ -2987,7 +3055,23 @@ function UsdcLogo() {
   return <img className="usdc-logo" src="https://cryptologos.cc/logos/usd-coin-usdc-logo.svg" alt="USDC logo" decoding="async" loading="lazy" />;
 }
 
-function BalanceCard({ symbol, label, value, note, badge, icon }: { symbol: string; label: string; value: string; note?: string; badge?: string; icon?: React.ReactNode }) {
+function BalanceCard({
+  symbol,
+  label,
+  value,
+  note,
+  badge,
+  icon,
+  action,
+}: {
+  symbol: string;
+  label: string;
+  value: string;
+  note?: string;
+  badge?: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+}) {
   return (
     <GlassCard className="stat-card balance-card">
       {badge ? <StatusPill tone="warning">{badge}</StatusPill> : null}
@@ -2996,6 +3080,7 @@ function BalanceCard({ symbol, label, value, note, badge, icon }: { symbol: stri
         <span className="stat-label">{label}</span>
         <div className="stat-value">{value}</div>
         {note ? <div className="stat-note">{note}</div> : null}
+        {action ? <div className="balance-card-action">{action}</div> : null}
       </div>
     </GlassCard>
   );

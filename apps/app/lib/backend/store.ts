@@ -10,6 +10,7 @@ import {
   confirmCouncilCandidateRegistrationInPostgres,
   confirmFundingRequestInPostgres,
   confirmFundingRequestExecutionInPostgres,
+  confirmFundingRequestVoteInPostgres,
   confirmMissionLaunchInPostgres,
   createAuthNonceInPostgres,
   executeFundingRequestInPostgres,
@@ -23,11 +24,13 @@ import {
   confirmMissionMarketGraduationInPostgres,
   prepareMissionTreasuryAllocationClaimInPostgres,
   confirmMissionTreasuryAllocationClaimInPostgres,
+  prepareVoteEscrowWithdrawalInPostgres,
   prepareMissionLaunchInPostgres,
   quoteMissionTradeFromPostgres,
   refreshMissionMarketDataInPostgres,
   registerCouncilCandidateInPostgres,
   releaseFundingRequestVoteEscrowInPostgres,
+  confirmVoteEscrowWithdrawalInPostgres,
   updateProfileInPostgres,
   verifyAuthInPostgres,
   voteFundingRequestInPostgres,
@@ -319,6 +322,25 @@ export async function updateProfile(input: { address: string; name?: string; des
   });
 
   return getProfile(input.address);
+}
+
+export async function prepareVoteEscrowWithdrawal(missionId: string, input: { wallet?: string } = {}) {
+  if (storageMode() === "postgres") return prepareVoteEscrowWithdrawalInPostgres(missionId, input);
+
+  return {
+    transaction: {
+      kind: "funding-request-vote-escrow-release",
+      status: "not_configured" as const,
+      message: "Vote escrow withdrawal is only available with Postgres-backed on-chain storage.",
+      instructions: [],
+    },
+  };
+}
+
+export async function confirmVoteEscrowWithdrawal(missionId: string, input: { wallet?: string; signature?: string } = {}) {
+  if (storageMode() === "postgres") return confirmVoteEscrowWithdrawalInPostgres(missionId, input);
+  if (!input.signature) throw new Error("signature is required.");
+  return { profile: await getProfile(input.wallet || currentUser.address) };
 }
 
 export async function prepareMissionLaunch(input: {
@@ -662,6 +684,15 @@ export async function voteFundingRequest(requestId: string, input: { wallet?: st
       transaction: await prepareCouncilVoteTransaction({ wallet, missionId: mission.id, requestId, vote }),
     };
   });
+}
+
+export async function confirmFundingRequestVote(requestId: string, input: { wallet?: string; vote?: "approve" | "reject"; signature?: string }) {
+  if (storageMode() === "postgres") return confirmFundingRequestVoteInPostgres(requestId, input);
+  if (!input.signature) throw new Error("signature is required.");
+
+  const state = await readState();
+  const found = findRequestOrThrow(state, requestId);
+  return { request: found.request };
 }
 
 export async function executeFundingRequest(
