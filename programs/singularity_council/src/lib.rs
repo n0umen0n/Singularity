@@ -8,6 +8,7 @@ const COUNCIL_SIZE: usize = 6;
 const APPROVAL_THRESHOLD: u8 = 4;
 const REJECTION_THRESHOLD: u8 = 3;
 const MIN_VOTING_SECONDS: i64 = 3 * 60;
+const VOTE_ESCROW_LOCK_SECONDS: i64 = 3 * 24 * 60 * 60;
 const DEFAULT_COUNCIL_AUTHORITY: &str = "11111111111111111111111111111111";
 
 #[program]
@@ -107,27 +108,39 @@ pub mod singularity_council {
         let member_index = council_member_index(&ctx.accounts.epoch_council.members, &voter)?;
         let escrow_amount = ctx.accounts.epoch_council.escrow_amounts[member_index];
         require!(escrow_amount > 0, CouncilError::InvalidEscrowAmount);
+        let clock = Clock::get()?;
+        let escrow_position = &mut ctx.accounts.vote_escrow_position;
+        let existing_escrow = escrow_position.amount;
+        let top_up_amount = escrow_amount.saturating_sub(existing_escrow);
 
-        token_interface::transfer_checked(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.voter_token_account.to_account_info(),
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.vote_escrow_vault.to_account_info(),
-                    authority: ctx.accounts.voter.to_account_info(),
-                },
-            ),
-            escrow_amount,
-            ctx.accounts.mint.decimals,
-        )?;
+        if top_up_amount > 0 {
+            token_interface::transfer_checked(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.voter_token_account.to_account_info(),
+                        mint: ctx.accounts.mint.to_account_info(),
+                        to: ctx.accounts.vote_escrow_vault.to_account_info(),
+                        authority: ctx.accounts.voter.to_account_info(),
+                    },
+                ),
+                top_up_amount,
+                ctx.accounts.mint.decimals,
+            )?;
+        }
+
+        escrow_position.mission = request.mission;
+        escrow_position.voter = voter;
+        escrow_position.amount = escrow_amount.max(existing_escrow);
+        escrow_position.locked_until = clock.unix_timestamp.saturating_add(VOTE_ESCROW_LOCK_SECONDS);
+        escrow_position.bump = ctx.bumps.vote_escrow_position;
 
         let vote = &mut ctx.accounts.vote;
         vote.request = request.key();
         vote.voter = voter;
         vote.approve = approve;
         vote.escrow_amount = escrow_amount;
-        vote.created_at = Clock::get()?.unix_timestamp;
+        vote.created_at = clock.unix_timestamp;
         vote.bump = ctx.bumps.vote;
 
         if approve {
@@ -208,19 +221,16 @@ pub mod singularity_council {
     }
 
     pub fn release_vote_escrow(ctx: Context<ReleaseVoteEscrow>) -> Result<()> {
-        let request = &ctx.accounts.request;
-        let vote = &ctx.accounts.vote;
-        require!(
-            is_terminal(request.status),
-            CouncilError::RequestNotTerminal
-        );
+        let escrow_position = &ctx.accounts.vote_escrow_position;
+        require!(Clock::get()?.unix_timestamp >= escrow_position.locked_until, CouncilError::EscrowStillLocked);
 
-        let request_key = request.key();
-        let voter = vote.voter;
-        let escrow_amount = vote.escrow_amount;
+        let mission = escrow_position.mission;
+        let voter = escrow_position.voter;
+        let escrow_amount = escrow_position.amount;
         let signer_seeds: &[&[&[u8]]] = &[&[
             b"vote_escrow_authority",
-            request_key.as_ref(),
+            mission.as_ref(),
+            voter.as_ref(),
             &[ctx.bumps.vote_escrow_authority],
         ]];
 
@@ -240,7 +250,7 @@ pub mod singularity_council {
         )?;
 
         emit!(VoteEscrowReleased {
-            request: request_key,
+            mission,
             voter,
             escrow_amount,
             vote_escrow_vault: ctx.accounts.vote_escrow_vault.key(),
@@ -322,14 +332,22 @@ pub struct Vote<'info> {
     )]
     pub vote: Account<'info, RequestVote>,
     #[account(
+        init_if_needed,
+        payer = voter,
+        space = 8 + VoteEscrowPosition::INIT_SPACE,
+        seeds = [b"vote_escrow_position", request.mission.as_ref(), voter.key().as_ref()],
+        bump
+    )]
+    pub vote_escrow_position: Account<'info, VoteEscrowPosition>,
+    #[account(
         mut,
         token::mint = mint,
         token::authority = voter
     )]
     pub voter_token_account: InterfaceAccount<'info, TokenAccount>,
-    /// CHECK: PDA authority that owns the request-specific vote escrow vault.
+    /// CHECK: PDA authority that owns the mission/member vote escrow vault.
     #[account(
-        seeds = [b"vote_escrow_authority", request.key().as_ref()],
+        seeds = [b"vote_escrow_authority", request.mission.as_ref(), voter.key().as_ref()],
         bump
     )]
     pub vote_escrow_authority: UncheckedAccount<'info>,
@@ -375,16 +393,15 @@ pub struct ExecuteRequest<'info> {
 pub struct ReleaseVoteEscrow<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    pub request: Account<'info, FundingRequest>,
     #[account(
         mut,
-        has_one = request,
+        has_one = voter,
         close = voter
     )]
-    pub vote: Account<'info, RequestVote>,
-    /// CHECK: PDA authority that owns the request-specific vote escrow vault.
+    pub vote_escrow_position: Account<'info, VoteEscrowPosition>,
+    /// CHECK: PDA authority that owns the mission/member vote escrow vault.
     #[account(
-        seeds = [b"vote_escrow_authority", request.key().as_ref()],
+        seeds = [b"vote_escrow_authority", vote_escrow_position.mission.as_ref(), vote_escrow_position.voter.as_ref()],
         bump
     )]
     pub vote_escrow_authority: UncheckedAccount<'info>,
@@ -394,8 +411,8 @@ pub struct ReleaseVoteEscrow<'info> {
         token::authority = vote_escrow_authority
     )]
     pub vote_escrow_vault: InterfaceAccount<'info, TokenAccount>,
-    /// CHECK: Refund recipient is fixed by the recorded vote account.
-    #[account(mut, address = vote.voter)]
+    /// CHECK: Refund recipient is fixed by the escrow position account.
+    #[account(mut, address = vote_escrow_position.voter)]
     pub voter: UncheckedAccount<'info>,
     #[account(
         mut,
@@ -455,6 +472,16 @@ pub struct RequestVote {
     pub bump: u8,
 }
 
+#[account]
+#[derive(InitSpace)]
+pub struct VoteEscrowPosition {
+    pub mission: Pubkey,
+    pub voter: Pubkey,
+    pub amount: u64,
+    pub locked_until: i64,
+    pub bump: u8,
+}
+
 #[repr(u8)]
 pub enum RequestStatus {
     Active = 0,
@@ -507,7 +534,7 @@ pub struct FundingRequestExecuted {
 
 #[event]
 pub struct VoteEscrowReleased {
-    pub request: Pubkey,
+    pub mission: Pubkey,
     pub voter: Pubkey,
     pub escrow_amount: u64,
     pub vote_escrow_vault: Pubkey,
@@ -534,8 +561,10 @@ pub enum CouncilError {
     UnauthorizedAuthority,
     #[msg("Configured council authority public key is invalid.")]
     InvalidAuthorityConfig,
-    #[msg("Vote escrow can only be released after a funding request is executed or rejected.")]
+    #[msg("Vote escrow can only be released after the mission-level lock expires.")]
     RequestNotTerminal,
+    #[msg("Vote escrow is still locked.")]
+    EscrowStillLocked,
 }
 
 fn is_accepted(status: u8) -> bool {

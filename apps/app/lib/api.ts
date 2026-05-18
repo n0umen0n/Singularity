@@ -14,7 +14,7 @@ export type Profile = {
     sol?: number;
     solUsd?: number;
   };
-  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; usd: number; council?: boolean; mission?: Mission | null }>;
+  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; escrowed?: number; total?: number; usd: number; council?: boolean; mission?: Mission | null }>;
   createdMissions: Array<{ missionId: string; tradingFeesEarned: number; claimableFees?: number; mission?: Mission | null }>;
   submittedRequests?: Array<{ request: FundingRequest; symbol: string }>;
   councilRequests?: Array<{ request: FundingRequest; symbol: string }>;
@@ -62,6 +62,8 @@ export type MissionBalances = {
   missionId: string;
   usdc: number;
   missionToken: number;
+  missionTokenEscrowed?: number;
+  missionTokenTotal?: number;
   tokenSymbol: string;
 };
 

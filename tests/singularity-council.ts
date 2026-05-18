@@ -40,6 +40,7 @@ describe("singularity council", () => {
     const slugHash = bytes(7);
     const missionMetadataHash = bytes(8);
     const requestMetadataHash = bytes(9);
+    const secondRequestMetadataHash = bytes(10);
     const epoch = 1;
     const recipient = Keypair.generate();
     const councilMembers = [payer, ...Array.from({ length: COUNCIL_SIZE - 1 }, () => Keypair.generate())];
@@ -59,12 +60,20 @@ describe("singularity council", () => {
       [Buffer.from("request"), mission.toBuffer(), Buffer.from(requestMetadataHash)],
       council.programId,
     );
+    const [secondRequest] = PublicKey.findProgramAddressSync(
+      [Buffer.from("request"), mission.toBuffer(), Buffer.from(secondRequestMetadataHash)],
+      council.programId,
+    );
     const [treasuryAuthority] = PublicKey.findProgramAddressSync(
       [Buffer.from("treasury_authority"), mission.toBuffer()],
       council.programId,
     );
     const [voteEscrowAuthority] = PublicKey.findProgramAddressSync(
-      [Buffer.from("vote_escrow_authority"), request.toBuffer()],
+      [Buffer.from("vote_escrow_authority"), mission.toBuffer(), payer.publicKey.toBuffer()],
+      council.programId,
+    );
+    const [voteEscrowPosition] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vote_escrow_position"), mission.toBuffer(), payer.publicKey.toBuffer()],
       council.programId,
     );
 
@@ -183,11 +192,46 @@ describe("singularity council", () => {
       })
       .rpc();
 
+    await council.methods
+      .createRequest(secondRequestMetadataHash, recipient.publicKey, new anchor.BN(125_000))
+      .accounts({
+        requester: payer.publicKey,
+        mission,
+        epochCouncil,
+        request: secondRequest,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
     for (const member of councilMembers.slice(0, 4)) {
       const [vote] = PublicKey.findProgramAddressSync(
         [Buffer.from("vote"), request.toBuffer(), member.publicKey.toBuffer()],
         council.programId,
       );
+
+      const memberVoteEscrowAuthority =
+        member === payer
+          ? voteEscrowAuthority
+          : PublicKey.findProgramAddressSync(
+              [Buffer.from("vote_escrow_authority"), mission.toBuffer(), member.publicKey.toBuffer()],
+              council.programId,
+            )[0];
+      const [memberVoteEscrowPosition] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vote_escrow_position"), mission.toBuffer(), member.publicKey.toBuffer()],
+        council.programId,
+      );
+      const memberVoteEscrowVault = (
+        await getOrCreateAssociatedTokenAccount(
+          provider.connection,
+          payer,
+          mint,
+          memberVoteEscrowAuthority,
+          true,
+          undefined,
+          undefined,
+          TOKEN_2022_PROGRAM_ID,
+        )
+      ).address;
 
       await council.methods
         .vote(true)
@@ -196,9 +240,10 @@ describe("singularity council", () => {
           epochCouncil,
           request,
           vote,
+          voteEscrowPosition: memberVoteEscrowPosition,
           voterTokenAccount: councilTokenAccounts[councilMembers.indexOf(member)],
-          voteEscrowAuthority,
-          voteEscrowVault,
+          voteEscrowAuthority: memberVoteEscrowAuthority,
+          voteEscrowVault: memberVoteEscrowVault,
           mint,
           tokenProgram: TOKEN_2022_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -216,7 +261,7 @@ describe("singularity council", () => {
       undefined,
       TOKEN_2022_PROGRAM_ID,
     );
-    assert.equal(voteEscrowAfterVoting.amount, BigInt(escrowAmounts.slice(0, 4).reduce((sum, amount) => sum + amount, 0)));
+    assert.equal(voteEscrowAfterVoting.amount, BigInt(escrowAmounts[0]));
     const firstVoterAfterVoting = await getAccount(
       provider.connection,
       councilTokenAccounts[0],
@@ -224,6 +269,41 @@ describe("singularity council", () => {
       TOKEN_2022_PROGRAM_ID,
     );
     assert.equal(firstVoterAfterVoting.amount, 0n);
+
+    const [secondVote] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vote"), secondRequest.toBuffer(), payer.publicKey.toBuffer()],
+      council.programId,
+    );
+    await council.methods
+      .vote(true)
+      .accountsStrict({
+        voter: payer.publicKey,
+        epochCouncil,
+        request: secondRequest,
+        vote: secondVote,
+        voteEscrowPosition,
+        voterTokenAccount: councilTokenAccounts[0],
+        voteEscrowAuthority,
+        voteEscrowVault,
+        mint,
+        tokenProgram: TOKEN_2022_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    const firstVoterAfterSecondVote = await getAccount(
+      provider.connection,
+      councilTokenAccounts[0],
+      undefined,
+      TOKEN_2022_PROGRAM_ID,
+    );
+    const payerEscrowAfterSecondVote = await getAccount(
+      provider.connection,
+      voteEscrowVault,
+      undefined,
+      TOKEN_2022_PROGRAM_ID,
+    );
+    assert.equal(firstVoterAfterSecondVote.amount, 0n);
+    assert.equal(payerEscrowAfterSecondVote.amount, BigInt(escrowAmounts[0]));
 
     await assert.rejects(
       () =>

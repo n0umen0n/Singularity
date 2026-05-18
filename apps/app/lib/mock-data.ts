@@ -8,13 +8,24 @@ export type Investor = {
   description?: string;
   tokens: number;
   ownership: number;
+  escrowedTokens?: number;
   socials?: string;
+};
+
+export type FundingRequestCouncillor = {
+  address: string;
+  name: string;
+  avatar: string;
+  tokens: number;
+  vote?: "approve" | "reject";
 };
 
 export type FundingRequest = {
   id: string;
   missionId: string;
   requester: string;
+  requesterAddress?: string;
+  requesterName?: string;
   requesterAvatar: string;
   name: string;
   description: string;
@@ -23,9 +34,12 @@ export type FundingRequest = {
   approvals: number;
   rejections: number;
   timeLeft: string;
+  createdAt?: string;
+  votingEndsAt?: string;
   status: RequestStatus;
   paid: boolean;
   paidAt?: string | null;
+  councillors?: FundingRequestCouncillor[];
 };
 
 export type PerformancePoint = {
@@ -106,6 +120,10 @@ function performance(base: number): Mission["performance"] {
 }
 
 function requests(missionId: string, symbol: string): FundingRequest[] {
+  const now = Date.now();
+  const activeCreatedAt = new Date(now - 5 * 60 * 60 * 1000 - 36 * 60 * 1000).toISOString();
+  const activeVotingEndsAt = new Date(new Date(activeCreatedAt).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
+
   return [
     {
       id: `${missionId}-r1`,
@@ -119,6 +137,8 @@ function requests(missionId: string, symbol: string): FundingRequest[] {
       approvals: 3,
       rejections: 1,
       timeLeft: "18h 24m left",
+      createdAt: activeCreatedAt,
+      votingEndsAt: activeVotingEndsAt,
       status: "active",
       paid: false,
     },

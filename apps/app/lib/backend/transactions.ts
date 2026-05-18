@@ -233,9 +233,18 @@ function treasuryAuthorityPda(programId: string, mission: string) {
   return address.toBase58();
 }
 
-function voteEscrowAuthorityPda(programId: string, request: string) {
+function voteEscrowAuthorityPda(programId: string, mission: string, voter: string) {
   const [address] = PublicKey.findProgramAddressSync(
-    [Buffer.from("vote_escrow_authority"), new PublicKey(request).toBuffer()],
+    [Buffer.from("vote_escrow_authority"), new PublicKey(mission).toBuffer(), new PublicKey(voter).toBuffer()],
+    new PublicKey(programId),
+  );
+
+  return address.toBase58();
+}
+
+function voteEscrowPositionPda(programId: string, mission: string, voter: string) {
+  const [address] = PublicKey.findProgramAddressSync(
+    [Buffer.from("vote_escrow_position"), new PublicKey(mission).toBuffer(), new PublicKey(voter).toBuffer()],
     new PublicKey(programId),
   );
 
@@ -497,6 +506,7 @@ function voteInstruction(input: {
   epochCouncil: string;
   request: string;
   vote: string;
+  voteEscrowPosition: string;
   voterTokenAccount: string;
   voteEscrowAuthority: string;
   voteEscrowVault: string;
@@ -512,6 +522,7 @@ function voteInstruction(input: {
       { pubkey: new PublicKey(input.epochCouncil), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.request), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.vote), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voteEscrowPosition), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.voterTokenAccount), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.voteEscrowAuthority), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.voteEscrowVault), isSigner: false, isWritable: true },
@@ -550,8 +561,7 @@ function executeFundingRequestInstruction(input: {
 function releaseVoteEscrowInstruction(input: {
   programId: string;
   payer: string;
-  request: string;
-  vote: string;
+  voteEscrowPosition: string;
   voteEscrowAuthority: string;
   voteEscrowVault: string;
   voter: string;
@@ -562,8 +572,7 @@ function releaseVoteEscrowInstruction(input: {
     programId: new PublicKey(input.programId),
     keys: [
       { pubkey: new PublicKey(input.payer), isSigner: true, isWritable: true },
-      { pubkey: new PublicKey(input.request), isSigner: false, isWritable: false },
-      { pubkey: new PublicKey(input.vote), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(input.voteEscrowPosition), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.voteEscrowAuthority), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.voteEscrowVault), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.voter), isSigner: false, isWritable: true },
@@ -1036,21 +1045,12 @@ export async function prepareFundingRequestTransaction(input: {
     ];
     const accounts: Record<string, string> = { mission, epochCouncil, request };
 
-    // Pre-create the vote escrow vault and recipient token account so voters and the executor don't have to.
-    // Both are idempotent ATA creates - free if they already exist.
+    // Pre-create the recipient token account. Vote escrow vaults are now per mission/member,
+    // so the voter creates their shared escrow ATA idempotently when they vote.
     if (input.tokenMint) {
       const mintPubkey = new PublicKey(input.tokenMint);
-      const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, request);
-      const voteEscrowVault = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
       const recipientTokenAccount = getAssociatedTokenAddressSync(mintPubkey, recipientPubkey, false, TOKEN_2022_PROGRAM_ID);
       instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          requesterPubkey,
-          voteEscrowVault,
-          new PublicKey(voteEscrowAuthority),
-          mintPubkey,
-          TOKEN_2022_PROGRAM_ID,
-        ),
         createAssociatedTokenAccountIdempotentInstruction(
           requesterPubkey,
           recipientTokenAccount,
@@ -1059,8 +1059,6 @@ export async function prepareFundingRequestTransaction(input: {
           TOKEN_2022_PROGRAM_ID,
         ),
       );
-      accounts.voteEscrowAuthority = voteEscrowAuthority;
-      accounts.voteEscrowVault = voteEscrowVault.toBase58();
       accounts.recipientTokenAccount = recipientTokenAccount.toBase58();
     }
 
@@ -1097,9 +1095,9 @@ export async function prepareCouncilVoteTransaction(input: {
     const mission = missionPda(config.registryProgramId, input.missionId);
     const epochCouncil = epochCouncilPda(config.councilProgramId, mission, input.epoch ?? 1);
     const voterPubkey = new PublicKey(input.wallet);
-    const requestPubkey = new PublicKey(input.requestAccount);
     const mintPubkey = new PublicKey(input.mint);
-    const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, input.requestAccount);
+    const voteEscrowPosition = voteEscrowPositionPda(config.councilProgramId, mission, input.wallet);
+    const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, mission, input.wallet);
     const voteEscrowVault = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
     const voterTokenAccount = getAssociatedTokenAddressSync(mintPubkey, voterPubkey, false, TOKEN_2022_PROGRAM_ID);
     const vote = votePda(config.councilProgramId, input.requestAccount, input.wallet);
@@ -1115,6 +1113,7 @@ export async function prepareCouncilVoteTransaction(input: {
         epochCouncil,
         request: input.requestAccount,
         vote,
+        voteEscrowPosition,
         voterTokenAccount: voterTokenAccount.toBase58(),
         voteEscrowAuthority,
         voteEscrowVault: voteEscrowVault.toBase58(),
@@ -1133,6 +1132,7 @@ export async function prepareCouncilVoteTransaction(input: {
         request: input.requestAccount,
         epochCouncil,
         vote,
+        voteEscrowPosition,
         voterTokenAccount: voterTokenAccount.toBase58(),
         voteEscrowAuthority,
         voteEscrowVault: voteEscrowVault.toBase58(),
@@ -1329,7 +1329,7 @@ export async function submitFinalizeEpochCouncilTransaction(input: {
 }
 
 export async function submitReleaseVoteEscrowTransaction(input: {
-  requestAccount: string;
+  missionId: string;
   voter: string;
   mint: string;
 }) {
@@ -1337,17 +1337,17 @@ export async function submitReleaseVoteEscrowTransaction(input: {
   const payer = keypairFromEnv("SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR", "backend vote escrow release");
   const connection = new Connection(config.rpcUrl, "confirmed");
   const blockhash = await connection.getLatestBlockhash();
-  const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, input.requestAccount);
+  const mission = missionPda(config.registryProgramId, input.missionId);
+  const voteEscrowPosition = voteEscrowPositionPda(config.councilProgramId, mission, input.voter);
+  const voteEscrowAuthority = voteEscrowAuthorityPda(config.councilProgramId, mission, input.voter);
   const voteEscrowVault = getAssociatedTokenAddressSync(new PublicKey(input.mint), new PublicKey(voteEscrowAuthority), true, TOKEN_2022_PROGRAM_ID);
   const voterTokenAccount = getAssociatedTokenAddressSync(new PublicKey(input.mint), new PublicKey(input.voter), false, TOKEN_2022_PROGRAM_ID);
-  const vote = votePda(config.councilProgramId, input.requestAccount, input.voter);
   const instructions: TransactionInstruction[] = [
     createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, voterTokenAccount, new PublicKey(input.voter), new PublicKey(input.mint), TOKEN_2022_PROGRAM_ID),
     releaseVoteEscrowInstruction({
       programId: config.councilProgramId,
       payer: payer.publicKey.toBase58(),
-      request: input.requestAccount,
-      vote,
+      voteEscrowPosition,
       voteEscrowAuthority,
       voteEscrowVault: voteEscrowVault.toBase58(),
       voter: input.voter,
@@ -1368,7 +1368,7 @@ export async function submitReleaseVoteEscrowTransaction(input: {
   return {
     signature,
     payer: payer.publicKey.toBase58(),
-    vote,
+    voteEscrowPosition,
     voteEscrowAuthority,
     voteEscrowVault: voteEscrowVault.toBase58(),
     voterTokenAccount: voterTokenAccount.toBase58(),

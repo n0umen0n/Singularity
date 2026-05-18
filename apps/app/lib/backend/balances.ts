@@ -12,8 +12,13 @@ export type WalletBalanceSnapshot = {
     sol: number;
     solUsd?: number;
   };
-  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; usd: number; council?: boolean }>;
+  tokenBalances: Array<{ missionId: string; symbol: string; balance: number; escrowed?: number; total?: number; usd: number; council?: boolean }>;
 };
+
+function escrowedTokensForMission(address: string, mission: Mission) {
+  const member = mission.council.find((entry) => entry.address.toLowerCase() === address.toLowerCase());
+  return member?.escrowedTokens || 0;
+}
 
 function rpcUrl() {
   return process.env.SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_MAINNET_RPC_URL || "https://api.mainnet-beta.solana.com";
@@ -63,15 +68,34 @@ export async function getWalletBalanceSnapshot(address: string, missions: Missio
 
   const tokenBalances = [...missionTokenAmounts.entries()].map(([mint, balance]) => {
     const mission = missionByMint.get(mint)!;
+    const escrowed = escrowedTokensForMission(address, mission);
+    const total = balance + escrowed;
     const council = mission.council.some((member) => member.address.toLowerCase() === address.toLowerCase());
     return {
       missionId: mission.id,
       symbol: mission.tokenSymbol,
       balance,
-      usd: balance * mission.tokenPrice,
+      escrowed,
+      total,
+      usd: total * mission.tokenPrice,
       council,
     };
   });
+
+  for (const mission of missions) {
+    const escrowed = escrowedTokensForMission(address, mission);
+    if (escrowed <= 0 || !mission.tokenMint || missionTokenAmounts.has(mission.tokenMint)) continue;
+    const council = mission.council.some((member) => member.address.toLowerCase() === address.toLowerCase());
+    tokenBalances.push({
+      missionId: mission.id,
+      symbol: mission.tokenSymbol,
+      balance: 0,
+      escrowed,
+      total: escrowed,
+      usd: escrowed * mission.tokenPrice,
+      council,
+    });
+  }
 
   return {
     balances: {

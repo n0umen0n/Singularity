@@ -53,6 +53,28 @@ const FIELD_LIMITS = {
   socialHandle: 80,
 } as const;
 
+const FUNDING_REQUEST_VOTING_PERIOD_MS = 3 * 24 * 60 * 60 * 1000;
+
+function fundingRequestDeadline(request: FundingRequest) {
+  const explicitDeadline = request.votingEndsAt ? new Date(request.votingEndsAt).getTime() : Number.NaN;
+  if (Number.isFinite(explicitDeadline)) return explicitDeadline;
+
+  const createdAt = request.createdAt ? new Date(request.createdAt).getTime() : Number.NaN;
+  return Number.isFinite(createdAt) ? createdAt + FUNDING_REQUEST_VOTING_PERIOD_MS : null;
+}
+
+function formatFundingRequestTimeLeft(request: FundingRequest, now: number) {
+  if (request.status !== "active") return request.timeLeft;
+  const deadline = fundingRequestDeadline(request);
+  if (!deadline) return request.timeLeft;
+
+  const totalMinutes = Math.max(0, Math.ceil((deadline - now) / 60_000));
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  return `${days}d ${hours}h ${minutes}m left`;
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const wallet = useSingularityWallet();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -763,7 +785,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     api
       .getMissionBalances(mission.id, wallet.address)
       .then((balances) => {
-        if (alive) setWalletTokenBalance(balances.missionToken);
+        if (alive) setWalletTokenBalance(balances.missionTokenTotal ?? balances.missionToken);
       })
       .catch(() => {
         if (alive) setWalletTokenBalance(null);
@@ -817,7 +839,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
       Promise.all(councilAddresses.map((address) =>
         api
           .getMissionBalances(mission.id, address)
-          .then((balances) => [address.toLowerCase(), balances.missionToken] as const)
+          .then((balances) => [address.toLowerCase(), balances.missionTokenTotal ?? balances.missionToken] as const)
           .catch(() => null),
       )),
     ]).then(([profileEntries, balanceEntries]) => {
@@ -843,7 +865,9 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
       const liveBalance = councilTokenBalances[normalizedAddress];
       const isWalletMember = wallet.address && normalizedAddress === wallet.address.toLowerCase();
       const displayProfile = isWalletMember ? (walletProfile ?? profile) : profile;
-      const tokens = liveBalance ?? (isWalletMember && trackedBalance > 0 ? trackedBalance : member.tokens);
+      const escrowedTokens = member.escrowedTokens || 0;
+      const walletTotal = isWalletMember && trackedBalance > 0 ? trackedBalance : null;
+      const tokens = liveBalance ?? walletTotal ?? member.tokens;
 
       return {
         ...member,
@@ -851,6 +875,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
         avatar: displayProfile?.avatar || member.avatar,
         description: displayProfile ? displayProfile.description || undefined : member.description,
         tokens,
+        escrowedTokens,
       };
     });
     const registeredAddress = registeredCandidateAddress || wallet.address;
@@ -865,6 +890,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
         avatar: walletProfile?.avatar || "",
         description: walletProfile?.description || undefined,
         tokens: trackedBalance,
+        escrowedTokens: 0,
         ownership: 0,
       });
     }
@@ -1084,16 +1110,62 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<"vote" | "execute" | null>(null);
   const [isPaid, setIsPaid] = useState(Boolean(request.paid));
+  const [now, setNow] = useState(Date.now());
+  const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
+  const [pendingApproval, setPendingApproval] = useState(false);
   const wallet = useSingularityWallet();
-  const requesterLabel = request.requester.length > 20 ? shortAddress(request.requester) : request.requester;
+  const requesterAddress = request.requesterAddress || request.requester;
+  const requesterLabel = request.requesterName || (request.requester.length > 20 ? shortAddress(request.requester) : request.requester);
+  const requesterAvatar = request.requesterAvatar || dicebearPersonaAvatar(requesterAddress);
+  const councillors = request.councillors || [];
+  const summaryDots = councillors.length
+    ? councillors.map((member) => (member.vote === "approve" ? "yes" : member.vote === "reject" ? "no" : ""))
+    : Array.from({ length: 6 }, (_, index) => {
+        if (index < request.approvals) return "yes";
+        if (index < request.approvals + request.rejections) return "no";
+        return "";
+      });
+  const approveDisabled = busy !== null;
+  const timeLeft = formatFundingRequestTimeLeft(request, now);
+
+  useEffect(() => {
+    setModalRoot(document.body);
+  }, []);
+
+  useEffect(() => {
+    if (request.status !== "active") return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, [request.status, request.votingEndsAt, request.createdAt]);
+
   useEffect(() => {
     setIsPaid(Boolean(request.paid));
   }, [request.paid]);
+
+  useEffect(() => {
+    if (!pendingApproval) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPendingApproval(false);
+    };
+
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [pendingApproval]);
+
   const vote = async (choice: "approve" | "reject") => {
     if (!wallet.address) {
       await wallet.signIn();
       return;
     }
+    setPendingApproval(false);
     setBusy("vote");
     try {
       const result = await api.voteFundingRequest(request.id, choice);
@@ -1145,11 +1217,43 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
       setBusy(null);
     }
   };
-  const dots = Array.from({ length: 6 }, (_, index) => {
-    if (index < request.approvals) return "yes";
-    if (index < request.approvals + request.rejections) return "no";
-    return "";
-  });
+  const approvalModal = pendingApproval ? (
+    <div className="modal-backdrop" role="presentation" onClick={() => setPendingApproval(false)}>
+      <div className="glass-card candidate-modal" role="dialog" aria-modal="true" aria-labelledby={`approve-${request.id}`} onClick={(event) => event.stopPropagation()}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Approve request</p>
+            <h2 id={`approve-${request.id}`}>Escrow for 3 days</h2>
+            <p>
+              Approving places your council voting tokens in escrow for 3 days. You stay a councillor while they are escrowed, and your escrowed
+              balance still counts toward council selection and profile balances.
+            </p>
+          </div>
+        </div>
+        <div className="candidate-metric-grid">
+          <div className="candidate-metric-card">
+            <span className="stat-label">Request</span>
+            <strong>{request.name}</strong>
+          </div>
+          <div className="candidate-metric-card">
+            <span className="stat-label">Lock period</span>
+            <strong>3 days</strong>
+            <small>Approving another active request may extend the current lock.</small>
+          </div>
+        </div>
+        {status ? <p className="stat-note">{status}</p> : null}
+        <div className="modal-actions">
+          <button className="button" type="button" onClick={() => setPendingApproval(false)}>
+            Cancel
+          </button>
+          <button className="button button-primary" type="button" disabled={approveDisabled} onClick={() => void vote("approve")}>
+            {busy === "vote" ? "Submitting..." : wallet.address ? "Approve and escrow" : "Sign in to approve"}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <GlassCard className={cx("request-card interactive", isExpanded && "expanded")}>
       <button className="request-card-toggle" type="button" onClick={() => setIsExpanded((current) => !current)} aria-expanded={isExpanded}>
@@ -1160,31 +1264,31 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
           </div>
           <div className="request-title">{request.name}</div>
           <div className="request-meta">
-            <span className="avatar" style={{ width: 26, height: 26 }}>
-              <img src={request.requesterAvatar} alt="" decoding="async" loading="lazy" />
-            </span>
-            <span className="request-requester" title={request.requester}>
-              {requesterLabel}
-            </span>
+            <Link className="request-person-link" href={`/profile/${encodeURIComponent(requesterAddress)}`} onClick={(event) => event.stopPropagation()}>
+              <span className="avatar" style={{ width: 26, height: 26 }}>
+                <img src={requesterAvatar} alt="" decoding="async" loading="lazy" />
+              </span>
+              <span className="request-requester" title={requesterAddress}>
+                {requesterLabel}
+              </span>
+            </Link>
           </div>
         </div>
         <div className="request-amount">
-          <span className="stat-label">Amount</span>
+          <span className="stat-label">Requested amount</span>
           <div className="stat-value">{money(request.amountUsd)}</div>
           <div className="stat-note">
             {number(request.tokenAmount, true)} {symbol}
           </div>
         </div>
         <div className="request-votes">
+          <span className="stat-label">Approvals</span>
           <div className="vote-dots">
-            {dots.map((dot, index) => (
+            {summaryDots.map((dot, index) => (
               <span className={cx("vote-dot", dot)} key={`${request.id}-${index}`} />
             ))}
           </div>
-          <div className="stat-note">
-            {request.approvals} approved / {request.rejections} rejected
-          </div>
-          <div className="stat-note">{request.timeLeft}</div>
+          <div className="stat-note">{timeLeft}</div>
         </div>
       </button>
       {isExpanded ? (
@@ -1193,20 +1297,33 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
             <span className="stat-label">Request details</span>
             <p>{request.description}</p>
           </div>
-          <div className="request-detail-grid">
-            <div>
-              <span className="stat-label">Treasury draw</span>
-              <div className="stat-value">{money(request.amountUsd)}</div>
-              <div className="stat-note">
-                Paid as {number(request.tokenAmount, true)} {symbol}
+          {councillors.length ? (
+            <div className="request-council-panel">
+              <div className="request-council-heading">
+                <span className="stat-label">Council approval map</span>
+                <span className="stat-note">{request.approvals} of 4 approvals collected</span>
+              </div>
+              <div className="request-councillor-list">
+                {councillors.map((member) => {
+                  const avatar = member.avatar || dicebearPersonaAvatar(member.address);
+                  const voteClass = member.vote === "approve" ? "yes" : member.vote === "reject" ? "no" : "";
+                  const voteLabel = member.vote === "approve" ? "Approved" : member.vote === "reject" ? "Rejected" : "Needs approval";
+                  return (
+                    <Link className="request-councillor" href={`/profile/${encodeURIComponent(member.address)}`} key={`${request.id}-${member.address}`}>
+                      <span className={cx("vote-dot", voteClass)} />
+                      <span className="avatar" style={{ width: 30, height: 30 }}>
+                        <img src={avatar} alt="" decoding="async" loading="lazy" />
+                      </span>
+                      <span>
+                        <strong>{member.name}</strong>
+                        <small>{voteLabel}</small>
+                      </span>
+                    </Link>
+                  );
+                })}
               </div>
             </div>
-            <div>
-              <span className="stat-label">Council threshold</span>
-              <div className="stat-value">4 / 6</div>
-              <div className="stat-note">{request.timeLeft}</div>
-            </div>
-          </div>
+          ) : null}
           <div className="request-action-row">
             {/* TODO: Show these actions only to top investors/council members; everyone else should see the expanded request without voting controls. */}
             {request.status === "active" ? (
@@ -1214,7 +1331,7 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
                 <button className="button button-danger" type="button" onClick={() => void vote("reject")} disabled={busy !== null}>
                   Reject request
                 </button>
-                <button className="button button-primary" type="button" onClick={() => void vote("approve")} disabled={busy !== null}>
+                <button className="button button-primary" type="button" onClick={() => setPendingApproval(true)} disabled={busy !== null}>
                   Approve request
                 </button>
               </>
@@ -1234,6 +1351,7 @@ function FundingRequestCard({ request, symbol, onChange }: { request: FundingReq
           {status ? <p className="stat-note">{status}</p> : null}
         </div>
       ) : null}
+      {modalRoot && approvalModal ? createPortal(approvalModal, modalRoot) : null}
     </GlassCard>
   );
 }
@@ -2741,18 +2859,21 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
             <h2>Balances</h2>
           </div>
           <div className="balance-grid">
-            <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0)} icon={<UsdcLogo />} />
+            <BalanceCard symbol="U" label="USDC" value={`${number(profile.balances.usdc || 0)} USDC`} note={money(profile.balances.usdcUsd || 0, false, 1)} icon={<UsdcLogo />} />
             {profile.tokenBalances
-              .filter((balance) => (balance.balance || 0) >= 0.0001 && (balance.usd || 0) >= 0.0001)
+              .filter((balance) => ((balance.total ?? balance.balance) || 0) >= 0.0001 && (balance.usd || 0) >= 0.0001)
               .map((balance) => {
                 const mission = balance.mission ?? null;
+                const total = balance.total ?? balance.balance;
+                const escrowed = balance.escrowed || 0;
                 return (
                   <BalanceCard
                     key={balance.symbol}
                     symbol={balance.symbol.slice(0, 1)}
                     label={balance.symbol}
-                    value={`${number(balance.balance)} ${balance.symbol}`}
-                    note={money(balance.usd)}
+                    value={`${number(total, true)} ${balance.symbol}`}
+                    note={money(balance.usd, false, 1)}
+                    badge={escrowed > 0 ? `${number(escrowed, true)} in escrow` : undefined}
                     icon={mission?.tokenImage ? <img className="mission-token-logo" src={mission.tokenImage} alt={`${balance.symbol} logo`} /> : undefined}
                   />
                 );
@@ -2866,9 +2987,10 @@ function UsdcLogo() {
   return <img className="usdc-logo" src="https://cryptologos.cc/logos/usd-coin-usdc-logo.svg" alt="USDC logo" decoding="async" loading="lazy" />;
 }
 
-function BalanceCard({ symbol, label, value, note, icon }: { symbol: string; label: string; value: string; note?: string; icon?: React.ReactNode }) {
+function BalanceCard({ symbol, label, value, note, badge, icon }: { symbol: string; label: string; value: string; note?: string; badge?: string; icon?: React.ReactNode }) {
   return (
     <GlassCard className="stat-card balance-card">
+      {badge ? <StatusPill tone="warning">{badge}</StatusPill> : null}
       <span className="balance-symbol">{icon || symbol}</span>
       <div>
         <span className="stat-label">{label}</span>

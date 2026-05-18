@@ -32,12 +32,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ miss
       tokenBalance(connection, wallet, usdcMint),
       tokenBalance(connection, wallet, mission.tokenMint),
     ]);
+    const councilMember = mission.council.find((member) => member.address.toLowerCase() === wallet.toLowerCase());
+    const missionTokenEscrowed = councilMember?.escrowedTokens || 0;
+    const missionTokenTotal = missionToken + missionTokenEscrowed;
 
     return ok({
       wallet,
       missionId,
       usdc,
       missionToken,
+      missionTokenEscrowed,
+      missionTokenTotal,
       tokenSymbol: mission.tokenSymbol,
     });
   } catch (error) {

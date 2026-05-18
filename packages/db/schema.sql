@@ -280,3 +280,4 @@ alter table missions add column if not exists council_json jsonb not null defaul
 alter table funding_requests add column if not exists epoch_number integer not null default 1;
 alter table funding_requests add column if not exists executed_at timestamptz;
 alter table epoch_councils add column if not exists escrow_amounts jsonb not null default '[]'::jsonb;
+alter table funding_request_votes add column if not exists escrow_locked_until timestamptz;
