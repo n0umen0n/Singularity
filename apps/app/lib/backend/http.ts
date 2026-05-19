@@ -11,6 +11,10 @@ type ErrorLike = {
   message?: unknown;
 };
 
+function isProductionRuntime() {
+  return process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
+}
+
 function errorText(error: unknown, key: keyof ErrorLike) {
   return typeof error === "object" && error !== null && key in error ? String((error as ErrorLike)[key] || "") : "";
 }
@@ -65,11 +69,19 @@ function userMessage(error: unknown) {
     return "You have already voted on this funding request. Each council wallet can approve or reject a request only once.";
   }
 
+  if (isProductionRuntime()) {
+    return "The request could not be completed. Refresh the page and try again.";
+  }
+
   return message;
 }
 
 export function fail(error: unknown, status = 400) {
   const message = userMessage(error);
+  if (status >= 500) {
+    const logMessage = error instanceof Error ? error.message : String(error);
+    console.error("API request failed", { status, error: logMessage });
+  }
   if (message === "Authentication is required.") {
     return NextResponse.json({ error: message }, { status: 401 });
   }
@@ -78,6 +90,7 @@ export function fail(error: unknown, status = 400) {
 
 export async function readJson<T>(request: Request): Promise<T> {
   const text = await request.text();
+  if (text.length > 1024 * 1024) throw new Error("The request body is too large.");
   if (!text) return {} as T;
   try {
     return JSON.parse(text) as T;

@@ -545,6 +545,7 @@ function voteInstruction(input: {
 function executeFundingRequestInstruction(input: {
   programId: string;
   executor: string;
+  mission: string;
   request: string;
   treasuryAuthority: string;
   treasuryVault: string;
@@ -555,6 +556,7 @@ function executeFundingRequestInstruction(input: {
     programId: new PublicKey(input.programId),
     keys: [
       { pubkey: new PublicKey(input.executor), isSigner: true, isWritable: false },
+      { pubkey: new PublicKey(input.mission), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.request), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.treasuryAuthority), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.treasuryVault), isSigner: false, isWritable: true },
@@ -569,6 +571,7 @@ function executeFundingRequestInstruction(input: {
 function releaseVoteEscrowInstruction(input: {
   programId: string;
   payer: string;
+  mission: string;
   voteEscrowPosition: string;
   voteEscrowAuthority: string;
   voteEscrowVault: string;
@@ -580,6 +583,7 @@ function releaseVoteEscrowInstruction(input: {
     programId: new PublicKey(input.programId),
     keys: [
       { pubkey: new PublicKey(input.payer), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(input.mission), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.voteEscrowPosition), isSigner: false, isWritable: true },
       { pubkey: new PublicKey(input.voteEscrowAuthority), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.voteEscrowVault), isSigner: false, isWritable: true },
@@ -1186,6 +1190,7 @@ export async function prepareCouncilExecuteTransaction(input: {
       executeFundingRequestInstruction({
         programId: config.councilProgramId,
         executor: input.wallet,
+        mission,
         request: input.requestAccount,
         treasuryAuthority,
         treasuryVault: input.treasuryVault,
@@ -1369,6 +1374,7 @@ export async function prepareReleaseVoteEscrowTransaction(input: {
       releaseVoteEscrowInstruction({
         programId: config.councilProgramId,
         payer: input.wallet,
+        mission,
         voteEscrowPosition,
         voteEscrowAuthority,
         voteEscrowVault: voteEscrowVault.toBase58(),
@@ -1426,6 +1432,7 @@ export async function submitReleaseVoteEscrowTransaction(input: {
     releaseVoteEscrowInstruction({
       programId: config.councilProgramId,
       payer: payer.publicKey.toBase58(),
+      mission,
       voteEscrowPosition,
       voteEscrowAuthority,
       voteEscrowVault: voteEscrowVault.toBase58(),

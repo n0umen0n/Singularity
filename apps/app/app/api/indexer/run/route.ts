@@ -2,13 +2,14 @@ import { Connection } from "@solana/web3.js";
 import { missingIndexerEnv, runIndexerBatch } from "@singularity/indexer-core";
 import { fail, ok } from "@/lib/backend/http";
 import { getPool } from "@/lib/backend/db";
+import { isProductionRuntime, requireServerEnv } from "@/lib/backend/env";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 function authorize(request: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.NODE_ENV !== "production";
+  const secret = isProductionRuntime() ? requireServerEnv("CRON_SECRET") : process.env.CRON_SECRET;
+  if (!secret) return true;
   return request.headers.get("authorization") === `Bearer ${secret}`;
 }
 

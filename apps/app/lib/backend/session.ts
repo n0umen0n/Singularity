@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { NextResponse } from "next/server";
+import { isProductionRuntime } from "@/lib/backend/env";
 
 export type Session = {
   address: string;
@@ -12,8 +13,8 @@ const maxAgeSeconds = 60 * 60 * 24 * 7;
 
 function secret() {
   const value = process.env.SINGULARITY_SESSION_SECRET;
-  if (value) return value;
-  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") {
+  if (value && value.length >= 32) return value;
+  if (isProductionRuntime()) {
     throw new Error("SINGULARITY_SESSION_SECRET is required in production.");
   }
   return "local-singularity-session-secret";
@@ -81,12 +82,18 @@ export function setSessionCookie(response: NextResponse, address: string) {
   response.cookies.set(cookieName, createSessionToken(address), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: isProductionRuntime(),
     path: "/",
     maxAge: maxAgeSeconds,
   });
 }
 
 export function clearSessionCookie(response: NextResponse) {
-  response.cookies.delete(cookieName);
+  response.cookies.set(cookieName, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProductionRuntime(),
+    path: "/",
+    maxAge: 0,
+  });
 }

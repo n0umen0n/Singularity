@@ -16,6 +16,21 @@ export function assertProductionStorage() {
   }
 }
 
+export function requireServerEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} is required.`);
+  }
+  return value;
+}
+
 export function databaseSslConfig() {
-  return process.env.DATABASE_SSL === "false" ? false : { rejectUnauthorized: false };
+  if (process.env.DATABASE_SSL === "false") {
+    if (isProductionRuntime()) {
+      throw new Error("DATABASE_SSL=false is not allowed in production.");
+    }
+    return false;
+  }
+
+  return process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === "false" ? { rejectUnauthorized: false } : { rejectUnauthorized: true };
 }

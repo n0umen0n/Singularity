@@ -43,7 +43,10 @@ function copySbfArtifacts() {
   }
 }
 
-run("anchor", ["build"]);
+run("anchor", ["build"], {
+  SINGULARITY_COUNCIL_AUTHORITY_PUBKEY:
+    process.env.SINGULARITY_COUNCIL_AUTHORITY_PUBKEY || "8F7YpepKxP1xc9Nqscdh6SSs5X7DmtPWUjUGViYShCxQ",
+});
 copySbfArtifacts();
 run("anchor", ["test", "--skip-build"], {
   ANCHOR_PROVIDER_URL: process.env.ANCHOR_PROVIDER_URL || "http://127.0.0.1:8899",

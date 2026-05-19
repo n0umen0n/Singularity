@@ -311,6 +311,7 @@ describe("singularity council", () => {
           .execute()
           .accounts({
             executor: payer.publicKey,
+            mission,
             request,
             treasuryAuthority,
             treasuryVault,

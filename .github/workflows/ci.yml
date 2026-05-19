@@ -33,7 +33,7 @@ jobs:
         run: npm run security:gate
 
       - name: Dependency Audit
-        run: npm audit --audit-level=high
+        run: npm run security:audit
 
   # Production configuration validation is intentionally disabled for now.
   # Re-enable this job before mainnet launch, after production secrets are added.

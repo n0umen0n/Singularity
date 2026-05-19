@@ -4,12 +4,13 @@ use std::str::FromStr;
 
 declare_id!("4k7JhCHjs2uoiP1hmvYDawnwJuXMt5ZhUJotvMRqedKS");
 
+const REGISTRY_PROGRAM_ID: Pubkey = pubkey!("7CxZRBgnYwi5MtSKebmaSh7XTRVXk3QgzjXRUgLzcXT5");
 const COUNCIL_SIZE: usize = 6;
 const APPROVAL_THRESHOLD: u8 = 4;
 const REJECTION_THRESHOLD: u8 = 3;
 const MIN_VOTING_SECONDS: i64 = 3 * 24 * 60 * 60;
 const VOTE_ESCROW_LOCK_SECONDS: i64 = 3 * 24 * 60 * 60;
-const DEFAULT_COUNCIL_AUTHORITY: &str = "8F7YpepKxP1xc9Nqscdh6SSs5X7DmtPWUjUGViYShCxQ";
+const COUNCIL_AUTHORITY: Option<&str> = option_env!("SINGULARITY_COUNCIL_AUTHORITY_PUBKEY");
 
 #[program]
 pub mod singularity_council {
@@ -71,6 +72,11 @@ pub mod singularity_council {
         token_amount: u64,
     ) -> Result<()> {
         require!(token_amount > 0, CouncilError::InvalidAmount);
+        require_keys_eq!(
+            ctx.accounts.epoch_council.mission,
+            ctx.accounts.mission.key(),
+            CouncilError::MissionMismatch
+        );
 
         let request = &mut ctx.accounts.request;
         request.mission = ctx.accounts.mission.key();
@@ -100,6 +106,11 @@ pub mod singularity_council {
 
     pub fn vote(ctx: Context<Vote>, approve: bool) -> Result<()> {
         let request = &mut ctx.accounts.request;
+        require_keys_eq!(
+            ctx.accounts.epoch_council.mission,
+            request.mission,
+            CouncilError::MissionMismatch
+        );
         require!(
             request.status == RequestStatus::Active as u8,
             CouncilError::RequestNotActive
@@ -168,6 +179,11 @@ pub mod singularity_council {
     pub fn execute(ctx: Context<ExecuteRequest>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let request = &ctx.accounts.request;
+        require_keys_eq!(
+            ctx.accounts.mission.key(),
+            request.mission,
+            CouncilError::MissionMismatch
+        );
 
         require!(
             is_accepted(request.status),
@@ -222,6 +238,11 @@ pub mod singularity_council {
 
     pub fn release_vote_escrow(ctx: Context<ReleaseVoteEscrow>) -> Result<()> {
         let escrow_position = &ctx.accounts.vote_escrow_position;
+        require_keys_eq!(
+            ctx.accounts.mission.key(),
+            escrow_position.mission,
+            CouncilError::MissionMismatch
+        );
         require!(Clock::get()?.unix_timestamp >= escrow_position.locked_until, CouncilError::EscrowStillLocked);
 
         let mission = escrow_position.mission;
@@ -266,7 +287,8 @@ pub mod singularity_council {
 pub struct RegisterCandidate<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
-    /// CHECK: mission account is owned by registry program and indexed off-chain in MVP tests
+    /// CHECK: this program only needs the mission key, but it must be a registry-owned mission account.
+    #[account(owner = REGISTRY_PROGRAM_ID)]
     pub mission: UncheckedAccount<'info>,
     #[account(
         init,
@@ -284,7 +306,8 @@ pub struct RegisterCandidate<'info> {
 pub struct FinalizeEpochCouncil<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
-    /// CHECK: mission account is owned by registry program and indexed off-chain in MVP tests
+    /// CHECK: this program only needs the mission key, but it must be a registry-owned mission account.
+    #[account(owner = REGISTRY_PROGRAM_ID)]
     pub mission: UncheckedAccount<'info>,
     #[account(
         init,
@@ -302,7 +325,8 @@ pub struct FinalizeEpochCouncil<'info> {
 pub struct CreateFundingRequest<'info> {
     #[account(mut)]
     pub requester: Signer<'info>,
-    /// CHECK: mission account is owned by registry program and indexed off-chain in MVP tests
+    /// CHECK: this program only needs the mission key, but it must be a registry-owned mission account.
+    #[account(owner = REGISTRY_PROGRAM_ID)]
     pub mission: UncheckedAccount<'info>,
     pub epoch_council: Account<'info, EpochCouncil>,
     #[account(
@@ -365,6 +389,9 @@ pub struct Vote<'info> {
 #[derive(Accounts)]
 pub struct ExecuteRequest<'info> {
     pub executor: Signer<'info>,
+    /// CHECK: this program only needs the mission key, but it must be a registry-owned mission account.
+    #[account(owner = REGISTRY_PROGRAM_ID)]
+    pub mission: UncheckedAccount<'info>,
     #[account(mut)]
     pub request: Account<'info, FundingRequest>,
     /// CHECK: PDA authority that must own the mission treasury token account.
@@ -393,6 +420,9 @@ pub struct ExecuteRequest<'info> {
 pub struct ReleaseVoteEscrow<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+    /// CHECK: this program only needs the mission key, but it must be a registry-owned mission account.
+    #[account(owner = REGISTRY_PROGRAM_ID)]
+    pub mission: UncheckedAccount<'info>,
     #[account(
         mut,
         has_one = voter,
@@ -561,6 +591,10 @@ pub enum CouncilError {
     UnauthorizedAuthority,
     #[msg("Configured council authority public key is invalid.")]
     InvalidAuthorityConfig,
+    #[msg("Council program was built without SINGULARITY_COUNCIL_AUTHORITY_PUBKEY.")]
+    MissingAuthorityConfig,
+    #[msg("Provided mission does not match the funding request or council account.")]
+    MissionMismatch,
     #[msg("Vote escrow can only be released after the mission-level lock expires.")]
     RequestNotTerminal,
     #[msg("Vote escrow is still locked.")]
@@ -584,10 +618,7 @@ fn escrow_amounts_are_valid(amounts: &[u64; COUNCIL_SIZE]) -> bool {
 }
 
 fn configured_council_authority() -> Result<Pubkey> {
-    Pubkey::from_str(
-        option_env!("SINGULARITY_COUNCIL_AUTHORITY_PUBKEY")
-            .unwrap_or(DEFAULT_COUNCIL_AUTHORITY),
-    )
+    Pubkey::from_str(COUNCIL_AUTHORITY.ok_or(error!(CouncilError::MissingAuthorityConfig))?)
     .map_err(|_| error!(CouncilError::InvalidAuthorityConfig))
 }
 

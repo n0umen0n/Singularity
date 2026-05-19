@@ -841,7 +841,7 @@ export function renderHeroOg() {
         <div
           style={{
             position: "absolute",
-            bottom: 50,
+            bottom: 82,
             left: 90,
             display: "flex",
             alignItems: "center",
@@ -871,7 +871,7 @@ export function renderHeroOg() {
         <div
           style={{
             position: "absolute",
-            bottom: 56,
+            bottom: 88,
             right: 90,
             display: "flex",
             fontSize: 22,

@@ -5,6 +5,8 @@ const requiredProductionEnv = [
   "SINGULARITY_REGISTRY_PROGRAM_ID",
   "SINGULARITY_COUNCIL_PROGRAM_ID",
   "BLOB_READ_WRITE_TOKEN",
+  "CRON_SECRET",
+  "SINGULARITY_SESSION_SECRET",
 ];
 
 const placeholderProgramIds = new Set([

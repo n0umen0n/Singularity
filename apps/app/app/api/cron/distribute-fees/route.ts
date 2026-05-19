@@ -1,12 +1,13 @@
 import { fail, ok } from "@/lib/backend/http";
+import { isProductionRuntime, requireServerEnv } from "@/lib/backend/env";
 import { distributeMissionFeesInPostgres } from "@/lib/backend/postgres-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 function authorize(request: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return process.env.NODE_ENV !== "production";
+  const secret = isProductionRuntime() ? requireServerEnv("CRON_SECRET") : process.env.CRON_SECRET;
+  if (!secret) return true;
   return request.headers.get("authorization") === `Bearer ${secret}`;
 }
 

@@ -72,7 +72,8 @@ export async function verifyPrivyWalletSession(request: Request, address?: strin
         verification_key: privyJwks(),
       });
     } catch (error) {
-      console.error("Privy identity token verification failed", error);
+      const message = error instanceof Error ? error.message : "Unknown Privy identity token verification error";
+      console.error("Privy identity token verification failed", { error: message });
       throw new Error("Privy identity token could not be verified. Make sure identity tokens are enabled in the Privy dashboard.");
     }
   } else {
@@ -80,7 +81,8 @@ export async function verifyPrivyWalletSession(request: Request, address?: strin
       const claims = await privyClient().utils().auth().verifyAccessToken(bearerToken(request));
       user = await privyClient().users()._get(claims.user_id);
     } catch (error) {
-      console.error("Privy session verification failed", error);
+      const message = error instanceof Error ? error.message : "Unknown Privy session verification error";
+      console.error("Privy session verification failed", { error: message });
       throw new Error("Privy session could not be verified. Check PRIVY_APP_SECRET and restart the dev server.");
     }
   }

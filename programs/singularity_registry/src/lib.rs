@@ -19,6 +19,9 @@ pub mod singularity_registry {
             treasury_bps == 2_000,
             RegistryError::InvalidTreasuryAllocation
         );
+        require!(total_supply > 0, RegistryError::InvalidTotalSupply);
+        require_keys_neq!(token_mint, Pubkey::default(), RegistryError::InvalidTokenMint);
+        require_keys_neq!(treasury_vault, Pubkey::default(), RegistryError::InvalidTreasuryVault);
 
         let mission = &mut ctx.accounts.mission;
         mission.creator = ctx.accounts.creator.key();
@@ -127,4 +130,10 @@ pub enum RegistryError {
     Unauthorized,
     #[msg("MVP requires exactly 20% treasury allocation.")]
     InvalidTreasuryAllocation,
+    #[msg("Mission total supply must be greater than zero.")]
+    InvalidTotalSupply,
+    #[msg("Mission token mint cannot be the default public key.")]
+    InvalidTokenMint,
+    #[msg("Mission treasury vault cannot be the default public key.")]
+    InvalidTreasuryVault,
 }

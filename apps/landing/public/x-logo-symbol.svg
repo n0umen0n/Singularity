@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <filter id="glow" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="2.8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 1  0 1 0 0 .35  0 0 1 0 .22  0 0 0 .9 0" result="orange"/>
+      <feMerge>
+        <feMergeNode in="orange"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g stroke-linecap="round" stroke-linejoin="round" stroke-width="2.3" filter="url(#glow)">
+    <path d="M11 10 C22 23 25 27 32 32 C39 37 42 41 53 54" stroke="#ff7a5f"/>
+    <path d="M53 10 C42 23 39 27 32 32 C25 37 22 41 11 54" stroke="#8f7cff"/>
+    <path d="M20 11 C28 24 29 40 20 53" stroke="#8f7cff"/>
+    <path d="M44 11 C36 24 35 40 44 53" stroke="#ff7a5f"/>
+    <ellipse cx="32" cy="10" rx="21" ry="4.6" stroke="#ff7a5f"/>
+    <ellipse cx="32" cy="16" rx="15" ry="3.2" stroke="#ff7a5f" stroke-opacity=".85"/>
+    <ellipse cx="32" cy="32" rx="5.2" ry="2" stroke="#fff7ed" stroke-opacity=".82"/>
+    <ellipse cx="32" cy="48" rx="15" ry="3.2" stroke="#8f7cff" stroke-opacity=".85"/>
+    <ellipse cx="32" cy="54" rx="21" ry="4.6" stroke="#8f7cff"/>
+  </g>
+</svg>

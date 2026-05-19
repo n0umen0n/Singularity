@@ -90,10 +90,12 @@ async function formatSendTransactionError(error: unknown, connection: Connection
 
   const logs = error instanceof SendTransactionError ? await error.getLogs(connection).catch(() => error.logs) : plainLogs;
   const message = error instanceof SendTransactionError ? error.message : plainMessage;
-  console.error("Solana transaction failed", {
-    message,
-    logs,
-  });
+  if (process.env.NODE_ENV !== "production") {
+    console.error("Solana transaction failed", {
+      message,
+      logs,
+    });
+  }
 
   const details = `${message}\n${logs?.join("\n") || ""}`;
   if (details.includes("already in use")) {
