@@ -349,6 +349,8 @@ type EscrowedVoteBalance = {
   lockedUntil: string | null;
 };
 
+const VOTE_ESCROW_LOCK_INTERVAL_SQL = "3 days";
+
 async function escrowedVoteBalancesByMission(missionIds: string[], client?: Queryable) {
   if (missionIds.length === 0) return new Map<string, Map<string, EscrowedVoteBalance>>();
 
@@ -358,7 +360,7 @@ async function escrowedVoteBalancesByMission(missionIds: string[], client?: Quer
         fr.mission_id,
         frv.voter_wallet,
         max(coalesce((ec.escrow_amounts ->> (member_wallet.ordinality::int - 1))::numeric, 0))::numeric(40, 0) as escrowed_base_units,
-        max(frv.created_at + interval '3 minutes') as locked_until
+        max(frv.created_at + $2::interval) as locked_until
       from funding_request_votes frv
       join funding_requests fr on fr.id = frv.request_id
       join epoch_councils ec on ec.mission_id = fr.mission_id and ec.epoch_number = fr.epoch_number
@@ -367,14 +369,14 @@ async function escrowedVoteBalancesByMission(missionIds: string[], client?: Quer
         and lower(release_tx.wallet) = lower(frv.voter_wallet)
         and release_tx.type = 'funding-request-vote-escrow-release'
         and release_tx.status = 'confirmed'
-        and release_tx.created_at >= frv.created_at + interval '3 minutes'
+        and release_tx.created_at >= frv.created_at + $2::interval
       join jsonb_array_elements_text(ec.member_wallets) with ordinality as member_wallet(wallet, ordinality)
         on lower(member_wallet.wallet) = lower(frv.voter_wallet)
       where fr.mission_id = any($1::text[])
         and release_tx.signature is null
       group by fr.mission_id, frv.voter_wallet
     `,
-    [missionIds],
+    [missionIds, VOTE_ESCROW_LOCK_INTERVAL_SQL],
   );
   const byMission = new Map<string, Map<string, EscrowedVoteBalance>>();
   for (const row of result.rows) {
@@ -2146,9 +2148,9 @@ export async function confirmFundingRequestVoteInPostgres(requestId: string, inp
     await client.query(
       `
         insert into funding_request_votes (request_id, voter_wallet, vote, escrow_locked_until)
-        values ($1, $2, $3, now() + interval '3 minutes')
+        values ($1, $2, $3, now() + $4::interval)
       `,
-      [requestId, wallet, vote],
+      [requestId, wallet, vote, VOTE_ESCROW_LOCK_INTERVAL_SQL],
     );
 
     const counts = await client.query<{ approvals: string; rejections: string }>(
@@ -2387,10 +2389,10 @@ async function releaseFundingRequestVoteEscrowInPostgresLegacy(requestId: string
           join funding_requests later_request on later_request.id = later_vote.request_id
           where later_request.mission_id = fr.mission_id
             and lower(later_vote.voter_wallet) = lower(frv.voter_wallet)
-            and later_vote.created_at + interval '3 minutes' > now()
+            and later_vote.created_at + $2::interval > now()
         )
     `,
-    [requestId],
+    [requestId, VOTE_ESCROW_LOCK_INTERVAL_SQL],
   );
   const releases: Array<{ voter: string; signature: string; skipped?: false } | { voter: string; skipped: true; reason: string }> = [];
 

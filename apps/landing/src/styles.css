@@ -387,6 +387,33 @@ canvas {
   text-transform: uppercase;
 }
 
+.meteora-powered {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  width: fit-content;
+  color: rgba(255, 247, 237, 0.56);
+  pointer-events: auto;
+  transition: color 200ms ease, opacity 200ms ease, transform 200ms ease;
+}
+
+.meteora-powered img {
+  width: 1.77rem;
+  height: 1.77rem;
+  object-fit: contain;
+  opacity: 1;
+  filter:
+    drop-shadow(0 0 10px rgba(245, 189, 0, 0.36))
+    drop-shadow(0 0 14px rgba(245, 75, 0, 0.34))
+    drop-shadow(0 0 16px rgba(110, 69, 255, 0.34));
+}
+
+.meteora-powered:hover,
+.meteora-powered:focus-visible {
+  color: rgba(255, 247, 237, 0.88);
+  transform: translateY(-0.04rem);
+}
+
 .chapter-card h2 {
   margin: 0;
   max-width: 13ch;

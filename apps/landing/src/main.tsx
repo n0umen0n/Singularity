@@ -18,19 +18,21 @@ type Chapter = {
     href: string;
   };
   metric: string;
+  poweredByMeteora?: boolean;
 };
 
 const chapters: Chapter[] = [
   {
-    eyebrow: "Singularity",
+    eyebrow: "Powered by Meteora",
     label: "Intro",
     title: "Fundraising redefined",
-    body: "Singularity connects investors with builders to grow capital together.",
+    body: "Singularity connects investors with builders to grow capital together",
     cta: {
       label: "Launch app",
       href: "https://app.singularity.diy",
     },
     metric: "00",
+    poweredByMeteora: true,
   },
   {
     eyebrow: "The problem",
@@ -508,7 +510,20 @@ function App() {
                 }
                 aria-hidden={!isActive}
               >
-                {chapter.eyebrow ? <p className="eyebrow">{chapter.eyebrow}</p> : null}
+                {chapter.poweredByMeteora ? (
+                  <a
+                    className="eyebrow meteora-powered"
+                    href="https://www.meteora.ag/?tab=top"
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Powered by Meteora"
+                  >
+                    <span>Powered by Meteora</span>
+                    <img src="/meteora-symbol.svg" alt="" aria-hidden="true" />
+                  </a>
+                ) : chapter.eyebrow ? (
+                  <p className="eyebrow">{chapter.eyebrow}</p>
+                ) : null}
                 <h2>{chapter.title}</h2>
                 {chapter.body ? <p>{chapter.body}</p> : null}
                 {chapter.lines ? (
