@@ -1671,6 +1671,7 @@ textarea {
   padding: 1.35rem;
   text-align: center;
   flex-direction: column;
+  background-color: #08080b;
 }
 
 .flip-profile-card::before {
@@ -1703,7 +1704,7 @@ textarea {
   background:
     radial-gradient(circle at 12% 8%, rgba(255, 106, 74, 0.18), transparent 9rem),
     radial-gradient(circle at 86% 90%, rgba(118, 108, 255, 0.2), transparent 11rem),
-    rgba(8, 8, 11, 0.82);
+    #08080b;
 }
 
 .flip-profile-back-content,
