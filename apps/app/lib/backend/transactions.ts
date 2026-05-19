@@ -330,6 +330,14 @@ function assertConfiguredCouncilAuthority(authority: PublicKey) {
   }
 }
 
+function councilFinalizationErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("UnauthorizedAuthority") || message.includes("custom program error: 0x1777")) {
+    return "Automatic council finalization is rejected by the deployed council program. Rebuild and redeploy singularity_council with SINGULARITY_COUNCIL_AUTHORITY_PUBKEY set to the backend council authority.";
+  }
+  return null;
+}
+
 function hashBytes(value: string) {
   return createHash("sha256").update(value).digest().subarray(0, 32);
 }
@@ -1319,8 +1327,15 @@ export async function submitFinalizeEpochCouncilTransaction(input: {
   }).compileToV0Message();
   const transaction = new VersionedTransaction(message);
   transaction.sign([authority]);
-  const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
-  await connection.confirmTransaction({ signature, ...blockhash }, "confirmed");
+  let signature: string;
+  try {
+    signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+    await connection.confirmTransaction({ signature, ...blockhash }, "confirmed");
+  } catch (error) {
+    const translated = councilFinalizationErrorMessage(error);
+    if (translated) throw new Error(translated);
+    throw error;
+  }
 
   return {
     signature,
