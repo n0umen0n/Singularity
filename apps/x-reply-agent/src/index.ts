@@ -546,11 +546,11 @@ function fallbackMission(input: string): string {
 
 function formatReply(projectName: string, mission: MissionResult): string {
   if (mission.confidence === "fallback") {
-    return `If the mission is building ${mission.text}, it might be possible to raise funds via Singularity.`;
+    return `If the mission is building ${mission.text}, it is possible to raise funds via Singularity.`;
   }
 
   const prefix = startsWithVerb(mission.text) ? "is to" : "is";
-  return `If the mission ${prefix} ${mission.text}, it might be possible to raise funds via Singularity.`;
+  return `If the mission ${prefix} ${mission.text}, it is possible to raise funds via Singularity.`;
 }
 
 function startsWithVerb(input: string): boolean {
