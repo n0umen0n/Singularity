@@ -68,8 +68,8 @@ const startupMissions = [
     statement: "Catch arrhythmias early with Pulse, a continuous cardiac AI wearable",
     description:
       "San Francisco startup building a medical-grade chest patch that streams ECG context to clinicians and flags arrhythmia risk before ER visits. Capital funds FDA pathway work, pilot manufacturing, and cardiology clinic onboarding.",
-    image: "https://images.unsplash.com/photo-1559757148-5c350d0d3c56?auto=format&fit=crop&w=1600&q=85",
-    tokenImage: "https://images.unsplash.com/photo-1579684385127-1ef15d508118?auto=format&fit=crop&w=400&q=80",
+    image: "https://images.unsplash.com/photo-1776761916500-f639da084b7b?auto=format&fit=crop&w=1600&q=85",
+    tokenImage: "https://images.unsplash.com/photo-1690787628851-d36e285c29b0?auto=format&fit=crop&w=400&q=80",
     tokenSymbol: "PULSE",
     lifecycle: "graduated",
     marketCapUsd: 724000,
