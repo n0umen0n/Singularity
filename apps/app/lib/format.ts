@@ -1,5 +1,5 @@
 /** Compact USD for mission liquidity badges — always one decimal in millions (e.g. $3.5M). */
-export function formatLiquidityUsd(value: number) {
+export function formatLiquidityUsd(value: number): string {
   const safeValue = Number.isFinite(value) ? value : 0;
   const absoluteValue = Math.abs(safeValue);
   const sign = safeValue < 0 ? "-" : "";
@@ -16,7 +16,7 @@ export function formatLiquidityUsd(value: number) {
   return money(safeValue, false);
 }
 
-export function money(value: number, compact = false, maximumFractionDigitsOverride?: number) {
+export function money(value: number, compact = false, maximumFractionDigitsOverride?: number): string {
   const safeValue = Number.isFinite(value) ? value : 0;
   const absoluteValue = Math.abs(safeValue);
   const sign = safeValue < 0 ? "-" : "";
