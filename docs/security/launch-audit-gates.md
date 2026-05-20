@@ -12,7 +12,8 @@ These gates must pass before any public mainnet launch or treasury movement.
 - Postgres migrations applied with `npm run db:migrate`
 - Production uses `SINGULARITY_STORAGE=postgres`
 - Production uses Vercel Blob or equivalent object storage, not local files
-- `/api/auth/verify` verifies a real Solana wallet signature
+- `/api/auth/privy` verifies Privy access tokens and linked Solana wallets
+- `/api/auth/verify` (legacy) verifies a real Solana wallet signature when used
 - Jupiter quote/swap routing is configured and tested with production RPC and API limits
 
 ## Solana Program Gates

@@ -1,8 +1,10 @@
 # Singularity Backend Report
 
-## What I Built
+Last updated: 2026-05-20
 
-I added the first working backend for the Singularity platform app and continued it toward production readiness.
+## What Is Implemented
+
+The Singularity platform app runs a production-oriented backend inside the Next.js app and shared workspace packages.
 
 It is implemented inside the Next.js app under `apps/app/app/api`, so it runs with the existing app server at `http://127.0.0.1:8094`.
 
@@ -20,7 +22,12 @@ The backend can run in two modes:
 - Funding request preparation endpoint that validates and stores a request locally.
 - Funding request vote and execution endpoints.
 - Profile read/update endpoints.
-- Wallet auth nonce, verify, and logout endpoints with Solana signature verification.
+- Privy JWT session auth (`POST /api/auth/privy`, `GET /api/auth/session`) plus legacy nonce/verify SIWS endpoints.
+- Chain-confirm endpoints for launches, votes, funding requests, council registration, market graduation, and treasury allocation claims.
+- Meteora market graduation and treasury allocation claim transaction preparation.
+- Vote escrow withdrawal and funding-request vote escrow release flows.
+- Daily fee distribution cron at `GET /api/cron/distribute-fees`.
+- DBC launch simulation endpoint for the launch form.
 - Council candidate registration and checkpoint preparation endpoints.
 - Health endpoint for checking backend status.
 - Postgres schema baseline and migration script in `packages/db`.
@@ -86,11 +93,19 @@ SINGULARITY_SESSION_SECRET=replace-with-a-long-random-secret
 SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=your-key
 NEXT_PUBLIC_SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=your-key
 NEXT_PUBLIC_PRIVY_APP_ID=your-privy-app-id
+PRIVY_APP_SECRET=your-privy-app-secret
+PRIVY_JWT_VERIFICATION_KEY= # optional PEM key from Privy dashboard
 SINGULARITY_REGISTRY_PROGRAM_ID=...
 SINGULARITY_COUNCIL_PROGRAM_ID=...
 SINGULARITY_METEORA_DBC_PROGRAM_ID=...
 CRON_SECRET=replace-with-a-long-random-secret
 BLOB_READ_WRITE_TOKEN=...
+SINGULARITY_COUNCIL_AUTHORITY_PUBKEY=...
+SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR=...
+SINGULARITY_PLATFORM_FEE_RECIPIENT=...
+SINGULARITY_FEE_DISTRIBUTOR_PUBKEY=...
+SINGULARITY_FEE_DISTRIBUTOR_KEYPAIR=...
+DATABASE_SSL_REJECT_UNAUTHORIZED=true
 ```
 
 Run the database migration:
@@ -103,25 +118,56 @@ In production, file storage is blocked. The app must have Postgres configured.
 
 ## API Routes
 
+### Health, auth, and uploads
+
 - `GET /api/health`
+- `GET /api/auth/session`
+- `POST /api/auth/privy` (primary wallet login)
+- `POST /api/auth/nonce` (legacy SIWS helper)
+- `POST /api/auth/verify` (legacy SIWS helper)
+- `POST /api/auth/logout`
+- `POST /api/uploads/prepare`
+
+### Missions and markets
+
 - `GET /api/missions?q=mars&sort=highest-liquidity`
 - `GET /api/missions/:missionId`
-- `GET /api/missions/:missionId/quote?side=buy&amount=100`
+- `GET /api/missions/:missionId/balances?wallet=...`
 - `POST /api/missions/:missionId/quote`
 - `POST /api/missions/prepare-launch`
 - `POST /api/missions/confirm-launch`
+- `POST /api/missions/:missionId/prepare-graduation`
+- `POST /api/missions/:missionId/prepare-market-graduation`
+- `POST /api/missions/:missionId/confirm-market-graduation`
+- `POST /api/missions/:missionId/prepare-treasury-allocation-claim`
+- `POST /api/missions/:missionId/confirm-treasury-allocation-claim`
+- `POST /api/markets/dbc-simulation`
+
+### Funding requests and council
+
 - `POST /api/funding-requests/prepare`
+- `POST /api/funding-requests/confirm`
 - `POST /api/funding-requests/:requestId/vote`
+- `POST /api/funding-requests/:requestId/confirm-vote`
 - `POST /api/funding-requests/:requestId/execute`
+- `POST /api/funding-requests/:requestId/confirm-execution`
+- `POST /api/funding-requests/:requestId/release-vote-escrow`
+- `POST /api/council-candidates/register`
+- `POST /api/council-candidates/confirm`
+- `POST /api/council/checkpoints/prepare`
+
+### Profile
+
 - `GET /api/profile/:address`
 - `PATCH /api/profile`
-- `POST /api/auth/nonce`
-- `POST /api/auth/verify`
-- `POST /api/auth/logout`
-- `POST /api/council-candidates/register`
-- `POST /api/council/checkpoints/prepare`
-- `POST /api/uploads/prepare`
+- `POST /api/profile/vote-escrow/:missionId/withdraw`
+- `POST /api/profile/vote-escrow/:missionId/confirm-withdrawal`
+
+### Cron and ops
+
 - `GET /api/indexer/run`
+- `GET /api/cron/distribute-fees`
+- `GET /api/og/landing`
 
 ## Progress Update: Frontend, Privy Wallet, And Session Wiring
 
@@ -151,12 +197,13 @@ The backend auth flow now works like this:
 
 ```text
 User connects wallet with Privy
--> app asks backend for a nonce
--> wallet signs the nonce message
--> backend verifies the Solana signature
+-> Privy issues access token (and optional identity token)
+-> POST /api/auth/privy verifies the Privy token and linked Solana wallet
 -> backend sets a signed HTTP-only session cookie
 -> write APIs use that session wallet as the actor
 ```
+
+Legacy SIWS nonce/verify endpoints still exist for tooling, but the app UI uses Privy JWT verification only.
 
 This means mutating API routes no longer trust wallet addresses sent from the browser. They read the verified wallet from the session.
 
@@ -165,12 +212,24 @@ Protected routes now include:
 - `PATCH /api/profile`
 - `POST /api/uploads/prepare`
 - `POST /api/missions/prepare-launch`
+- `POST /api/missions/confirm-launch`
 - `POST /api/missions/:missionId/prepare-graduation`
+- `POST /api/missions/:missionId/prepare-market-graduation`
+- `POST /api/missions/:missionId/confirm-market-graduation`
+- `POST /api/missions/:missionId/prepare-treasury-allocation-claim`
+- `POST /api/missions/:missionId/confirm-treasury-allocation-claim`
 - `POST /api/funding-requests/prepare`
+- `POST /api/funding-requests/confirm`
 - `POST /api/funding-requests/:requestId/vote`
+- `POST /api/funding-requests/:requestId/confirm-vote`
 - `POST /api/funding-requests/:requestId/execute`
+- `POST /api/funding-requests/:requestId/confirm-execution`
+- `POST /api/funding-requests/:requestId/release-vote-escrow`
 - `POST /api/council-candidates/register`
+- `POST /api/council-candidates/confirm`
 - `POST /api/council/checkpoints/prepare`
+- `POST /api/profile/vote-escrow/:missionId/withdraw`
+- `POST /api/profile/vote-escrow/:missionId/confirm-withdrawal`
 
 Public read routes remain public:
 
@@ -231,6 +290,10 @@ The route uses shared logic from `packages/indexer` (`@singularity/indexer-core`
     {
       "path": "/api/indexer/run",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/distribute-fees",
+      "schedule": "0 0 * * *"
     }
   ]
 }
@@ -373,13 +436,29 @@ Verification completed:
 - `npm run build:app`
 - Local cron route smoke test with `batchSize=1&maxPages=1`
 
+## Progress Update: Confirm Flows, Market Graduation, And Fee Distribution
+
+Completed in the latest backend pass:
+
+- Added two-step chain-confirm flows for mission launch, funding request creation, council votes, funding execution, and council candidate registration.
+- Added Meteora market graduation (`prepare-market-graduation` / `confirm-market-graduation`) separate from registry `mark_graduated` bookkeeping.
+- Added treasury allocation claim for moving the 20% mission-token supply into the on-chain treasury vault after launch.
+- Added `release_vote_escrow` on-chain instruction and API route to return escrowed council vote tokens after requests resolve.
+- Added profile vote-escrow withdrawal endpoints for councillors reclaiming tokens after the lock period.
+- Switched primary wallet auth to Privy JWT verification (`POST /api/auth/privy`) with session restore via `GET /api/auth/session`.
+- Added daily `GET /api/cron/distribute-fees` for Meteora trading-fee accounting into `reward_epochs`.
+- Added `POST /api/markets/dbc-simulation` for launch-form curve previews.
+- Added Postgres tables `platform_metric_snapshots`, `mission_damm_fee_positions`, and expanded `mission_metrics` market fields.
+- Added seed/ops scripts under `scripts/` for demo missions, metrics rebalance, and flow testing.
+
 Known remaining blockers:
 
-- The indexer stores raw events and queues Meteora migration reconciliation jobs, but full DBC event decoding and automatic DAMM pool resolution still need implementation.
-- The app currently records mission launch after transaction submission, not after final on-chain semantic verification of the created pool.
-- If the Singularity registry program is still needed for long-term on-chain bookkeeping, it should be initialized by a backend keeper/indexer follow-up rather than by the user's launch transaction.
+- The indexer stores raw events and queues Meteora migration reconciliation jobs, but full DBC event decoding and automatic DAMM pool resolution still need production-grade implementation.
+- Mission launch is confirmed after transaction submission, not after full semantic verification of every created account.
+- Registry `initialize_mission` is not in the user launch path; long-term on-chain registry bookkeeping may still need a keeper/indexer follow-up.
+- Trading-fee reward claims require the deployed council program to expose compatible fee-claim instructions.
 
-Verification completed:
+Verification completed (2026-05-20):
 
 - `cargo test -p singularity_council` passed.
 - `anchor build` passed, with existing Anchor macro warnings.
@@ -395,6 +474,12 @@ Known remaining blockers:
 - Jupiter quote/swap routing is implemented at the backend transaction layer, but still needs live mainnet validation with production RPC/API limits and real mission mints.
 - Meteora migration reconciliation now has raw transaction preservation and job scaffolding, but full DBC event decoding and automatic `dbc_pool -> damm_pool` resolution still need production-grade implementation and mainnet validation.
 - External audit remains required before real treasury movement or public mainnet use.
+
+Verification completed (2026-05-20):
+
+- `npm run typecheck`
+- `npm run build:app`
+- `npm run security:audit`
 
 ## CI And Security Gates
 
@@ -422,17 +507,19 @@ Before real users or real funds:
 
 ## Simple Mental Model
 
-Local development:
+Local development without Postgres:
 
 ```text
-UI -> Next.js API routes -> local JSON store seeded from mock-data.ts
+UI -> Next.js API routes -> .singularity/backend-db.json seeded from mock-data.ts
 ```
 
-Production:
+Local development or production with Postgres:
 
 ```text
-UI -> Next.js API routes -> Postgres + Solana signature auth + Object Storage + Solana RPC/Indexer
+UI -> Next.js API routes -> Postgres + Privy session auth + Object Storage + Solana RPC/Indexer
 ```
+
+Demo missions seeded by scripts under `scripts/` use a fixed demo creator wallet and indexed metrics without requiring on-chain launches.
 
 This gives the app real API contracts now, while keeping the high-risk Solana and treasury pieces behind explicit configuration work.
 
@@ -630,7 +717,15 @@ SINGULARITY_STORAGE
 SOLANA_RPC_URL
 NEXT_PUBLIC_SOLANA_RPC_URL
 NEXT_PUBLIC_PRIVY_APP_ID
+PRIVY_APP_SECRET
+PRIVY_JWT_VERIFICATION_KEY
 SINGULARITY_SESSION_SECRET
+SINGULARITY_COUNCIL_AUTHORITY_PUBKEY
+SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR
+SINGULARITY_PLATFORM_FEE_RECIPIENT
+SINGULARITY_FEE_DISTRIBUTOR_PUBKEY
+SINGULARITY_FEE_DISTRIBUTOR_KEYPAIR
+DATABASE_SSL_REJECT_UNAUTHORIZED
 SINGULARITY_REGISTRY_PROGRAM_ID
 SINGULARITY_COUNCIL_PROGRAM_ID
 SINGULARITY_METEORA_DBC_PROGRAM_ID
@@ -658,21 +753,23 @@ CI_PRODUCTION_GATE=true npm run security:gate
 
 If this fails, it means one or more production variables are missing or unsafe.
 
-### 10. Configure The Vercel Indexer
+### 10. Configure Vercel Cron Jobs
 
-The production indexer runs as a Vercel cron job against:
+Production cron jobs:
 
 ```text
-/api/indexer/run
+/api/indexer/run          every 5 minutes
+/api/cron/distribute-fees daily at 00:00 UTC
 ```
 
-To make it work:
+To make them work:
 
 1. Add `CRON_SECRET` to Vercel environment variables.
 2. Add `SINGULARITY_METEORA_DBC_PROGRAM_ID` if you want Meteora DBC activity indexed.
-3. Ensure `SOLANA_RPC_URL`, `DATABASE_URL`, `SINGULARITY_REGISTRY_PROGRAM_ID`, and `SINGULARITY_COUNCIL_PROGRAM_ID` are set in production.
-4. Redeploy after changing environment variables or `vercel.json`.
-5. Check Vercel cron/function logs for `/api/indexer/run`.
+3. Add `SINGULARITY_FEE_DISTRIBUTOR_KEYPAIR` and `SINGULARITY_PLATFORM_FEE_RECIPIENT` if you want automated fee distribution.
+4. Ensure `SOLANA_RPC_URL`, `DATABASE_URL`, `SINGULARITY_REGISTRY_PROGRAM_ID`, and `SINGULARITY_COUNCIL_PROGRAM_ID` are set in production.
+5. Redeploy after changing environment variables or `vercel.json`.
+6. Check Vercel cron/function logs for both routes.
 
 For local/manual indexing, run:
 

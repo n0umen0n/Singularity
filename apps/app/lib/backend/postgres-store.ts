@@ -8,6 +8,7 @@ import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
+import { publishMissionTokenMetadata } from "@/lib/backend/mission-token-metadata";
 import { query, transaction } from "@/lib/backend/db";
 import {
   fundingRequestPda,
@@ -1399,15 +1400,16 @@ export async function prepareMissionLaunchInPostgres(input: {
   const idBase = slugify(statement);
   const id = `${idBase}-${randomBytes(2).toString("hex")}`;
   const seed = fixtureMissions[0];
-  const metadata = {
-    name: tokenSymbol,
-    symbol: tokenSymbol,
+  const creatorWallet = input.creatorWallet || currentUser.address;
+  const publishedMetadata = await publishMissionTokenMetadata({
+    creatorWallet,
+    tokenSymbol,
     description,
-    image: input.missionImage,
-    properties: { category: "mission-token", platform: "Singularity" },
-  };
-  const metadataHash = contentHash(metadata);
-  const metadataUri = `db://metadata/${metadataHash}.json`;
+    tokenImage: input.tokenImage,
+    missionImage: input.missionImage,
+  });
+  const metadataHash = publishedMetadata.hash;
+  const metadataUri = publishedMetadata.uri;
   const launchConfig = resolveMeteoraDbcLaunchConfig({
     totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
     initialPurchaseUsdc: input.initialPurchaseUsdc,
@@ -1455,6 +1457,10 @@ export async function prepareMissionLaunchInPostgres(input: {
 
   if (launchTransaction.status === "ready") {
     await query(
+      "insert into metadata_uploads (hash, uri, owner_wallet, content_type) values ($1, $2, $3, 'application/json') on conflict (hash) do update set uri = excluded.uri",
+      [metadataHash, metadataUri, creatorWallet],
+    );
+    await query(
       `
         insert into pending_mission_launches (
           id, creator_wallet, metadata_hash, metadata_uri, statement, description,
@@ -1465,7 +1471,7 @@ export async function prepareMissionLaunchInPostgres(input: {
       `,
       [
         id,
-        input.creatorWallet || currentUser.address,
+        creatorWallet,
         metadataHash,
         metadataUri,
         statement,

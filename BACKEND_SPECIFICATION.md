@@ -1,8 +1,10 @@
 # Singularity Backend Specification
 
-This document defines the backend and Solana implementation plan for the Singularity platform. It is intended to pair with `UI_SPECIFICATION.md` and turn the current clickable mock app into a production architecture for mission markets, mission tokens, treasury councils, funding requests, and wallet-based profiles.
+Last updated: 2026-05-20
 
-The current app in `apps/app` uses local mock data only. This spec defines the first real backend boundary: what should be executed on Solana, what should be indexed for fast reads, what should live in permanent metadata storage, and what should remain editable in the application database.
+This document defines the backend and Solana architecture for the Singularity platform. It pairs with `UI_SPECIFICATION.md` and `BACKEND_REPORT.md`.
+
+The platform app in `apps/app` is wired to real API routes. In production it uses Postgres, Privy session auth, object storage, Solana transaction preparation, and a Vercel cron indexer. Local development can fall back to `.singularity/backend-db.json` seeded from `mock-data.ts`. Demo missions can also be seeded into Postgres via scripts in `scripts/` without on-chain launches.
 
 ## Product Backend Goals
 
@@ -752,19 +754,19 @@ Use [Solana Wallet Adapter](https://anza-xyz.github.io/wallet-adapter/) and Wall
 
 ### Session Model
 
-Login flow:
+Implemented login flow:
 
 1. User opens `Sign in`.
-2. Privy shows two primary paths: create/login with email, or connect a self-custody Solana wallet.
-3. If the user chooses email, Privy creates or unlocks an embedded Solana wallet for that account.
-4. If the user chooses self-custody, the user connects Phantom, Solflare, Backpack, Magic Eden Wallet, or another supported wallet.
-5. Backend issues a nonce and SIWS-style message when wallet signature verification is needed.
-6. User signs the message with the active wallet.
-7. Backend verifies the signature and wallet address.
-8. Backend creates an HTTP-only session cookie or short-lived JWT plus refresh session.
-9. Profile identity is keyed by the active wallet public key, with linked wallets stored under the same user when Privy links accounts.
+2. Privy shows email account creation/login or self-custody Solana wallet connection.
+3. After Privy auth completes, the app calls `POST /api/auth/privy` with the Privy access token and optional identity token.
+4. The backend verifies the Privy token server-side (`PRIVY_APP_SECRET`, optional `PRIVY_JWT_VERIFICATION_KEY`) and checks that the requested Solana address is linked to the Privy user.
+5. The backend sets a signed HTTP-only `singularity_session` cookie.
+6. `GET /api/auth/session` restores the session on page load.
+7. Profile identity is keyed by the session wallet public key.
 
-The wallet remains the authority for on-chain transactions. The web session only authenticates API reads/writes such as profile metadata drafts, uploaded metadata preparation, and notification preferences.
+Legacy SIWS `nonce`/`verify` endpoints remain for tooling but are not used by the app UI.
+
+The wallet remains the authority for on-chain transactions. The web session only authenticates API reads/writes such as profile edits, uploads, and transaction preparation.
 
 ## Data Storage Position
 
@@ -975,9 +977,9 @@ Production mapping:
 
 Recommended first database: Postgres, hosted through Supabase, Neon, or another managed Postgres provider.
 
-Core tables:
+Core tables (implemented in `packages/db/schema.sql`):
 
-- `profiles`: wallet address, display name, avatar URL, bio, socials, created_at, updated_at.
+- `profiles`: wallet address, display name, avatar URL, bio, socials, balances, token_balances, created_missions.
 - `missions`: mission PDA, slug, creator wallet, token mint, DBC pool, DAMM pool, mission token treasury vault, lifecycle state, metadata hash, immutable display fields.
 - `mission_metrics`: mission PDA, price, holders, liquidity, treasury token balance, treasury token USD estimate, volume, updated_at.
 - `price_points`: mission PDA, timestamp, price, volume, source.
@@ -992,6 +994,10 @@ Core tables:
 - `reward_claims`: mission PDA, epoch number, wallet, role, amount USDC, claimed_at.
 - `transactions`: signature, wallet, mission PDA, type, status, slot, error, created_at.
 - `metadata_uploads`: hash, URI, owner wallet, content type, created_at.
+- `pending_mission_launches`: prepared launches before on-chain confirmation.
+- `indexer_state`, `raw_chain_events`, `migration_reconciliation_jobs`: indexer replay and Meteora migration reconciliation.
+- `mission_damm_fee_positions`: DAMM LP positions tracked for fee distribution.
+- `platform_metric_snapshots`: aggregated platform metrics for ops dashboards.
 
 The database is an index and UX layer. On-chain state wins for financial and governance facts.
 
@@ -1000,13 +1006,11 @@ The database is an index and UX layer. On-chain state wins for financial and gov
 ### Wallet Login
 
 1. User clicks `Sign in`.
-2. Privy opens the auth modal with two primary paths: email account creation/login or self-custody Solana wallet login.
-3. Email users get a Privy embedded Solana wallet; self-custody users connect Phantom, Solflare, Backpack, Magic Eden Wallet, or another supported wallet.
-4. Backend creates a login nonce when signature verification is required.
-5. User signs a SIWS-style message with the active wallet.
-6. Backend verifies signature and address.
-7. Backend creates an authenticated session.
-8. App loads profile, balances, held mission tokens, council roles, and created missions from API/indexer.
+2. Privy opens the auth modal with email account creation/login or self-custody Solana wallet connection.
+3. The app calls `POST /api/auth/privy` with the Privy access token.
+4. The backend verifies the Privy session and linked Solana wallet, then sets `singularity_session`.
+5. `GET /api/auth/session` restores the session on reload.
+6. App loads profile, balances, held mission tokens, council roles, and created missions from API/indexer.
 
 ### Mission Launch
 
@@ -1080,26 +1084,20 @@ Graduated phase:
 
 ## API Layer
 
-The Next.js app should call a backend API for app data and transaction preparation.
+The Next.js app calls backend APIs for app data, transaction preparation, and chain-confirm bookkeeping.
 
-Recommended routes:
+Implemented routes (see `BACKEND_REPORT.md` for the full list):
 
-- `GET /api/missions`: feed, filters, search, sorting.
-- `GET /api/missions/:id`: mission detail, metrics, council, funding requests.
-- `POST /api/missions/prepare-launch`: validate metadata, upload assets, prepare launch transaction.
-- `GET /api/missions/:id/quote`: buy/sell quote from DBC or AMM route.
-- `POST /api/council-candidates/register`: prepare candidate registration transaction with one or more mission-token accounts.
-- `POST /api/council/checkpoints/prepare`: admin/keeper endpoint to prepare the next epoch balance checkpoint transaction.
-- `POST /api/funding-requests/prepare`: upload metadata and prepare create-request transaction.
-- `POST /api/funding-requests/:id/vote`: prepare vote transaction.
-- `POST /api/funding-requests/:id/execute`: prepare execution transaction.
-- `GET /api/profile/:address`: profile, balances, missions, council roles, requests.
-- `PATCH /api/profile`: update editable profile fields.
-- `POST /api/auth/nonce`: create wallet login nonce.
-- `POST /api/auth/verify`: verify signed login message.
-- `POST /api/auth/logout`: clear session.
+- Mission feed, detail, balances, quotes, launch prepare/confirm, graduation, market graduation, and treasury allocation claim.
+- Funding request prepare/confirm, vote/confirm-vote, execute/confirm-execution, and vote-escrow release.
+- Council candidate register/confirm and checkpoint preparation.
+- Profile read/update and vote-escrow withdrawal.
+- Auth: `POST /api/auth/privy` (primary), `GET /api/auth/session`, legacy `nonce`/`verify`, and `logout`.
+- Uploads, health, DBC simulation, indexer cron, and fee distribution cron.
 
-Transaction-preparation endpoints should not custody user funds. They should return unsigned transactions or instruction payloads for the user's wallet to sign.
+Transaction-preparation endpoints do not custody user funds. They return unsigned transactions for the user's Privy-connected wallet to sign. Most mutating on-chain flows use a prepare step followed by a confirm step that records the submitted signature in Postgres.
+
+Protected routes read the verified wallet from the signed HTTP-only session cookie, not from client-supplied addresses.
 
 ## Indexer
 
@@ -1235,11 +1233,13 @@ Admin controls should not be able to:
 
 ### Phase 1: Wallet And Indexed Mock Replacement
 
-- Add Privy login with email-created embedded wallets and self-custody wallet connection.
-- Add profile sessions keyed by wallet address.
-- Replace `mock-data.ts` reads with API-backed mission/profile endpoints.
-- Introduce Postgres schema and indexer scaffolding.
-- Keep mission creation disabled until local-validator tests, CI, transaction simulation, and mainnet program deployment checks are complete.
+Status: largely complete.
+
+- Privy login with embedded and self-custody Solana wallets is implemented.
+- Profile sessions are keyed by wallet address via signed cookies.
+- Mission and profile screens load from API-backed endpoints.
+- Postgres schema, migrations, indexer scaffolding, and local JSON fallback are implemented.
+- On-chain mission launch, trading, council, and funding flows are enabled behind Solana configuration.
 
 ### Phase 2: Mainnet Mission Launch
 
@@ -1308,15 +1308,18 @@ Admin controls should not be able to:
 
 ## Implementation Notes For The Current Repo
 
-The first backend implementation should introduce new packages rather than placing all logic inside the UI component file.
+Current workspace layout:
 
-Recommended workspace additions:
+- `apps/app/app/api` — Next.js route handlers for all HTTP endpoints.
+- `apps/app/lib/backend` — store, Postgres access, auth, sessions, transaction builders.
+- `apps/app/lib/api.ts` — typed frontend API client.
+- `packages/solana` — Meteora DBC/DAMM, Jupiter, and Anchor transaction builders.
+- `packages/db` — schema and migration script.
+- `packages/indexer` (`@singularity/indexer-core`) — shared indexer logic.
+- `apps/indexer` — CLI entry for local/manual indexing.
+- `packages/storage` — object storage boundary (local files or Vercel Blob).
+- `packages/ui` — shared brand primitives.
+- `programs/singularity_registry` and `programs/singularity_council` — Anchor programs.
+- `scripts/` — seeding, security gate, Anchor test orchestration, and ops utilities.
 
-- `apps/api` or Next.js route handlers under `apps/app/app/api` for HTTP endpoints.
-- `packages/solana` for shared Solana clients, IDLs, transaction builders, and address helpers.
-- `packages/db` for schema and query helpers.
-- `packages/indexer` or `apps/indexer` for the Solana indexer worker.
-- `programs/singularity_registry` for the mission registry program.
-- `programs/singularity_council` for funding requests and voting.
-
-The existing `apps/app/lib/mock-data.ts` should remain useful as fixture data until the API is ready, then be replaced screen by screen with real endpoints.
+`apps/app/lib/mock-data.ts` remains the TypeScript shape source and local JSON seed fixture. Production reads come from Postgres. `apps/app/lib/demo-missions.ts` marks wallet-seeded demo content that does not require on-chain launches.

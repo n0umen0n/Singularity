@@ -1,6 +1,6 @@
 # Singularity Security Audit Report
 
-Date: 2026-05-19
+Date: 2026-05-20 (last verification pass)
 
 ## Scope
 
@@ -34,6 +34,11 @@ Reviewed the production web app/API, database access paths, dependency audit fai
 - Reduced client-side secret/error leakage:
   - Solana transaction simulation logs are no longer printed to the browser console in production.
   - Privy verification failures log sanitized error summaries instead of whole error objects.
+- Hardened Privy session verification:
+  - `POST /api/auth/privy` verifies Privy access tokens server-side with `PRIVY_APP_SECRET`.
+  - Optional `PRIVY_JWT_VERIFICATION_KEY` supports PEM or JWKS URL verification.
+  - Backend session is not created until the requested Solana wallet is linked to the Privy user.
+  - `GET /api/auth/session` restores sessions without treating a Privy-connected wallet as authenticated before cookie verification.
 
 ### Dependency Audit
 
@@ -92,28 +97,31 @@ SINGULARITY_COUNCIL_AUTHORITY_PUBKEY=<production-authority-pubkey> anchor build
   - `DATABASE_SSL=true`
   - `DATABASE_SSL_REJECT_UNAUTHORIZED=true` unless the database provider explicitly requires otherwise
   - `SINGULARITY_STORAGE=postgres`
-  - `SINGULARITY_SESSION_SECRET`
+  - `SINGULARITY_SESSION_SECRET` (at least 32 characters)
   - `CRON_SECRET`
   - `SOLANA_RPC_URL`
   - `BLOB_READ_WRITE_TOKEN`
+  - `NEXT_PUBLIC_PRIVY_APP_ID`, `PRIVY_APP_SECRET`, and optional `PRIVY_JWT_VERIFICATION_KEY`
   - deployed registry/council program IDs
+  - `SINGULARITY_COUNCIL_AUTHORITY_PUBKEY` matching the built council program
+  - backend-only `SINGULARITY_COUNCIL_AUTHORITY_KEYPAIR`, `SINGULARITY_FEE_DISTRIBUTOR_KEYPAIR` (never `NEXT_PUBLIC_*`)
 - Use least-privilege database credentials. The application currently owns tables directly; for stronger defense-in-depth, create separate migration and runtime DB roles so a runtime credential cannot drop/alter schema.
 - Keep Vercel/GitHub secrets out of `NEXT_PUBLIC_*`. Anything prefixed with `NEXT_PUBLIC_` is intentionally browser-visible.
 
 ## Verification
 
-Passed:
+Passed (2026-05-20):
 
 ```bash
 npm run security:audit
 npm run typecheck
 npm run build:app
-SINGULARITY_COUNCIL_AUTHORITY_PUBKEY=8F7YpepKxP1xc9Nqscdh6SSs5X7DmtPWUjUGViYShCxQ anchor build
-cargo test
+npm run security:gate
 ```
 
 Notes:
 
-- `next build` reports a Turbopack NFT tracing warning caused by dynamic filesystem imports through backend store code. It is not a direct security failure, but should be cleaned up before launch to avoid oversized server traces.
-- Anchor/Rust emits framework macro `unexpected cfg` warnings from Anchor/Solana dependencies. Tests and builds pass.
-- I did not run a full local validator end-to-end Anchor integration test in this pass.
+- `next build` may report a Turbopack NFT tracing warning from dynamic filesystem imports in backend store code. It is not a direct security failure, but should be cleaned up before launch.
+- Anchor/Rust emits framework macro `unexpected cfg` warnings from Anchor/Solana dependencies. Builds and unit tests pass.
+- Cron routes (`/api/indexer/run`, `/api/cron/distribute-fees`) require `Authorization: Bearer <CRON_SECRET>` when `CRON_SECRET` is set in production.
+- Re-run `npm run test:anchor:local` before mainnet treasury enablement; this pass did not re-execute full validator integration tests.

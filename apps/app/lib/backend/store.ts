@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_DBC_TOTAL_SUPPLY, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
+import { publishMissionTokenMetadata } from "@/lib/backend/mission-token-metadata";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
@@ -366,14 +367,16 @@ export async function prepareMissionLaunch(input: {
 
     const idBase = slugify(statement);
     const id = state.missions.some((mission) => mission.id === idBase) ? `${idBase}-${randomBytes(2).toString("hex")}` : idBase;
-    const metadata = {
-      name: tokenSymbol,
-      symbol: tokenSymbol,
+    const creatorWallet = input.creatorWallet || state.currentUser.address;
+    const publishedMetadata = await publishMissionTokenMetadata({
+      creatorWallet,
+      tokenSymbol,
       description,
-      image: input.missionImage,
-      properties: { category: "mission-token", platform: "Singularity" },
-    };
-    const hash = contentHash(metadata);
+      tokenImage: input.tokenImage,
+      missionImage: input.missionImage,
+    });
+    const hash = publishedMetadata.hash;
+    const metadataUri = publishedMetadata.uri;
     const seed = state.missions[0];
     const launchConfig = resolveMeteoraDbcLaunchConfig({
       totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
@@ -406,13 +409,12 @@ export async function prepareMissionLaunch(input: {
     state.missions.unshift(mission);
     state.metadataUploads.push({
       hash,
-      uri: `local://metadata/${hash}.json`,
-      ownerWallet: input.creatorWallet || state.currentUser.address,
+      uri: metadataUri,
+      ownerWallet: creatorWallet,
       contentType: "application/json",
       createdAt: new Date().toISOString(),
     });
 
-    const metadataUri = `local://metadata/${hash}.json`;
     const transaction = await prepareLaunchTransaction({
       creatorWallet: input.creatorWallet,
       missionId: mission.id,

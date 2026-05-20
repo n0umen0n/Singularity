@@ -1,6 +1,13 @@
 # Program Documentation
 
+Last updated: 2026-05-20
+
 This document gives a simple overview of the two Anchor programs in `programs`.
+
+Deployed program IDs in `.env.example`:
+
+- `singularity_registry`: `7CxZRBgnYwi5MtSKebmaSh7XTRVXk3QgzjXRUgLzcXT5`
+- `singularity_council`: `4k7JhCHjs2uoiP1hmvYDawnwJuXMt5ZhUJotvMRqedKS`
 
 ## `singularity_registry`
 
@@ -31,11 +38,12 @@ The council program is for registering council candidates, finalizing epoch coun
 
 | Function | What it does | Who it is for |
 | --- | --- | --- |
-| `register_candidate` | Creates a candidate account for a mission and records the candidate owner and registration time. It emits a `CandidateRegistered` event. | People or agents who want to be considered for a mission council. |
-| `finalize_epoch_council` | Creates the council for a specific mission epoch with exactly six member public keys and six matching token escrow amounts. It only accepts the compile-time configured council authority, records when the council was finalized, and emits an `EpochCouncilFinalized` event. | The configured council authority responsible for publishing each epoch's council and required voting escrow amounts. |
+| `register_candidate` | Creates a candidate account for a mission and records the candidate owner and registration time. The `mission` account must be owned by `singularity_registry`. Emits `CandidateRegistered`. | People or agents who want to be considered for a mission council. |
+| `finalize_epoch_council` | Creates the council for a specific mission epoch with exactly six member public keys and six matching token escrow amounts. Only the compile-time `SINGULARITY_COUNCIL_AUTHORITY_PUBKEY` signer is accepted. Records finalization time and emits `EpochCouncilFinalized`. | The configured council authority responsible for publishing each epoch's council and required voting escrow amounts. |
 | `create_request` | Creates a funding request tied to a mission and epoch council. It stores the request metadata hash, recipient, token amount, requester, and starts the request as `Active`. The token amount must be greater than zero. | Builders, contributors, or mission participants requesting treasury funding. |
 | `vote` | Records one council member's vote on an active funding request and transfers that member's required mission-token escrow amount into the request escrow vault. It counts approvals and rejections, accepts the request at four approvals, and rejects it at three rejections. It emits a `FundingRequestVote` event. | Finalized council members voting on funding requests. |
 | `execute` | Transfers tokens from the mission treasury vault to the approved recipient after the request is accepted, the three-day voting period has passed, and the request has not already been executed. It marks the request as `Executed` and emits a `FundingRequestExecuted` event. | Anyone submitting the final transaction after council approval and the required waiting period. |
+| `release_vote_escrow` | Returns escrowed mission tokens from a request vote escrow vault back to the voter after the lock period (`VOTE_ESCROW_LOCK_SECONDS`, three days). Requires matching mission, voter token account, and escrow accounts. Emits `VoteEscrowReleased`. | Voters or keepers releasing escrow after a request resolves or the lock expires. |
 
 ### Helper Functions
 
@@ -66,7 +74,8 @@ The council program is for registering council candidates, finalizing epoch coun
 | `FundingRequestCreated` | Event emitted when a funding request is created. | Indexers, backend services, and app notifications. |
 | `FundingRequestVote` | Event emitted when a council member votes, including the escrowed token amount. | Indexers, backend services, and vote-history views. |
 | `FundingRequestExecuted` | Event emitted when treasury tokens are paid to the recipient. | Indexers, backend services, accounting, and app notifications. |
-| `CouncilError` | Council-specific errors for invalid amounts, inactive requests, unaccepted requests, early execution, double execution, and non-council voters. | Developers, tests, and clients handling failed transactions. |
+| `VoteEscrowReleased` | Event emitted when escrowed vote tokens are returned to a voter. | Indexers, backend services, and profile escrow views. |
+| `CouncilError` | Council-specific errors for invalid amounts, inactive requests, unaccepted requests, early execution, double execution, non-council voters, unauthorized authority, mission mismatch, and escrow still locked. | Developers, tests, and clients handling failed transactions. |
 
 ## High-Level Flow
 
@@ -76,4 +85,10 @@ The council program is for registering council candidates, finalizing epoch coun
 4. A requester calls `create_request` to ask for treasury funding.
 5. Council members call `vote`, which escrows their required voting tokens for that request.
 6. After four approvals and at least three days, anyone can call `execute` to pay the recipient from the treasury vault.
-7. When the mission is ready, the creator calls `mark_graduated` to store the DAMM pool and mark the mission as graduated.
+7. After the vote escrow lock period, voters or keepers call `release_vote_escrow` to return escrowed tokens.
+8. When the mission market is ready, the creator calls `mark_graduated` to store the DAMM pool and mark the mission as graduated in the registry.
+
+## Build Requirements
+
+- `singularity_council` must be built with `SINGULARITY_COUNCIL_AUTHORITY_PUBKEY` set. There is no baked-in fallback authority.
+- Run local integration tests with `npm run test:anchor:local` (copies deploy artifacts into `target/deploy` before `anchor test --skip-build`).

@@ -1,6 +1,8 @@
 # Singularity Platform UI Specification
 
-This document defines the product UI for the Singularity platform. It is intended to be handed to an AI agent or frontend engineer to build the web app after the existing landing page.
+Last updated: 2026-05-20
+
+This document defines the product UI for the Singularity platform. The platform app in `apps/app` implements these screens against live API routes; use this spec as the source of truth for visual and interaction requirements.
 
 Singularity should feel like a premium crypto-native fundraising terminal: cinematic, dark, liquid, intelligent, and trustworthy. The landing page already establishes the visual language: a black cosmic background, glowing orange and purple singularity geometry, cream typography, glass surfaces, subtle grid lines, and precise uppercase labels. The product app must extend that identity into a usable dashboard without losing the sense of wonder.
 
@@ -601,6 +603,8 @@ Important states:
 
 - Wallet not connected: CTA says `Sign in to trade`.
 - Insufficient balance: disable CTA and show helper text.
+- Bonding market at 100% pool progress: primary CTA becomes `Graduate market` (Meteora DAMM migration) instead of buy/sell.
+- Treasury allocation unclaimed: show claim CTA for creators when the 20% allocation has not been moved to the on-chain treasury vault.
 - Pending transaction: show spinner using Singularity ring.
 - Success: show compact receipt card.
 
@@ -859,7 +863,7 @@ Mission image:
 
 - Large upload dropzone.
 - Recommended ratio: 16:10.
-- Accepted formats: PNG, JPG, WEBP, SVG if supported.
+- Accepted formats: PNG, JPG, WEBP only (SVG uploads are blocked server-side).
 - Show crop/preview state.
 
 Mission statement:
@@ -922,11 +926,13 @@ After click:
   - 80/20 allocation.
   - Initial purchase amount.
   - Creator trading fee note.
+- Two-step on-chain flow: `prepare-launch` returns a transaction; after wallet submission, `confirm-launch` records the mission.
+- Optional DBC simulation preview via `POST /api/markets/dbc-simulation` while editing launch parameters.
 
 States:
 
 - Disabled until required fields pass validation.
-- Pending transaction.
+- Pending transaction (prepare, sign, confirm).
 - Success with link to mission page.
 - Error with actionable message.
 
@@ -1030,6 +1036,11 @@ After click:
   - Amount.
   - Mission.
   - Governance rule.
+- Two-step on-chain flow: `prepare` returns a transaction; after wallet submission, `confirm` stores the funding request in Postgres.
+- Council votes and execution also use prepare/confirm steps. Vote escrow release is available after requests resolve.
+
+States:
+
 - Pending state while transaction/request creation is submitted.
 - Success state routes to request detail or mission page funding request section.
 
@@ -1129,24 +1140,30 @@ Use these breakpoints unless the implementation framework already has establishe
 Desktop product screens should feel dense and powerful.
 Mobile screens should prioritize task order and sticky primary actions.
 
-## Implementation Notes For The Future Frontend Agent
+## Implementation Notes
 
-- Reuse the existing brand SVG paths from the landing page for the logo and loading states.
-- Preserve current color variables from `src/styles.css` as the base design tokens.
-- Build screens with reusable primitives:
-  - `AppShell`
-  - `GlassCard`
-  - `StatCard`
-  - `MissionCard`
-  - `TokenAvatar`
-  - `StatusPill`
-  - `TreasuryCouncilGrid`
-  - `FundingRequestCard`
-  - `TradePanel`
-  - `ImageUpload`
-  - `FormField`
-- Keep the landing page visually more cinematic and the app pages more operational, but both should clearly belong to the same product.
-- Prefer real data components and loading states over static mockups.
-- Keep all financial actions behind explicit confirmation states.
-- Use exact route names from this spec unless backend/API constraints require changes.
+Current implementation lives in `apps/app`:
+
+- `components/platform.tsx` — mission list, mission detail, launch, request funding, profile, trading, council, and modals.
+- `lib/api.ts` — typed client for all backend routes.
+- `lib/wallet.tsx` — Privy wallet provider, `POST /api/auth/privy` session verification, and prepared transaction signing.
+- `lib/mock-data.ts` — shared TypeScript shapes (runtime data comes from API/Postgres).
+
+Auth:
+
+- Primary login is Privy (`Sign in` opens Privy modal, then backend session via `/api/auth/privy`).
+- A Privy-connected wallet is not treated as app-authenticated until the session cookie exists.
+
+Reusable primitives to preserve or extract:
+
+- App shell, glass cards, stat cards, mission cards, token avatars, status pills, council grid, funding request cards, trade panel, image upload, form fields.
+
+Guidelines:
+
+- Reuse brand SVG paths from the landing page for logo and loading states.
+- Preserve color variables from `apps/app/app/globals.css`.
+- Keep the landing page cinematic and app pages operational, but visually related.
+- Use API-backed data with skeleton/empty/error states, not static mock renders.
+- Keep financial actions behind explicit confirmation and prepare/confirm transaction flows.
+- Use exact route names from this spec unless backend constraints require changes.
 

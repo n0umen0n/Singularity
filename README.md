@@ -34,8 +34,10 @@ The repository is organized as a production-oriented monorepo: a cinematic WebGL
 |   `-- singularity_council
 |-- tests                   # Anchor tests
 |-- docs                    # Supporting documentation and README assets
+|-- BACKEND_REPORT.md
 |-- BACKEND_SPECIFICATION.md
 |-- PROGRAM_DOCUMENTATION.md
+|-- SECURITY_AUDIT_REPORT.md
 `-- UI_SPECIFICATION.md
 ```
 
@@ -188,9 +190,11 @@ High-level flow:
 
 - `UI_SPECIFICATION.md` defines product positioning, visual language, and platform screens.
 - `BACKEND_SPECIFICATION.md` defines the backend, indexer, storage, and Solana architecture.
+- `BACKEND_REPORT.md` documents implemented API routes, configuration, and setup steps.
 - `PROGRAM_DOCUMENTATION.md` explains the Anchor programs and their account model.
+- `SECURITY_AUDIT_REPORT.md` summarizes security hardening and remaining launch requirements.
 - `docs/security/launch-audit-gates.md` captures launch security checks.
 
 ## Status
 
-This codebase is an active product build. The platform app includes local mock flows and backend boundaries, while the Solana programs, transaction routes, indexer, and storage packages are being shaped toward a production launch path.
+This codebase is an active product build. The platform app is wired to Postgres-backed APIs, Privy wallet sessions, Solana transaction preparation, and Vercel cron jobs for indexing and fee distribution. Solana programs, mainnet validation, and external audit remain required before public treasury use.
