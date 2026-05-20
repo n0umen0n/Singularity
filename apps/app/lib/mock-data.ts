@@ -52,6 +52,8 @@ export type PerformancePoint = {
 export type Mission = {
   id: string;
   missionPda?: string | null;
+  /** Seeded via DB scripts rather than a live on-chain launch. */
+  isDemo?: boolean;
   statement: string;
   description: string;
   image: string;
@@ -178,7 +180,7 @@ function requests(missionId: string, symbol: string): FundingRequest[] {
 export const missions: Mission[] = [
   {
     id: "mars-gardens",
-    statement: "Terraform resilient food systems for off-world cities.",
+    statement: "Terraform resilient food systems for off-world cities",
     description:
       "A mission market funding modular greenhouse robotics, seed research, and open-source climate loops for Mars-ready agriculture.",
     image: "https://images.unsplash.com/photo-1614728894747-a83421e2b9c9?auto=format&fit=crop&w=1400&q=85",
@@ -197,7 +199,7 @@ export const missions: Mission[] = [
   },
   {
     id: "ocean-memory",
-    statement: "Map the living ocean before it disappears.",
+    statement: "Map the living ocean before it disappears",
     description:
       "Capital for autonomous reef sensors, preservation datasets, and open climate intelligence owned by the communities collecting it.",
     image: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1400&q=85",
@@ -216,7 +218,7 @@ export const missions: Mission[] = [
   },
   {
     id: "open-cure",
-    statement: "Fund open therapeutics for rare diseases.",
+    statement: "Fund open therapeutics for rare diseases",
     description:
       "A transparent funding market for patient-led research, clinical translation, and shared therapeutic IP primitives.",
     image: "https://images.unsplash.com/photo-1576086213369-97a306d36557?auto=format&fit=crop&w=1400&q=85",
@@ -235,7 +237,7 @@ export const missions: Mission[] = [
   },
   {
     id: "city-solar",
-    statement: "Turn apartment rooftops into neighborhood power plants.",
+    statement: "Turn apartment rooftops into neighborhood power plants",
     description:
       "Coordinating installers, residents, and software to finance solar collectives block by block.",
     image: "https://images.unsplash.com/photo-1509391366360-2e959784a276?auto=format&fit=crop&w=1400&q=85",

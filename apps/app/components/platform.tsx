@@ -7,11 +7,11 @@ import { createPortal } from "react-dom";
 import Cropper, { type Area, type MediaSize } from "react-easy-crop";
 import { ArrowRight, ChevronDown, Copy, Menu, Sparkles, Upload } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
-import { BrandWordmark, GlassCard, SingularityMark, StatusPill, cx } from "@singularity/ui";
+import { BrandWordmark, GlassCard, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
 import * as api from "@/lib/api";
 import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/mock-data";
-import { money, number, shortAddress } from "@/lib/format";
+import { formatLiquidityUsd, money, number, shortAddress } from "@/lib/format";
 import { useSingularityWallet } from "@/lib/wallet";
 
 type CropKind = "mission" | "token" | "avatar";
@@ -209,7 +209,6 @@ export function PageHeader({
         {description ? <p className="lede">{description}</p> : null}
       </div>
       {action}
-      <SingularityMark className="watermark" />
     </header>
   );
 }
@@ -347,6 +346,10 @@ export function MissionsPage({ initialMissions, initialHasMore = false }: { init
   );
 }
 
+function MissionDemoBadge() {
+  return <StatusPill tone="demo">Demo</StatusPill>;
+}
+
 export function MissionCard({ mission, preview = false, priority = false }: { mission: Mission; preview?: boolean; priority?: boolean }) {
   const className = cx("glass-card mission-card mission-card-link", !preview && "interactive", preview && "mission-preview-card");
   const content = (
@@ -356,7 +359,12 @@ export function MissionCard({ mission, preview = false, priority = false }: { mi
         <span className="token-avatar">
           <img src={mission.tokenImage} alt="" decoding="async" loading={priority ? "eager" : "lazy"} />
         </span>
-        <span className="media-pill">{money(mission.liquidity, true)} liquidity</span>
+        <span className="media-pill mission-card-liquidity-pill">{formatLiquidityUsd(mission.liquidity)} liquidity</span>
+        {mission.isDemo ? (
+          <span className="mission-card-demo-badge">
+            <MissionDemoBadge />
+          </span>
+        ) : null}
       </div>
       <div className="mission-card-body">
         <h2>{mission.statement}</h2>
@@ -587,7 +595,10 @@ function MissionHero({ mission }: { mission: Mission }) {
       <img className="hero-image" src={mission.image} alt="" decoding="async" loading="eager" fetchPriority="high" />
       <div className="hero-topline">
         <StatusPill>Missions / {mission.tokenSymbol}</StatusPill>
-        <StatusPill tone="info">{money(mission.liquidity, true)} liquidity</StatusPill>
+        <div className="hero-topline-badges">
+          <StatusPill tone="info">{formatLiquidityUsd(mission.liquidity)} liquidity</StatusPill>
+          {mission.isDemo ? <MissionDemoBadge /> : null}
+        </div>
       </div>
       <div className="hero-content">
         <div className="hero-title-row">
@@ -2023,7 +2034,7 @@ export function LaunchMissionPage() {
   const previewSymbol = symbol || "NOVA";
   const previewMission: Mission = {
     id: "preview",
-    statement: statement || "Coordinate the first open-source lunar robotics network.",
+    statement: statement || "Coordinate the first open-source lunar robotics network",
     tokenSymbol: previewSymbol,
     description: description || "Live preview of how your mission will appear in discovery.",
     image: missionImage,

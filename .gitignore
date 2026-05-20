@@ -14,3 +14,4 @@ apps/*/dist/
 !.env.example
 .singularity/
 scripts/.test-funding-flow.state.json
+.vercel

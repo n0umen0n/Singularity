@@ -1,6 +1,7 @@
 import { ImageResponse } from "next/og";
 import { headers } from "next/headers";
 import type { Mission } from "@/lib/mock-data";
+import { formatLiquidityUsd } from "@/lib/format";
 
 export const ogSize = { width: 1200, height: 630 };
 
@@ -17,13 +18,7 @@ const FALLBACK_TOKEN_IMAGE =
   "https://images.unsplash.com/photo-1614728263952-84ea256f9679?auto=format&fit=crop&w=300&q=80";
 
 function formatLiquidity(value: number) {
-  const safe = Number.isFinite(value) ? value : 0;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(safe);
+  return formatLiquidityUsd(value);
 }
 
 function formatHolders(value: number) {

@@ -3,6 +3,7 @@ import type pg from "pg";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, getMint, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { DEFAULT_COUNCIL_PROGRAM_ID, DEFAULT_DBC_TOTAL_SUPPLY, DEFAULT_REGISTRY_PROGRAM_ID, requireProgramConfig, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
+import { isDemoMissionCreator } from "@/lib/demo-missions";
 import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
@@ -35,6 +36,7 @@ import type { MissionSort } from "@/lib/backend/store";
 
 type MissionRow = {
   id: string;
+  creator_wallet: string;
   mission_pda: string | null;
   token_mint: string | null;
   dbc_pool: string | null;
@@ -591,6 +593,7 @@ async function hydrateFundingRequestExecutionState(rows: FundingRequestRow[], cl
 function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
   return {
     id: row.id,
+    isDemo: isDemoMissionCreator(row.creator_wallet),
     missionPda: row.mission_pda,
     statement: row.statement,
     description: row.description,
