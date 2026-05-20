@@ -950,6 +950,101 @@ textarea {
   font-size: 0.86rem;
 }
 
+.launch-path {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(255, 247, 237, 0.08);
+}
+
+.launch-path-heading h3 {
+  margin: 0;
+  font-size: 0.86rem;
+  letter-spacing: -0.01em;
+}
+
+.launch-path-heading p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.launch-path-steps {
+  display: grid;
+  gap: 0.85rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.launch-path-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.launch-path-index {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid rgba(255, 247, 237, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 247, 237, 0.05);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.launch-path-copy strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.launch-path-copy p {
+  margin: 0.28rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.launch-path-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.launch-path-metric {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+  border: 1px solid rgba(255, 247, 237, 0.08);
+  border-radius: 16px;
+  padding: 0.72rem 0.8rem;
+  background: rgba(255, 247, 237, 0.03);
+}
+
+.launch-path-metric-value {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.launch-path-metric-label {
+  color: var(--text-faint);
+  font-size: 0.62rem;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .price-impact-help {
   position: relative;
   display: inline-grid;
@@ -2799,6 +2894,10 @@ textarea {
 
   .request-votes {
     grid-column: auto;
+  }
+
+  .launch-path-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
 }

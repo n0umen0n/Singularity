@@ -7,6 +7,13 @@ import { createPortal } from "react-dom";
 import Cropper, { type Area, type MediaSize } from "react-easy-crop";
 import { ArrowRight, ChevronDown, Copy, Menu, Sparkles, Upload } from "lucide-react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
+import {
+  DEFAULT_DBC_GRADUATION_RAISE_USDC,
+  DEFAULT_DBC_INITIAL_MARKET_CAP,
+  DEFAULT_DBC_MIGRATION_MARKET_CAP,
+  DEFAULT_DBC_TOTAL_SUPPLY,
+  DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
+} from "@singularity/solana";
 import { BrandWordmark, GlassCard, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
 import * as api from "@/lib/api";
@@ -1592,6 +1599,62 @@ function TreasuryMarketDonut({ mission }: { mission: Mission }) {
   );
 }
 
+function compactUsdThousands(value: number) {
+  return `$${Math.round(value / 1000)}k`;
+}
+
+function compactTokenMillions(value: number) {
+  return `${value / 1_000_000}M`;
+}
+
+function LaunchPathSection() {
+  const marketSupply = (DEFAULT_DBC_TOTAL_SUPPLY * (100 - DEFAULT_DBC_TREASURY_SUPPLY_PERCENT)) / 100;
+  const treasurySupply = DEFAULT_DBC_TOTAL_SUPPLY - marketSupply;
+
+  return (
+    <div className="launch-path">
+      <div className="launch-path-heading">
+        <h3>Launch path</h3>
+        <p>Bonding curve first, then automatic graduation to a full market.</p>
+      </div>
+      <ol className="launch-path-steps">
+        <li className="launch-path-step">
+          <span className="launch-path-index">1</span>
+          <div className="launch-path-copy">
+            <strong>Bonding curve</strong>
+            <p>Supporters buy along a rising price curve. That bootstraps the market without pre-seeding liquidity.</p>
+          </div>
+        </li>
+        <li className="launch-path-step">
+          <span className="launch-path-index">2</span>
+          <div className="launch-path-copy">
+            <strong>Graduate at ${DEFAULT_DBC_GRADUATION_RAISE_USDC.toLocaleString()} USDC</strong>
+            <p>Once that much USDC is raised, liquidity moves to an AMM automatically and trading continues there.</p>
+          </div>
+        </li>
+      </ol>
+      <div className="launch-path-metrics">
+        <div className="launch-path-metric">
+          <span className="launch-path-metric-value">{compactUsdThousands(DEFAULT_DBC_INITIAL_MARKET_CAP)}</span>
+          <span className="launch-path-metric-label">Launch market cap</span>
+        </div>
+        <div className="launch-path-metric">
+          <span className="launch-path-metric-value">{compactUsdThousands(DEFAULT_DBC_MIGRATION_MARKET_CAP)}</span>
+          <span className="launch-path-metric-label">Graduation market cap</span>
+        </div>
+        <div className="launch-path-metric">
+          <span className="launch-path-metric-value">{compactTokenMillions(marketSupply)}</span>
+          <span className="launch-path-metric-label">Tokens on curve</span>
+        </div>
+        <div className="launch-path-metric">
+          <span className="launch-path-metric-value">{compactTokenMillions(treasurySupply)}</span>
+          <span className="launch-path-metric-label">Tokens in treasury</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LaunchTokenomicsDonut() {
   const [active, setActive] = useState<"market" | "treasury">("market");
   const chartData = [
@@ -2039,13 +2102,13 @@ export function LaunchMissionPage() {
     description: description || "Live preview of how your mission will appear in discovery.",
     image: missionImage,
     tokenImage,
-    tokenPrice: 0.001,
-    liquidity: 10000,
-    holders: 1800,
+    tokenPrice: DEFAULT_DBC_INITIAL_MARKET_CAP / DEFAULT_DBC_TOTAL_SUPPLY,
+    liquidity: 0,
+    holders: 1,
     treasuryUsdc: 0,
-    treasuryTokens: 10_000_000,
-    treasurySupplyPercent: 20,
-    totalSupply: 50_000_000,
+    treasuryTokens: (DEFAULT_DBC_TOTAL_SUPPLY * DEFAULT_DBC_TREASURY_SUPPLY_PERCENT) / 100,
+    treasurySupplyPercent: DEFAULT_DBC_TREASURY_SUPPLY_PERCENT,
+    totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
     performance: previewPerformance,
     council: [],
     requests: [],
@@ -2151,6 +2214,7 @@ export function LaunchMissionPage() {
                 </div>
               </div>
               <LaunchTokenomicsDonut />
+              <LaunchPathSection />
             </GlassCard>
             <div className="live-preview-stack">
               <span className="preview-label">Preview</span>
