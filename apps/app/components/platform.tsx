@@ -1622,7 +1622,7 @@ function LaunchPathSection() {
           <span className="launch-path-index">1</span>
           <div className="launch-path-copy">
             <strong>Bonding curve</strong>
-            <p>Supporters buy along a rising price curve. That bootstraps the market without pre-seeding liquidity.</p>
+            <p>Investors buy along a rising price curve. That bootstraps the market without pre-seeding liquidity.</p>
           </div>
         </li>
         <li className="launch-path-step">
