@@ -37,6 +37,30 @@ type WalletContextValue = {
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
+type PrivyLinkedWallet = {
+  type?: string;
+  chainType?: string;
+  chain_type?: string;
+  address?: string;
+};
+
+type PrivyUserWithWallets = {
+  wallet?: PrivyLinkedWallet;
+  linkedAccounts?: PrivyLinkedWallet[];
+  linked_accounts?: PrivyLinkedWallet[];
+};
+
+function isSolanaWallet(account?: PrivyLinkedWallet | null) {
+  return account?.type === "wallet" && (account.chainType === "solana" || account.chain_type === "solana") && Boolean(account.address);
+}
+
+function solanaAddressFromPrivyUser(user: PrivyUserWithWallets | null) {
+  if (user?.wallet?.chainType === "solana" || user?.wallet?.chain_type === "solana") return user.wallet.address ?? null;
+
+  const linkedAccounts = user?.linkedAccounts ?? user?.linked_accounts ?? [];
+  return linkedAccounts.find(isSolanaWallet)?.address ?? null;
+}
+
 function bytesFromBase64(value: string) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
@@ -134,7 +158,7 @@ async function formatSendTransactionError(error: unknown, connection: Connection
 }
 
 export function SingularityWalletProvider({ children }: { children: React.ReactNode }) {
-  const { authenticated: privyAuthenticated, getAccessToken, logout, ready: privyReady } = usePrivy();
+  const { authenticated: privyAuthenticated, getAccessToken, logout, ready: privyReady, user } = usePrivy();
   const { wallets } = useWallets();
   const { signTransaction } = useSignTransaction();
   const [sessionAddress, setSessionAddress] = useState<string | null>(null);
@@ -152,6 +176,8 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     },
   });
   const wallet = sessionAddress ? (wallets.find((entry) => entry.address === sessionAddress) ?? null) : (wallets[0] ?? null);
+  const linkedSolanaAddress = solanaAddressFromPrivyUser(user);
+  const verificationAddress = wallet?.address ?? linkedSolanaAddress;
   const address = sessionAddress;
   const ready = privyReady && !restoringSession;
   const authenticated = Boolean(sessionAddress);
@@ -183,7 +209,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     setStatus(null);
 
     try {
-      if (!wallet?.address) {
+      if (!verificationAddress) {
         setStatus("Connect a Solana wallet in Privy to continue.");
         return null;
       }
@@ -192,11 +218,11 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       if (!accessToken) throw new Error("Privy session is not ready. Please try signing in again.");
       const identityToken = await getIdentityToken();
 
-      await postJson("/api/auth/privy", { address: wallet.address }, { authorization: `Bearer ${accessToken}`, ...(identityToken ? { "privy-id-token": identityToken } : {}) });
-      setSessionAddress(wallet.address);
+      await postJson("/api/auth/privy", { address: verificationAddress }, { authorization: `Bearer ${accessToken}`, ...(identityToken ? { "privy-id-token": identityToken } : {}) });
+      setSessionAddress(verificationAddress);
       setPendingSessionVerification(false);
       setStatus("Wallet verified.");
-      return wallet.address;
+      return verificationAddress;
     } catch (error) {
       setPendingSessionVerification(false);
       setStatus(error instanceof Error ? error.message : "Wallet verification could not be completed. Please try again.");
@@ -204,17 +230,17 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
     } finally {
       verifyingSession.current = false;
     }
-  }, [getAccessToken, wallet]);
+  }, [getAccessToken, verificationAddress]);
 
   useEffect(() => {
     if (!pendingSessionVerification || !privyReady || !privyAuthenticated) return;
-    if (!wallet?.address) {
+    if (!verificationAddress) {
       setStatus("Finishing wallet connection...");
       return;
     }
 
     void verifyWalletSession();
-  }, [pendingSessionVerification, privyAuthenticated, privyReady, verifyWalletSession, wallet]);
+  }, [pendingSessionVerification, privyAuthenticated, privyReady, verificationAddress, verifyWalletSession]);
 
   const signIn = useCallback(async () => {
     setStatus(null);

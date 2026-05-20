@@ -130,6 +130,12 @@ type ProfileRow = {
   created_missions: typeof currentUser.createdMissions;
 };
 
+type CreatedMissionFeeRow = {
+  mission_id: string;
+  trading_fees_earned: string | null;
+  claimable_fees: string | null;
+};
+
 type PendingMissionLaunchRow = {
   id: string;
   creator_wallet: string;
@@ -193,6 +199,16 @@ function slugify(value: string) {
 
 function num(value: string | number | null | undefined) {
   return Number(value ?? 0);
+}
+
+function tokenBaseUnitsToDecimalString(value: string | number | bigint | null | undefined, decimals = 6) {
+  const amount = BigInt(value ?? 0);
+  const divisor = 10n ** BigInt(decimals);
+  const whole = amount / divisor;
+  const fraction = amount % divisor;
+  if (fraction === 0n) return whole.toString();
+
+  return `${whole}.${fraction.toString().padStart(decimals, "0").replace(/0+$/, "")}`;
 }
 
 function shortWallet(address: string) {
@@ -389,6 +405,29 @@ async function escrowedVoteBalancesByMission(missionIds: string[], client?: Quer
   }
 
   return byMission;
+}
+
+async function createdMissionFeeRows(address: string, client?: Queryable) {
+  const result = await (client || { query }).query<CreatedMissionFeeRow>(
+    `
+      select
+        m.id as mission_id,
+        coalesce(sum(re.creator_amount), 0)::text as trading_fees_earned,
+        0::numeric(40, 6)::text as claimable_fees
+      from missions m
+      left join reward_epochs re on re.mission_id = m.id
+      where lower(m.creator_wallet) = lower($1)
+      group by m.id, m.created_at
+      order by m.created_at desc
+    `,
+    [address],
+  );
+
+  return result.rows.map((row) => ({
+    missionId: row.mission_id,
+    tradingFeesEarned: num(row.trading_fees_earned),
+    claimableFees: num(row.claimable_fees),
+  }));
 }
 
 function pda(programId: string, namespace: string, id: string) {
@@ -1254,8 +1293,9 @@ export async function getProfileFromPostgres(address: string, options: { include
   const normalizedAddress = address === "me" ? currentUser.address : address;
   const result = await query<ProfileRow>("select * from profiles where wallet_address = $1 limit 1", [normalizedAddress]);
   const row = result.rows[0];
+  const createdMissionEntries = await createdMissionFeeRows(normalizedAddress);
   if (options.includeBalances === false) {
-    if (!row) return emptyProfile(normalizedAddress);
+    if (!row) return { ...emptyProfile(normalizedAddress), createdMissions: createdMissionEntries };
     return {
       name: row.display_name,
       address: row.wallet_address,
@@ -1263,7 +1303,7 @@ export async function getProfileFromPostgres(address: string, options: { include
       description: row.bio || "",
       socials: row.socials || [],
       ...emptyWalletBalanceSnapshot(),
-      createdMissions: row.created_missions,
+      createdMissions: createdMissionEntries,
       submittedRequests: [],
       councilRequests: [],
     };
@@ -1281,14 +1321,15 @@ export async function getProfileFromPostgres(address: string, options: { include
     };
   });
 
-  if (!row) {
-    return { ...emptyProfile(normalizedAddress), balances: balances.balances, tokenBalances };
-  }
-
-  const createdMissions = row.created_missions.map((entry) => ({
+  const createdMissions = createdMissionEntries.map((entry) => ({
     ...entry,
     mission: allMissions.find((mission) => mission.id === entry.missionId) ?? null,
   }));
+
+  if (!row) {
+    return { ...emptyProfile(normalizedAddress), balances: balances.balances, tokenBalances, createdMissions };
+  }
+
   const councilMissionIds = new Set(tokenBalances.filter((entry) => entry.council).map((entry) => entry.missionId));
   const submittedRequests = allMissions.flatMap((mission) =>
     mission.requests
@@ -1805,6 +1846,40 @@ async function getBackendOwnedDammFeePositions(missionId: string) {
   }));
 }
 
+async function nextRewardEpochNumber(missionId: string) {
+  const result = await query<{ epoch_number: number | null }>("select coalesce(max(epoch_number), 0) + 1 as epoch_number from reward_epochs where mission_id = $1", [missionId]);
+  return Number(result.rows[0]?.epoch_number || 1);
+}
+
+async function recordFeeDistributionRewardEpoch(input: {
+  missionId: string;
+  sourceAmount: string;
+  creatorAmount: string;
+  platformAmount: string;
+}) {
+  const sourceAmount = tokenBaseUnitsToDecimalString(input.sourceAmount);
+  const creatorAmount = tokenBaseUnitsToDecimalString(input.creatorAmount);
+  const platformAmount = tokenBaseUnitsToDecimalString(input.platformAmount);
+  const epochNumber = await nextRewardEpochNumber(input.missionId);
+
+  await query(
+    `
+      insert into reward_epochs (
+        mission_id,
+        epoch_number,
+        source_usdc_amount,
+        creator_amount,
+        platform_amount,
+        council_amount,
+        other_lockers_amount
+      )
+      values ($1, $2, $3, $4, $5, 0, 0)
+      on conflict (mission_id, epoch_number) do nothing
+    `,
+    [input.missionId, epochNumber, sourceAmount, creatorAmount, platformAmount],
+  );
+}
+
 export async function distributeMissionFeesInPostgres(input: { limit?: number } = {}) {
   const limit = Math.max(1, Math.min(input.limit || 50, 100));
   const result = await query<{
@@ -1839,6 +1914,12 @@ export async function distributeMissionFeesInPostgres(input: { limit?: number } 
           "insert into transactions (signature, wallet, mission_id, type, status) values ($1, $2, $3, 'mission-fee-distribution', 'confirmed') on conflict (signature) do nothing",
           [distribution.distributionSignature, process.env.SINGULARITY_FEE_DISTRIBUTOR_PUBKEY || "backend-fee-distributor", mission.id],
         );
+        await recordFeeDistributionRewardEpoch({
+          missionId: mission.id,
+          sourceAmount: distribution.distributedAmount,
+          creatorAmount: distribution.creatorAmount,
+          platformAmount: distribution.platformAmount,
+        });
       }
       results.push(distribution);
     } catch (error) {
@@ -1863,6 +1944,12 @@ export async function distributeMissionFeesInPostgres(input: { limit?: number } 
             "insert into transactions (signature, wallet, mission_id, type, status) values ($1, $2, $3, 'mission-fee-distribution', 'confirmed') on conflict (signature) do nothing",
             [distribution.distributionSignature, process.env.SINGULARITY_FEE_DISTRIBUTOR_PUBKEY || "backend-fee-distributor", mission.id],
           );
+          await recordFeeDistributionRewardEpoch({
+            missionId: mission.id,
+            sourceAmount: distribution.distributedAmount,
+            creatorAmount: distribution.creatorAmount,
+            platformAmount: distribution.platformAmount,
+          });
         }
         results.push(distribution);
       } catch (error) {

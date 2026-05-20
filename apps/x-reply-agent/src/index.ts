@@ -11,6 +11,8 @@ type AgentConfig = {
   userAccessToken: string;
   postIds: string[];
   dryRun: boolean;
+  enableDm: boolean;
+  enableQuote: boolean;
   statePath: string;
   maxRepliesPerPost: number;
   maxPostsPerRun: number;
@@ -63,21 +65,32 @@ type AgentState = {
 
 type InteractionRecord = {
   id: string;
+  leadKey?: string;
   sourcePostId: string;
   commentId: string;
+  authorId?: string;
+  authorUsername?: string;
   commentText: string;
   authorDescription?: string;
   projectName?: string;
   projectWebsiteUrl?: string;
   mission?: string;
   missionConfidence?: "specific" | "fallback";
+  dmText?: string;
+  quoteText?: string;
   replyText?: string;
   score?: number;
   reasons?: string[];
+  action?: "dm" | "quote" | "dm_quote" | "reply" | "none";
   mode: "dry-run" | "posted" | "skipped";
-  status: "would_post" | "posted" | "skipped_not_relevant" | "failed";
+  status: "would_post" | "posted" | "skipped_not_relevant" | "failed" | "dm_attempted" | "dm_sent" | "quote_posted" | "dm_quote_completed";
   createdAt: string;
   xReplyPostId?: string;
+  xQuotePostId?: string;
+  dmConversationId?: string;
+  dmEventId?: string;
+  dmError?: string;
+  quoteError?: string;
   error?: string;
 };
 
@@ -88,6 +101,8 @@ type Candidate = {
   websiteUrl?: string;
   mission: string;
   missionConfidence: "specific" | "fallback";
+  dmText: string;
+  quoteText: string;
   replyText: string;
   reasons: string[];
 };
@@ -147,10 +162,14 @@ async function main() {
         state.skippedPostIds.push(reply.id);
         upsertInteraction(state, {
           id: makeInteractionId(postId, reply.id, "skipped"),
+          leadKey: makeLeadKey(reply),
           sourcePostId: postId,
           commentId: reply.id,
+          authorId: reply.author_id,
+          authorUsername: reply.author_username,
           commentText: reply.text,
-        authorDescription: reply.author_description,
+          authorDescription: reply.author_description,
+          action: "none",
           mode: "skipped",
           status: "skipped_not_relevant",
           createdAt: new Date().toISOString(),
@@ -160,42 +179,21 @@ async function main() {
       }
 
       console.log(`Matched @${candidate.projectName} on reply ${reply.id} with score ${candidate.score}: ${candidate.reasons.join(", ")}`);
-      console.log(candidate.replyText);
+      console.log(`DM: ${candidate.dmText}`);
+      console.log(`Quote: ${candidate.quoteText}`);
 
-      let xReplyPostId: string | undefined;
-      if (!config.dryRun) {
-        const response = await createReply(config, reply.id, candidate.replyText);
-        xReplyPostId = response.data.id;
+      const result = await performOutreach(config, state, postId, candidate);
+      upsertInteraction(state, result.record);
+      await saveState(config.statePath, state);
+
+      if (result.completed) {
+        postedThisRun += 1;
         await sleep(config.replyDelayMs);
       }
-
-      if (!state.repliedToPostIds.includes(reply.id)) {
-        state.repliedToPostIds.push(reply.id);
-      }
-      upsertInteraction(state, {
-        id: makeInteractionId(postId, reply.id, config.dryRun ? "dry-run" : "posted"),
-        sourcePostId: postId,
-        commentId: reply.id,
-        commentText: reply.text,
-        authorDescription: reply.author_description,
-        projectName: candidate.projectName,
-        projectWebsiteUrl: candidate.websiteUrl,
-        mission: candidate.mission,
-        missionConfidence: candidate.missionConfidence,
-        replyText: candidate.replyText,
-        score: candidate.score,
-        reasons: candidate.reasons,
-        mode: config.dryRun ? "dry-run" : "posted",
-        status: config.dryRun ? "would_post" : "posted",
-        createdAt: new Date().toISOString(),
-        xReplyPostId,
-      });
-      await saveState(config.statePath, state);
-      postedThisRun += 1;
     }
   }
 
-  console.log(`Done. ${config.dryRun ? "Would have posted" : "Posted"} ${postedThisRun} reply/replies.`);
+  console.log(`Done. ${config.dryRun ? "Would have completed" : "Completed"} ${postedThisRun} outreach action(s).`);
 }
 
 function readConfig(env: Env): AgentConfig {
@@ -211,13 +209,15 @@ function readConfig(env: Env): AgentConfig {
     bearerToken,
     userAccessToken,
     postIds,
-    dryRun: env.X_REPLY_DRY_RUN !== "false",
+    dryRun: (env.X_OUTREACH_DRY_RUN ?? env.X_REPLY_DRY_RUN) !== "false",
+    enableDm: (env.X_OUTREACH_ENABLE_DM ?? "true") !== "false",
+    enableQuote: (env.X_OUTREACH_ENABLE_QUOTE ?? "true") !== "false",
     statePath: resolveStatePath(env.X_REPLY_STATE_PATH ?? ".singularity/x-reply-agent-state.json"),
     maxRepliesPerPost: positiveInt(env.X_REPLY_MAX_REPLIES_PER_POST, 100),
-    maxPostsPerRun: positiveInt(env.X_REPLY_MAX_POSTS_PER_RUN, 5),
+    maxPostsPerRun: positiveInt(env.X_OUTREACH_MAX_PER_RUN ?? env.X_REPLY_MAX_POSTS_PER_RUN, 5),
     minScore: positiveInt(env.X_REPLY_MIN_SCORE, 4),
     requestDelayMs: positiveInt(env.X_REPLY_REQUEST_DELAY_MS, 1_000),
-    replyDelayMs: positiveInt(env.X_REPLY_POST_DELAY_MS, 15_000),
+    replyDelayMs: positiveInt(env.X_OUTREACH_POST_DELAY_MS ?? env.X_REPLY_POST_DELAY_MS, 15_000),
     siteTimeoutMs: positiveInt(env.X_REPLY_SITE_TIMEOUT_MS, 7_000),
     missionProvider: env.X_REPLY_MISSION_PROVIDER === "openai-compatible" ? "openai-compatible" : "heuristic",
     missionApiKey: env.X_REPLY_MISSION_API_KEY,
@@ -284,7 +284,8 @@ async function buildCandidate(config: AgentConfig, post: XPost): Promise<Candida
     siteText: website?.text,
   });
 
-  const replyText = formatReply(projectName, mission);
+  const quoteText = formatReply(projectName, mission);
+  const dmText = formatDm(mission);
 
   return {
     post,
@@ -293,7 +294,9 @@ async function buildCandidate(config: AgentConfig, post: XPost): Promise<Candida
     websiteUrl,
     mission: mission.text,
     missionConfidence: mission.confidence,
-    replyText,
+    dmText,
+    quoteText,
+    replyText: quoteText,
     reasons: score.reasons,
   };
 }
@@ -546,11 +549,20 @@ function fallbackMission(input: string): string {
 
 function formatReply(projectName: string, mission: MissionResult): string {
   if (mission.confidence === "fallback") {
-    return `If the mission is building ${mission.text}, it is possible to raise funds via Singularity.`;
+    return `If the mission is building ${mission.text}, it is possible to raise funds via Singularity: https://app.missions.diy`;
   }
 
   const prefix = startsWithVerb(mission.text) ? "is to" : "is";
-  return `If the mission ${prefix} ${mission.text}, it is possible to raise funds via Singularity.`;
+  return `If the mission ${prefix} ${mission.text}, it is possible to raise funds via Singularity: https://app.missions.diy`;
+}
+
+function formatDm(mission: MissionResult): string {
+  const missionText =
+    mission.confidence === "fallback"
+      ? `building ${mission.text}`
+      : `${startsWithVerb(mission.text) ? "to " : ""}${mission.text}`;
+
+  return `Saw what you're building around ${missionText}. It is possible to raise funds through Singularity if you're funding contributors or early work.`;
 }
 
 function startsWithVerb(input: string): boolean {
@@ -559,14 +571,146 @@ function startsWithVerb(input: string): boolean {
   );
 }
 
-async function createReply(config: AgentConfig, inReplyToTweetId: string, text: string): Promise<{ data: { id: string; text: string } }> {
+async function performOutreach(
+  config: AgentConfig,
+  state: AgentState,
+  sourcePostId: string,
+  candidate: Candidate,
+): Promise<{ completed: boolean; record: InteractionRecord }> {
+  const base = makeInteractionRecord(sourcePostId, candidate, config.dryRun ? "dry-run" : "posted");
+
+  if (config.dryRun) {
+    return {
+      completed: true,
+      record: {
+        ...base,
+        action: config.enableDm && config.enableQuote ? "dm_quote" : config.enableDm ? "dm" : "quote",
+        status: "would_post",
+      },
+    };
+  }
+
+  const leadAlreadyContacted = hasCompletedLeadInteraction(state, base.leadKey ?? "");
+  if (leadAlreadyContacted) {
+    return {
+      completed: false,
+      record: {
+        ...base,
+        action: "none",
+        status: "failed",
+        error: "Lead already has a completed outreach interaction.",
+      },
+    };
+  }
+
+  let dmConversationId: string | undefined;
+  let dmEventId: string | undefined;
+  let dmError: string | undefined;
+  let xQuotePostId: string | undefined;
+  let quoteError: string | undefined;
+
+  if (config.enableDm && candidate.post.author_id) {
+    try {
+      const dm = await sendDirectMessage(config, candidate.post.author_id, candidate.dmText);
+      dmConversationId = dm.data.dm_conversation_id;
+      dmEventId = dm.data.dm_event_id;
+    } catch (error) {
+      dmError = error instanceof Error ? error.message : String(error);
+      console.warn(`DM failed for ${candidate.post.id}: ${dmError}`);
+    }
+  } else if (config.enableDm) {
+    dmError = "Missing author ID for DM.";
+  }
+
+  if (config.enableQuote) {
+    try {
+      const quote = await createQuotePost(config, candidate.post.id, candidate.quoteText);
+      xQuotePostId = quote.data.id;
+    } catch (error) {
+      quoteError = error instanceof Error ? error.message : String(error);
+      console.warn(`Quote failed for ${candidate.post.id}: ${quoteError}`);
+    }
+  }
+
+  const dmSucceeded = Boolean(dmEventId);
+  const quoteSucceeded = Boolean(xQuotePostId);
+  const completed = dmSucceeded || quoteSucceeded;
+  const action = config.enableDm && config.enableQuote ? "dm_quote" : config.enableDm ? "dm" : config.enableQuote ? "quote" : "none";
+  const status = dmSucceeded && quoteSucceeded ? "dm_quote_completed" : dmSucceeded ? "dm_sent" : quoteSucceeded ? "quote_posted" : "failed";
+
+  if (config.enableDm || config.enableQuote) {
+    return {
+      completed,
+      record: {
+        ...base,
+        action,
+        status,
+        dmConversationId,
+        dmEventId,
+        xQuotePostId,
+        dmError,
+        quoteError,
+        error: completed ? undefined : [dmError, quoteError].filter(Boolean).join(" | ") || "All enabled outreach channels failed.",
+      },
+    };
+  }
+
+  return {
+    completed: false,
+    record: {
+      ...base,
+      action: "none",
+      status: "failed",
+      error: "No outreach channel enabled.",
+    },
+  };
+}
+
+function makeInteractionRecord(sourcePostId: string, candidate: Candidate, mode: InteractionRecord["mode"]): InteractionRecord {
+  return {
+    id: makeInteractionId(sourcePostId, candidate.post.id, mode),
+    leadKey: makeLeadKey(candidate.post),
+    sourcePostId,
+    commentId: candidate.post.id,
+    authorId: candidate.post.author_id,
+    authorUsername: candidate.post.author_username,
+    commentText: candidate.post.text,
+    authorDescription: candidate.post.author_description,
+    projectName: candidate.projectName,
+    projectWebsiteUrl: candidate.websiteUrl,
+    mission: candidate.mission,
+    missionConfidence: candidate.missionConfidence,
+    dmText: candidate.dmText,
+    quoteText: candidate.quoteText,
+    replyText: candidate.quoteText,
+    score: candidate.score,
+    reasons: candidate.reasons,
+    mode,
+    status: mode === "dry-run" ? "would_post" : "failed",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function createQuotePost(config: AgentConfig, quoteTweetId: string, text: string): Promise<{ data: { id: string; text: string } }> {
   return xRequest(config.userAccessToken, "https://api.x.com/2/tweets", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       text,
-      reply: { in_reply_to_tweet_id: inReplyToTweetId },
+      quote_tweet_id: quoteTweetId,
     }),
+  });
+}
+
+async function sendDirectMessage(
+  config: AgentConfig,
+  participantId: string,
+  text: string,
+): Promise<{ data: { dm_conversation_id: string; dm_event_id: string } }> {
+  return xRequest(config.userAccessToken, `https://api.x.com/2/dm_conversations/with/${participantId}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text }),
   });
 }
 
@@ -606,7 +750,16 @@ async function saveState(statePath: string, state: AgentState) {
 }
 
 function hasPostedInteraction(state: AgentState, commentId: string): boolean {
-  return state.interactions.some((interaction) => interaction.commentId === commentId && interaction.status === "posted");
+  return state.interactions.some(
+    (interaction) => interaction.commentId === commentId && ["posted", "dm_sent", "quote_posted", "dm_quote_completed"].includes(interaction.status),
+  );
+}
+
+function hasCompletedLeadInteraction(state: AgentState, leadKey: string): boolean {
+  if (!leadKey) return false;
+  return state.interactions.some(
+    (interaction) => interaction.leadKey === leadKey && ["posted", "dm_sent", "quote_posted", "dm_quote_completed"].includes(interaction.status),
+  );
 }
 
 function upsertInteraction(state: AgentState, interaction: InteractionRecord) {
@@ -620,8 +773,12 @@ function upsertInteraction(state: AgentState, interaction: InteractionRecord) {
   state.interactions.push(interaction);
 }
 
-function makeInteractionId(sourcePostId: string, commentId: string, mode: InteractionRecord["mode"]): string {
-  return `${sourcePostId}:${commentId}:${mode}`;
+function makeInteractionId(sourcePostId: string, commentId: string, mode: InteractionRecord["mode"], action = "outreach"): string {
+  return `${sourcePostId}:${commentId}:${mode}:${action}`;
+}
+
+function makeLeadKey(post: XPost): string {
+  return post.author_id ? `user:${post.author_id}` : `comment:${post.id}`;
 }
 
 function firstMatch(input: string, pattern: RegExp): string | undefined {
