@@ -1615,6 +1615,13 @@ function LaunchPathSection() {
             <p>Once that much USDC is raised, liquidity moves to an AMM automatically and trading continues there.</p>
           </div>
         </li>
+        <li className="launch-path-step">
+          <span className="launch-path-index">3</span>
+          <div className="launch-path-copy">
+            <strong>Treasury unlock</strong>
+            <p>{DEFAULT_DBC_TREASURY_SUPPLY_PERCENT}% of the launch supply unlocks for the council after graduation to fund mission work.</p>
+          </div>
+        </li>
       </ol>
       <div className="launch-path-metrics">
         <div className="launch-path-metric">
