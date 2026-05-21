@@ -586,9 +586,15 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
   );
 }
 
+const MISSION_HERO_DESCRIPTION_COLLAPSE_CHARS = 100;
+
 function MissionHero({ mission }: { mission: Mission }) {
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const description = mission.description.trim();
+  const descriptionCollapsible = description.length > MISSION_HERO_DESCRIPTION_COLLAPSE_CHARS;
+
   return (
-    <section className="glass-card mission-hero">
+    <section className={cx("glass-card mission-hero", descriptionExpanded && "mission-hero-description-expanded")}>
       <img className="hero-image" src={mission.image} alt="" decoding="async" loading="eager" fetchPriority="high" />
       <div className="hero-topline">
         <StatusPill>Missions / {mission.tokenSymbol}</StatusPill>
@@ -601,7 +607,19 @@ function MissionHero({ mission }: { mission: Mission }) {
         <div className="hero-title-row">
           <div>
             <h1 className={missionTitleClass(mission.statement)}>{mission.statement}</h1>
-            <p>{mission.description}</p>
+            <div className={cx("hero-description", descriptionExpanded && "hero-description-expanded")}>
+              <p>{description}</p>
+              {descriptionCollapsible ? (
+                <button
+                  type="button"
+                  className="hero-description-toggle"
+                  aria-expanded={descriptionExpanded}
+                  onClick={() => setDescriptionExpanded((current) => !current)}
+                >
+                  {descriptionExpanded ? "Show less" : "Read more"}
+                </button>
+              ) : null}
+            </div>
           </div>
           <span className="token-avatar" style={{ width: 72, height: 72 }}>
             <img src={mission.tokenImage} alt="" decoding="async" loading="eager" />
@@ -614,7 +632,7 @@ function MissionHero({ mission }: { mission: Mission }) {
 
 function missionTitleClass(statement: string) {
   const length = statement.trim().length;
-  return cx("hero-title", length > 118 && "hero-title-very-long", length > 68 && length <= 118 && "hero-title-long");
+  return cx("hero-title", length > 88 && "hero-title-very-long", length > 44 && length <= 88 && "hero-title-long");
 }
 
 function StatsGrid({ mission }: { mission: Mission }) {
