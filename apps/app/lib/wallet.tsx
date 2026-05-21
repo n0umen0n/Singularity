@@ -144,6 +144,9 @@ async function formatSendTransactionError(error: unknown, connection: Connection
     }
     return new Error("A required on-chain account is not initialized for this transaction. Check the console logs for the exact account and try again.");
   }
+  if (details.includes("insufficient funds for rent")) {
+    return new Error("Your wallet does not have enough SOL to pay the on-chain account rent for registration. Send at least 0.01 SOL to your connected wallet and try again.");
+  }
   if (details.includes("insufficient lamports") || details.includes("Attempt to debit an account")) {
     return new Error("Your wallet does not have enough SOL to pay for this transaction.");
   }

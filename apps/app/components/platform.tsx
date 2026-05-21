@@ -1035,10 +1035,7 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
       <div className="section-heading">
         <div>
           <h2>Treasury Council</h2>
-          <p>
-            This mission&apos;s treasury council is made up of the top 6 registered investors. Trading fees are distributed between
-            Singularity and the mission creator.
-          </p>
+          <p>This mission&apos;s treasury council is made up of the top 6 registered investors.</p>
         </div>
         <div className="council-actions">
           <StatusPill tone="council">4/6 approvals required to access treasury</StatusPill>
@@ -2194,7 +2191,7 @@ export function LaunchMissionPage() {
         <PageHeader
           eyebrow="Create"
           title="Launch a mission market"
-          description="A mission can be anything: a product, research goal, community, protocol, creative project, public good, or ambitious outcome. USDC trading fees are shared between the creator and Singularity."
+          description="A mission can be anything: a product, research goal, community, protocol, creative project, public good, or ambitious outcome. 50% of USDC trading fees go to the creator, and 50% to Singularity."
         />
         <div className="form-two-col">
           <div>

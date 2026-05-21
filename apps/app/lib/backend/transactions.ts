@@ -1227,7 +1227,25 @@ export async function prepareCandidateRegistrationTransaction(input: { wallet?: 
     const mission = missionPda(config.registryProgramId, input.missionId);
     const candidate = candidatePda(config.councilProgramId, mission, input.wallet);
     const connection = new Connection(config.rpcUrl, "confirmed");
+    const owner = new PublicKey(input.wallet);
     const existingCandidate = await connection.getAccountInfo(new PublicKey(candidate));
+
+    const candidateAccountSize = 81;
+    const [walletLamports, rentLamports] = await Promise.all([
+      connection.getBalance(owner, "confirmed"),
+      connection.getMinimumBalanceForRentExemption(candidateAccountSize),
+    ]);
+    const requiredLamports = rentLamports + 10_000;
+    if (walletLamports < requiredLamports) {
+      const requiredSol = (requiredLamports / 1_000_000_000).toFixed(4);
+      const currentSol = (walletLamports / 1_000_000_000).toFixed(4);
+      return {
+        kind,
+        status: "not_configured" as const,
+        message: `Your wallet has ${currentSol} SOL but needs at least ${requiredSol} SOL to register (on-chain account rent + fees). Send SOL to ${input.wallet} and try again.`,
+        instructions: [],
+      };
+    }
 
     if (existingCandidate) {
       return {
