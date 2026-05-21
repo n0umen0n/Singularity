@@ -14,14 +14,13 @@
     "@react-three/drei": "latest",
     "@react-three/fiber": "latest",
     "@react-three/postprocessing": "latest",
-    "@rolldown/binding-darwin-arm64": "^1.0.1",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "4.3.4",
     "gsap": "latest",
     "postprocessing": "latest",
     "react": "latest",
     "react-dom": "latest",
     "three": "latest",
-    "vite": "^5.4.11"
+    "vite": "5.4.21"
   },
   "devDependencies": {
     "@types/react": "latest",
