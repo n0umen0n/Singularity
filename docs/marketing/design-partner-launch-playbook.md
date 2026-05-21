@@ -24,8 +24,10 @@ Accept a project as a design partner when it has:
 - A visible community or audience to activate.
 - Public proof of work.
 - Willingness to publish about the launch.
+- **No live token** and not mid-token launch.
+- Willingness to let Singularity handle the crypto layer (white-glove fit).
 
-Do not accept projects that only want liquidity, passive fundraising, or a private demo.
+Do not accept projects that only want liquidity, passive fundraising, equity-only VC intros, or a private demo.
 
 ## Design Partner Offer
 
@@ -41,6 +43,7 @@ What Singularity provides:
 - Launch thread and reply support.
 - Investor/supporter feedback loop.
 - Weekly inclusion in active mission updates.
+- **White-glove crypto setup** for non-crypto founders: wallets, token launch, plain-English copy, supporter onboarding.
 
 What the project must provide:
 
@@ -64,6 +67,41 @@ Do not launch until these are true:
 - Founder has a launch post drafted.
 - Singularity has a quote post or launch thread drafted.
 - Any legal, token, or risk language has been reviewed by the team before public posting.
+
+## White-Glove Launch Checklist (Non-Crypto Partners)
+
+Use this in addition to the standard launch readiness checklist for every non-crypto design partner. All items are blocking gates.
+
+### Founder Setup
+
+- [ ] Founder account created with embedded wallet or social login (Privy).
+- [ ] Founder confirms they will not need to explain wallets, bonding curves, or governance in public posts.
+- [ ] Singularity team has admin/concierge access to complete launch steps on founder's behalf if needed.
+
+### Copy And Narrative
+
+- [ ] Mission one-liner written in plain English with no crypto jargon.
+- [ ] Launch post drafted by Singularity; founder reviews and personalizes.
+- [ ] Risk and disclaimer language reviewed by the team before any public posting.
+- [ ] FAQ prepared for common founder questions: securities, taxes, "is this crypto?", supporter onboarding.
+
+### Supporter Onboarding
+
+- [ ] Supporter call-to-action tested: can a non-crypto supporter back the mission with minimal friction?
+- [ ] Plain-English instructions for first-time backers documented.
+- [ ] Fiat or simplified buy flow confirmed if available; fallback path documented if not.
+
+### Launch Mechanics
+
+- [ ] Token launch parameters configured by Singularity team, not founder.
+- [ ] Treasury allocation and first funding request framed in mission terms, not tokenomics terms.
+- [ ] Founder launch post focuses on mission and use of funds; Singularity handles technical follow-up if asked.
+
+### Post-Launch
+
+- [ ] First-week supporter questions logged and answered in plain English.
+- [ ] Founder debrief captures friction points for product UX improvements.
+- [ ] Legal/compliance objections from supporters documented for playbook updates.
 
 ## Working Session Agenda
 

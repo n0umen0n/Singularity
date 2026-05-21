@@ -42,5 +42,8 @@
   },
   "overrides": {
     "@solana/kit": "6.9.0"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-darwin-arm64": "^1.0.1"
   }
 }

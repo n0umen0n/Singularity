@@ -1,6 +1,6 @@
 # PMF Scorecard
 
-This scorecard measures whether Singularity is solving an urgent enough problem for mission-driven crypto projects.
+This scorecard measures whether Singularity is solving an urgent enough problem for mission-driven projects — primarily high-quality non-crypto teams struggling to raise through traditional channels.
 
 ## Measurement Principle
 
@@ -35,6 +35,7 @@ Use this table every week.
 | Founder calls booked | 10 |  |  |
 | Founder calls completed | 8 |  |  |
 | Design partner candidates | 5-10 |  |  |
+| White-glove launches (zero self-serve crypto) | 2+ |  |  |
 | Launch-ready projects | 3 |  |  |
 | Public mission launches | 2-3 |  |  |
 | Funding requests created | 1-3 |  |  |
@@ -50,6 +51,7 @@ Track these for every contacted project:
 | Call booking rate | Tests whether founders are curious enough to spend time. |
 | Urgent-pain rate | Tests whether the need exists now, not someday. |
 | Design-partner conversion | Tests whether founders will commit beyond a call. |
+| White-glove fit rate | Tests whether non-crypto founders launch without self-serve crypto setup. |
 | Public launch conversion | Tests whether trust and positioning are strong enough. |
 | Funding request creation | Tests whether the product maps to real work. |
 | Founder referral rate | Tests whether the experience is valuable enough to recommend. |
@@ -74,9 +76,10 @@ Capture exact quotes. PMF often appears in language before it appears in dashboa
 
 ### Strong Signals
 
+- "Traditional fundraising isn't working and we need another path."
+- "I would launch this if you handle the crypto part."
+- "Our community would back this publicly."
 - "We were already trying to figure out how to pay contributors."
-- "This is better than managing bounties in Discord."
-- "I would launch this with my community."
 - "Can we use this for our next milestone?"
 - "I know another founder who needs this."
 
@@ -85,29 +88,35 @@ Capture exact quotes. PMF often appears in language before it appears in dashboa
 - "This is interesting."
 - "Maybe after our token launch."
 - "We mostly just need liquidity."
-- "Can you bring investors?"
+- "Can you bring VC intros?"
+- "We only want equity, not community funding."
 - "We do not want to post publicly yet."
 
 ### Objections To Track
 
 - Legal or compliance concern.
+- Securities or regulatory uncertainty.
+- "We don't want to be a crypto company."
 - Token launch timing.
 - Concern about looking speculative.
 - Lack of community readiness.
 - No immediate funded work.
 - Investor demand not yet proven.
 - Product complexity.
+- Supporter onboarding friction for non-crypto backers.
 
 ## Segment Decision Matrix
 
 At the end of the first campaign, compare segments.
 
-| Segment | Reply Rate | Call Rate | Design Partner Rate | Launch Rate | Funding Request Rate | Decision |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Contributor-funded teams |  |  |  |  |  |  |
-| Hackathon and grant alumni |  |  |  |  |  |  |
-| Pre-token communities |  |  |  |  |  |  |
-| Warm intro projects |  |  |  |  |  |  |
+| Segment | Reply Rate | Call Rate | Design Partner Rate | Launch Rate | Funding Request Rate | White-Glove Rate | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| VC-rejected credible startups |  |  |  |  |  |  |  |
+| Open-source / public goods |  |  |  |  |  |  |  |
+| Mission-first indie products |  |  |  |  |  |  |  |
+| Research / builder collectives |  |  |  |  |  |  |  |
+| Pre-token crypto-adjacent (secondary) |  |  |  |  |  |  |  |
+| Warm intro projects |  |  |  |  |  |  |  |
 
 Decision rules:
 

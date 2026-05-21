@@ -1,6 +1,14 @@
 # X Outreach Agent
 
-Fetches replies under manually supplied X posts, enriches likely Solana project leads, extracts a short project mission from the comment/profile/website, then sends enabled outreach channels: DM and quote post.
+Fetches replies under manually supplied X posts, enriches likely non-crypto founder leads, extracts a short project mission from the comment/profile/website, then sends enabled outreach channels: DM and quote post.
+
+## Target Audience
+
+Primary: mission-driven founders outside crypto with visible proof of work and fundraising difficulty.
+
+Use source posts from indie hacker threads, fundraising discussions, Product Hunt launches, OSS sustainability threads, and mission-first founder showcases — not Solana ecosystem posts.
+
+See [`docs/marketing/lead-sourcing-and-tracker.md`](../../docs/marketing/lead-sourcing-and-tracker.md) for recommended source post types.
 
 ## Configure
 
@@ -34,7 +42,7 @@ npm run dev:x-reply-agent
 
 ## Mission Extraction
 
-The default mission extractor is heuristic and dependency-free. It tries to extract a short, concrete mission phrase from the reply and linked website text. When the signal is weak, it falls back to a more natural generic phrase like `something useful for Solana users` instead of forcing a bad mission.
+The default mission extractor is heuristic and dependency-free. It tries to extract a short, concrete mission phrase from the reply and linked website text. When the signal is weak, it falls back to a more natural generic phrase like `something people actually need` instead of forcing a bad mission.
 
 It uses:
 
@@ -52,6 +60,15 @@ export X_REPLY_MISSION_API_BASE_URL="https://api.openai.com/v1"
 export X_REPLY_MISSION_MODEL="gpt-4o-mini"
 ```
 
+## Lead Scoring
+
+The agent scores replies for non-crypto founder signals:
+
+- Fundraising and bootstrap keywords (building, startup, launch, mission, bootstrapped, etc.)
+- Mission-domain keywords (climate, education, health, open source, indie, SaaS, research, etc.)
+- Project URLs and proof-of-work signals
+- Penalizes crypto-native terms (solana, defi, token launch, etc.) unless used as secondary overflow
+
 ## Controls
 
 The script sends live outreach when `X_OUTREACH_DRY_RUN=false`, but still uses controls:
@@ -64,3 +81,7 @@ The script sends live outreach when `X_OUTREACH_DRY_RUN=false`, but still uses c
 - Completed DM/quote interactions prevent contacting the same lead twice. Dry-run interactions remain visible in the JSON log but do not block a later live run.
 
 Each interaction record includes the lead key, source post ID, comment ID, author info, comment text, author description, detected project, website URL, generated mission, mission confidence, DM text, quote text, score, reasons, action, run mode, status, timestamp, posted DM/quote IDs when available, and per-channel errors. The score is kept for debugging, but low-score comments are still processed.
+
+## Outreach Messaging
+
+DM and quote templates align with the **Stuck fundraising** angle from [`docs/marketing/outbound-message-tests.md`](../../docs/marketing/outbound-message-tests.md). Messages emphasize that Singularity handles the crypto layer and avoid requiring crypto literacy from founders.

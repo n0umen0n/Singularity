@@ -112,7 +112,30 @@ type MissionResult = {
   confidence: "specific" | "fallback";
 };
 
-const SOLANA_TERMS = [
+const MISSION_TERMS = [
+  "climate",
+  "education",
+  "health",
+  "research",
+  "open source",
+  "opensource",
+  "oss",
+  "indie",
+  "saas",
+  "startup",
+  "bootstrapped",
+  "bootstrap",
+  "fundraising",
+  "grant",
+  "public goods",
+  "nonprofit",
+  "mission",
+  "product hunt",
+  "maintainer",
+  "sustainability",
+];
+
+const CRYPTO_TERMS = [
   "solana",
   "spl",
   "anchor",
@@ -127,9 +150,14 @@ const SOLANA_TERMS = [
   "drift",
   "orca",
   "backpack",
+  "defi",
+  "web3",
+  "token launch",
+  "airdrop",
+  "nft",
 ];
 
-const FUNDRAISING_WORDS = ["building", "project", "protocol", "startup", "app", "dapp", "platform", "mission", "launching"];
+const FUNDRAISING_WORDS = ["building", "project", "startup", "app", "platform", "mission", "launching", "bootstrapped", "fundraising", "grant"];
 
 async function main() {
   const config = readConfig(process.env);
@@ -306,9 +334,9 @@ function scoreReply(post: XPost): { value: number; reasons: string[] } {
   const reasons: string[] = [];
   let value = 0;
 
-  for (const term of SOLANA_TERMS) {
+  for (const term of MISSION_TERMS) {
     if (text.includes(term)) {
-      value += term === "solana" ? 3 : 2;
+      value += term.includes(" ") ? 3 : 2;
       reasons.push(`mentions ${term}`);
     }
   }
@@ -327,8 +355,15 @@ function scoreReply(post: XPost): { value: number; reasons: string[] } {
   }
 
   if (/\$[a-z0-9]{2,12}\b/i.test(post.text)) {
-    value += 1;
-    reasons.push("mentions ticker");
+    value -= 2;
+    reasons.push("mentions ticker (crypto signal)");
+  }
+
+  for (const term of CRYPTO_TERMS) {
+    if (text.includes(term)) {
+      value -= term === "solana" ? 2 : 1;
+      reasons.push(`crypto term: ${term}`);
+    }
   }
 
   return { value, reasons };
@@ -417,7 +452,7 @@ function inferProjectName(post: XPost, website: Awaited<ReturnType<typeof fetchW
 
 function isWeakProjectName(input: string): boolean {
   const normalized = input.toLowerCase().replace(/^@/, "").trim();
-  return ["solana", "solana_devs", "the", "this", "that", "our", "we", "i"].includes(normalized);
+  return ["solana", "solana_devs", "crypto", "web3", "the", "this", "that", "our", "we", "i"].includes(normalized);
 }
 
 async function inferMission(
@@ -534,26 +569,27 @@ function normalizeMissionPhrase(mission: string): string {
 function fallbackMission(input: string): string {
   const source = input.toLowerCase();
 
-  if (/\b(game|gaming|play|player|collectible)\b/.test(source)) return "a stronger web3 gaming community";
-  if (/\b(rwa|real estate|mortgage|loan|credit|tokenized asset|tokenized real estate)\b/.test(source)) {
-    return "better financing for tokenized real estate";
-  }
-  if (/\b(pay|payment|payroll|invoice|checkout|subscription)\b/.test(source)) return "simpler crypto payment flows";
-  if (/\b(wallet|identity|auth|login|key|custody)\b/.test(source)) return "better user ownership tools";
-  if (/\b(data|analytics|dashboard|index|explorer|insight)\b/.test(source)) return "clearer onchain data tools";
-  if (/\b(dev|developer|sdk|api|tooling|infrastructure)\b/.test(source)) return "better Solana developer tooling";
-  if (/\b(defi|swap|trade|trading|liquidity|yield|market)\b/.test(source)) return "better onchain market access";
+  if (/\b(climate|carbon|sustainability|renewable|energy)\b/.test(source)) return "a stronger climate mission";
+  if (/\b(education|learning|school|student|teach)\b/.test(source)) return "better access to education";
+  if (/\b(health|medical|patient|care|wellness)\b/.test(source)) return "better health outcomes for more people";
+  if (/\b(open source|opensource|oss|maintainer|github)\b/.test(source)) return "sustainable open-source software";
+  if (/\b(research|science|lab|study|data)\b/.test(source)) return "more useful public research";
+  if (/\b(indie|saas|bootstrap|bootstrapped|startup)\b/.test(source)) return "a product people actually need";
+  if (/\b(game|gaming|play|player|collectible)\b/.test(source)) return "a better experience for players";
+  if (/\b(pay|payment|payroll|invoice|checkout|subscription)\b/.test(source)) return "simpler payment flows";
+  if (/\b(wallet|identity|auth|login|key|custody)\b/.test(source)) return "better ownership tools for users";
+  if (/\b(dev|developer|sdk|api|tooling|infrastructure)\b/.test(source)) return "better tools for builders";
 
-  return "something useful for Solana users";
+  return "something people actually need";
 }
 
 function formatReply(projectName: string, mission: MissionResult): string {
   if (mission.confidence === "fallback") {
-    return `If the mission is building ${mission.text}, it is possible to raise funds via Singularity: https://app.missions.diy`;
+    return `If the mission is building ${mission.text}, Singularity can help turn it into a public funding market — we handle the crypto layer: https://app.missions.diy`;
   }
 
   const prefix = startsWithVerb(mission.text) ? "is to" : "is";
-  return `If the mission ${prefix} ${mission.text}, it is possible to raise funds via Singularity: https://app.missions.diy`;
+  return `If the mission ${prefix} ${mission.text}, Singularity can help turn it into a public funding market — we handle the crypto layer: https://app.missions.diy`;
 }
 
 function formatDm(mission: MissionResult): string {
@@ -562,7 +598,7 @@ function formatDm(mission: MissionResult): string {
       ? `building ${mission.text}`
       : `${startsWithVerb(mission.text) ? "to " : ""}${mission.text}`;
 
-  return `Saw what you're building around ${missionText}. It is possible to raise funds through Singularity if you're funding contributors or early work.`;
+  return `Saw what you're building around ${missionText}. If traditional fundraising has been slow, Singularity helps mission-driven projects launch a public funding market — we handle the crypto layer. Worth a quick chat?`;
 }
 
 function startsWithVerb(input: string): boolean {

@@ -244,3 +244,140 @@ The best all-around option is:
 **Launch a token. Fund the builders. Keep it onchain.**
 
 It is concrete, memorable, and maps directly to the product.
+
+---
+
+## Non-Crypto Founder Variant (Draft)
+
+Use this variant for outbound, founder calls, and design-partner conversations with non-crypto ICP. Do not ship to the live landing page until the discovery sprint validates language on calls.
+
+See [`discovery-sprint-non-crypto.md`](marketing/discovery-sprint-non-crypto.md) for validation criteria.
+
+### Thesis
+
+**Turn your mission into a public funding market — without becoming a crypto company.**
+
+Singularity handles wallets, tokens, treasury, and supporter onboarding. Founders focus on the mission and launch story.
+
+### Bleeding Neck Problem (Non-Crypto)
+
+The urgent problem for non-crypto founders is not token-holder governance. It is:
+
+**Strong missions stall when capital only flows to hype or insider networks.**
+
+Credible projects with visible proof of work can still fail to raise through angels, VCs, or grants. Bootstrapping runs out. Grants are slow or reject good work. The mission is public, but the funding path is not.
+
+Singularity gives these missions a public funding market and treasury — with Singularity running the crypto layer end-to-end.
+
+### Who It Is For (Non-Crypto)
+
+#### Mission Founders Outside Crypto
+
+Founders building climate, education, health, open source, indie SaaS, or research projects who need capital and distribution but do not want to become crypto companies. Singularity tokenizes the mission, runs the launch, and makes treasury funding visible.
+
+#### Communities That Want To Back Real Work
+
+Newsletter readers, users, open-source dependents, and mission-aligned supporters who want to back work they believe in — without needing deep crypto knowledge.
+
+#### Builders And Contributors
+
+People who want to do paid work for mission-driven projects and need a visible path from contribution to funded payout.
+
+### Positioning (Non-Crypto)
+
+Primary line:
+
+**Turn your mission into a public funding market — without becoming a crypto company.**
+
+Supporting line:
+
+**Singularity handles the crypto layer. You focus on the mission.**
+
+Shorter supporting line:
+
+**Community-backed funding for missions that traditional capital overlooks.**
+
+Comparison line:
+
+**Most fundraising stops at insiders. Singularity opens a public market with a treasury for the work.**
+
+### Landing Page Copy (Non-Crypto Draft)
+
+#### Intro
+
+```ts
+{
+  eyebrow: "Singularity",
+  label: "Intro",
+  title: "Turn your mission into a public funding market.",
+  body: "Singularity handles the crypto layer. You focus on the mission, launch story, and the work that needs funding.",
+}
+```
+
+#### Problem
+
+```ts
+{
+  eyebrow: "The gap",
+  label: "Problem",
+  title: "Strong missions stall when capital only flows to hype or insider networks.",
+  body: "You have proof the work matters. Traditional fundraising may still be slow, opaque, or closed. The mission is public, but the funding path is not.",
+}
+```
+
+#### Solution
+
+```ts
+{
+  eyebrow: "The solution",
+  label: "Solution",
+  title: "A public funding market with a treasury for the work",
+  body: "Singularity turns your mission into a launchable market with a reserved treasury and a visible path to fund contributors — without you needing to understand wallets or token mechanics.",
+  lines: ["Reserved mission treasury", "Visible funding requests", "White-glove launch support"],
+}
+```
+
+#### How It Works (Non-Crypto)
+
+```ts
+{
+  eyebrow: "How it works",
+  label: "Launch",
+  title: "We handle the launch. You tell the story.",
+  body: "Define the mission, approve the narrative, and co-market the launch. Singularity configures the market, treasury, and supporter onboarding.",
+}
+```
+
+### Meta Copy (Non-Crypto Draft)
+
+Suggested page title:
+
+```html
+<title>Singularity | Community-backed funding for mission-driven projects</title>
+```
+
+Suggested meta description:
+
+```html
+<meta
+  name="description"
+  content="Turn your mission into a public funding market with a reserved treasury. Singularity handles the crypto layer so you can focus on the work."
+/>
+```
+
+### Copy Principles (Non-Crypto)
+
+- Lead with mission and fundraising pain, not crypto mechanics.
+- Say "we handle the crypto layer" early to reduce friction.
+- Avoid jargon: bonding curve, onchain, governance, wallet — unless explaining to supporters separately.
+- Do not promise VC outcomes or guaranteed returns.
+- Make the white-glove offer explicit: Singularity runs the launch, founder tells the story.
+- Keep the crypto-native variant (above) for onchain-audience pages and secondary pre-token crypto segment.
+
+### When To Use Which Variant
+
+| Audience | Variant |
+| --- | --- |
+| Non-crypto founders (primary ICP) | Non-crypto founder variant |
+| Crypto-literate supporters and pre-token crypto-adjacent teams | Crypto-native variant (default above) |
+| Live landing page | Keep crypto-native until discovery sprint validates non-crypto copy |
