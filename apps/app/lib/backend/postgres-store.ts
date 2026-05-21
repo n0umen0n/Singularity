@@ -3,12 +3,13 @@ import type pg from "pg";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, getMint, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { DEFAULT_COUNCIL_PROGRAM_ID, DEFAULT_DBC_TOTAL_SUPPLY, DEFAULT_REGISTRY_PROGRAM_ID, requireProgramConfig, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
-import { isDemoMissionCreator } from "@/lib/demo-missions";
+import { DEMO_CREATOR_WALLET, isDemoMissionCreator } from "@/lib/demo-missions";
 import type { FundingRequest, Mission } from "@/lib/mock-data";
 import { currentUser, missions as fixtureMissions, type RequestStatus } from "@/lib/mock-data";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { publishMissionTokenMetadata } from "@/lib/backend/mission-token-metadata";
+import { validateMissionLaunchInput, resolveMissionLaunchConfig } from "@/lib/mission-launch-validation";
 import { query, transaction } from "@/lib/backend/db";
 import {
   fundingRequestPda,
@@ -1189,12 +1190,14 @@ export async function listMissionsFromPostgres(options: { q?: string; sort?: Mis
     where.push("(m.statement ilike $1 or m.description ilike $1 or m.token_symbol ilike $1)");
   }
 
-  const orderBy =
+  const demoSortPrefix = `case when lower(m.creator_wallet) = lower('${DEMO_CREATOR_WALLET}') then 1 else 0 end asc`;
+  const primaryOrder =
     options.sort === "most-holders"
       ? "coalesce(mm.holders, 0) desc, m.id asc"
       : options.sort === "newest"
         ? "m.created_at desc, m.id asc"
         : "coalesce(mm.liquidity_usdc, 0) desc, m.id asc";
+  const orderBy = `${demoSortPrefix}, ${primaryOrder}`;
   const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : undefined;
   const offset = Math.max(Math.floor(options.offset ?? 0), 0);
   let pagination = "";
@@ -1390,12 +1393,7 @@ export async function prepareMissionLaunchInPostgres(input: {
   initialMarketCap?: number;
   migrationMarketCap?: number;
 }) {
-  const statement = input.statement?.trim();
-  const description = input.description?.trim();
-  const tokenSymbol = input.tokenSymbol?.trim().toUpperCase();
-  if (!statement || statement.length > 96) throw new Error("Mission statement is required and must be 96 characters or fewer.");
-  if (!description || description.length > 1200) throw new Error("Mission description is required and must be 1200 characters or fewer.");
-  if (!tokenSymbol || !/^[A-Z0-9]{2,8}$/.test(tokenSymbol)) throw new Error("Token symbol must be 2-8 uppercase letters or numbers.");
+  const { statement, description, tokenSymbol, initialPurchaseUsdc } = validateMissionLaunchInput(input);
 
   const idBase = slugify(statement);
   const id = `${idBase}-${randomBytes(2).toString("hex")}`;
@@ -1410,9 +1408,8 @@ export async function prepareMissionLaunchInPostgres(input: {
   });
   const metadataHash = publishedMetadata.hash;
   const metadataUri = publishedMetadata.uri;
-  const launchConfig = resolveMeteoraDbcLaunchConfig({
-    totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
-    initialPurchaseUsdc: input.initialPurchaseUsdc,
+  const launchConfig = resolveMissionLaunchConfig({
+    initialPurchaseUsdc,
     initialMarketCap: input.initialMarketCap,
     migrationMarketCap: input.migrationMarketCap,
   });

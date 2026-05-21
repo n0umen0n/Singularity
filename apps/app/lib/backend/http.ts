@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { UserInputError } from "@/lib/user-input-error";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -20,6 +21,8 @@ function errorText(error: unknown, key: keyof ErrorLike) {
 }
 
 function userMessage(error: unknown) {
+  if (error instanceof UserInputError) return error.message;
+
   const message = error instanceof Error ? error.message : "Unexpected backend error";
   const code = errorText(error, "code");
   const constraint = errorText(error, "constraint");

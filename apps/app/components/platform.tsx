@@ -47,18 +47,8 @@ type CropRequest = {
   shape: "rect" | "circle";
 };
 
-const FIELD_LIMITS = {
-  search: 120,
-  moneyAmount: 16,
-  missionStatement: 96,
-  missionDescription: 1200,
-  tokenSymbol: 8,
-  fundingRequestName: 120,
-  fundingRequestDescription: 2000,
-  profileName: 80,
-  profileDescription: 500,
-  socialHandle: 80,
-} as const;
+import { FIELD_LIMITS } from "@/lib/field-limits";
+import { validateMissionLaunchInput } from "@/lib/mission-launch-validation";
 
 const FUNDING_REQUEST_VOTING_PERIOD_MS = 3 * 24 * 60 * 60 * 1000;
 
@@ -1603,14 +1593,7 @@ function compactUsdThousands(value: number) {
   return `$${Math.round(value / 1000)}k`;
 }
 
-function compactTokenMillions(value: number) {
-  return `${value / 1_000_000}M`;
-}
-
 function LaunchPathSection() {
-  const marketSupply = (DEFAULT_DBC_TOTAL_SUPPLY * (100 - DEFAULT_DBC_TREASURY_SUPPLY_PERCENT)) / 100;
-  const treasurySupply = DEFAULT_DBC_TOTAL_SUPPLY - marketSupply;
-
   return (
     <div className="launch-path">
       <div className="launch-path-heading">
@@ -1643,12 +1626,8 @@ function LaunchPathSection() {
           <span className="launch-path-metric-label">Graduation market cap</span>
         </div>
         <div className="launch-path-metric">
-          <span className="launch-path-metric-value">{compactTokenMillions(marketSupply)}</span>
-          <span className="launch-path-metric-label">Tokens on curve</span>
-        </div>
-        <div className="launch-path-metric">
-          <span className="launch-path-metric-value">{compactTokenMillions(treasurySupply)}</span>
-          <span className="launch-path-metric-label">Tokens in treasury</span>
+          <span className="launch-path-metric-value">{compactUsdThousands(DEFAULT_DBC_GRADUATION_RAISE_USDC)}</span>
+          <span className="launch-path-metric-label">Needed to raise to graduate</span>
         </div>
       </div>
     </div>
@@ -2145,16 +2124,22 @@ export function LaunchMissionPage() {
       return;
     }
     try {
+      const validated = validateMissionLaunchInput({
+        statement,
+        description,
+        tokenSymbol: symbol,
+        initialPurchaseUsdc,
+      });
       setStatus("Preparing mission launch...");
       const uploadedMissionImage = missionImageFile ? (await api.uploadObject({ file: missionImageFile, purpose: "mission-image" })).upload.uri : missionImage;
       const uploadedTokenImage = tokenImageFile ? (await api.uploadObject({ file: tokenImageFile, purpose: "token-image" })).upload.uri : tokenImage;
       const result = await api.prepareMissionLaunch({
-        statement,
-        description,
-        tokenSymbol: symbol,
+        statement: validated.statement,
+        description: validated.description,
+        tokenSymbol: validated.tokenSymbol,
         missionImage: uploadedMissionImage,
         tokenImage: uploadedTokenImage,
-        initialPurchaseUsdc: Number(initialPurchaseUsdc) || 0,
+        initialPurchaseUsdc: validated.initialPurchaseUsdc,
       });
       if (result.transaction.status !== "ready") {
         setStatus(result.transaction.message);

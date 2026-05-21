@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_DBC_TOTAL_SUPPLY, resolveMeteoraDbcLaunchConfig } from "@singularity/solana";
 import { publishMissionTokenMetadata } from "@/lib/backend/mission-token-metadata";
+import { validateMissionLaunchInput, resolveMissionLaunchConfig } from "@/lib/mission-launch-validation";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
@@ -220,6 +220,12 @@ function findRequestOrThrow(state: BackendState, requestId: string) {
   throw new Error(`Funding request not found: ${requestId}`);
 }
 
+function compareMissionsByMetric(left: Mission, right: Mission, metric: (mission: Mission) => number) {
+  const demoDelta = Number(Boolean(left.isDemo)) - Number(Boolean(right.isDemo));
+  if (demoDelta !== 0) return demoDelta;
+  return metric(right) - metric(left);
+}
+
 export async function listMissions(options: { q?: string; sort?: MissionSort; includeDetails?: boolean; limit?: number; offset?: number }) {
   if (storageMode() === "postgres") return listMissionsFromPostgres(options);
 
@@ -234,8 +240,9 @@ export async function listMissions(options: { q?: string; sort?: MissionSort; in
       )
     : [...state.missions];
 
-  if (options.sort === "most-holders") filtered.sort((a, b) => b.holders - a.holders);
-  else if (options.sort !== "newest") filtered.sort((a, b) => b.liquidity - a.liquidity);
+  if (options.sort === "most-holders") filtered.sort((left, right) => compareMissionsByMetric(left, right, (mission) => mission.holders));
+  else if (options.sort === "newest") filtered.sort((left, right) => Number(Boolean(left.isDemo)) - Number(Boolean(right.isDemo)));
+  else filtered.sort((left, right) => compareMissionsByMetric(left, right, (mission) => mission.liquidity));
 
   const offset = Math.max(Math.floor(options.offset ?? 0), 0);
   const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : undefined;
@@ -358,12 +365,7 @@ export async function prepareMissionLaunch(input: {
   if (storageMode() === "postgres") return prepareMissionLaunchInPostgres(input);
 
   return updateState(async (state) => {
-    const statement = input.statement?.trim();
-    const description = input.description?.trim();
-    const tokenSymbol = input.tokenSymbol?.trim().toUpperCase();
-    if (!statement || statement.length > 96) throw new Error("Mission statement is required and must be 96 characters or fewer.");
-    if (!description || description.length > 1200) throw new Error("Mission description is required and must be 1200 characters or fewer.");
-    if (!tokenSymbol || !/^[A-Z0-9]{2,8}$/.test(tokenSymbol)) throw new Error("Token symbol must be 2-8 uppercase letters or numbers.");
+    const { statement, description, tokenSymbol, initialPurchaseUsdc } = validateMissionLaunchInput(input);
 
     const idBase = slugify(statement);
     const id = state.missions.some((mission) => mission.id === idBase) ? `${idBase}-${randomBytes(2).toString("hex")}` : idBase;
@@ -378,9 +380,8 @@ export async function prepareMissionLaunch(input: {
     const hash = publishedMetadata.hash;
     const metadataUri = publishedMetadata.uri;
     const seed = state.missions[0];
-    const launchConfig = resolveMeteoraDbcLaunchConfig({
-      totalSupply: DEFAULT_DBC_TOTAL_SUPPLY,
-      initialPurchaseUsdc: input.initialPurchaseUsdc,
+    const launchConfig = resolveMissionLaunchConfig({
+      initialPurchaseUsdc,
       initialMarketCap: input.initialMarketCap,
       migrationMarketCap: input.migrationMarketCap,
     });

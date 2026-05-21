@@ -13,7 +13,7 @@ export function formatLiquidityUsd(value: number): string {
   if (absoluteValue === 0) {
     return "$0";
   }
-  return money(safeValue, false);
+  return money(safeValue, false, 1);
 }
 
 export function money(value: number, compact = false, maximumFractionDigitsOverride?: number): string {
