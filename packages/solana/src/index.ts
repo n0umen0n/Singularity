@@ -51,6 +51,7 @@ export const DEFAULT_DBC_TREASURY_SUPPLY_PERCENT = 20;
 export const DEFAULT_DBC_INITIAL_MARKET_CAP = 15_000;
 export const DEFAULT_DBC_MIGRATION_MARKET_CAP = 55_000;
 export const DEFAULT_DBC_GRADUATION_RAISE_USDC = 15_000;
+const MAX_VERSIONED_TRANSACTION_BYTES = 1232;
 
 const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_DBC_BUY_AMOUNTS_USDC = [5, 10, 25, 100, 1_000];
@@ -565,6 +566,40 @@ export function buildPreparedTransaction(input: TransactionBuildInput): Prepared
   };
 }
 
+function measureLaunchStepBytes(input: {
+  feePayer: PublicKey;
+  recentBlockhash: string;
+  instructions: TransactionInstruction[];
+  signerKeypairs?: Keypair[];
+}) {
+  const message = new TransactionMessage({
+    payerKey: input.feePayer,
+    recentBlockhash: input.recentBlockhash,
+    instructions: input.instructions,
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  if (input.signerKeypairs?.length) transaction.sign(input.signerKeypairs);
+  return transaction.serialize().length;
+}
+
+function launchStepForTransaction(input: {
+  transaction: { instructions: TransactionInstruction[] };
+  label: string;
+  signerKeypairs: Keypair[];
+}) {
+  const signerKeypairs = input.signerKeypairs.filter((signer) =>
+    input.transaction.instructions.some((instruction) =>
+      instruction.keys.some((key) => key.isSigner && key.pubkey.equals(signer.publicKey)),
+    ),
+  );
+
+  return {
+    label: input.label,
+    instructions: input.transaction.instructions,
+    signerKeypairs,
+  };
+}
+
 export function buildPreparedTransactionSteps(input: {
   feePayer: string;
   recentBlockhash: string;
@@ -647,40 +682,74 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
           referralTokenAccount: null,
         }
       : undefined;
-  const result = firstBuyParam
-    ? await client.pool.createConfigAndPoolWithFirstBuy({
-        config: config.publicKey,
-        feeClaimer,
-        leftoverReceiver,
-        quoteMint,
-        payer,
-        ...curveConfig,
-        preCreatePoolParam,
-        firstBuyParam,
-      })
-    : await client.pool.createConfigAndPool({
-        config: config.publicKey,
-        feeClaimer,
-        leftoverReceiver,
-        quoteMint,
-        payer,
-        ...curveConfig,
-        preCreatePoolParam,
-      });
-  const transactions = "createConfigTx" in result ? [result.createConfigTx, result.createPoolWithFirstBuyTx] : [result];
+  const launchBaseParams = {
+    config: config.publicKey,
+    feeClaimer,
+    leftoverReceiver,
+    quoteMint,
+    payer,
+    ...curveConfig,
+    preCreatePoolParam,
+  };
   const dbcPool = deriveDbcPoolAddress(quoteMint, baseMint.publicKey, config.publicKey);
   const treasuryVault = getAssociatedTokenAddressSync(baseMint.publicKey, leftoverReceiver, true, TOKEN_2022_PROGRAM_ID);
   const signerKeypairs = [config, baseMint];
-  const transactionSteps = transactions.map((transaction, index) => ({
-    label: index === 0 ? "Create Meteora DBC config" : "Create Meteora DBC pool",
-    instructions: transaction.instructions,
-    signerKeypairs: signerKeypairs.filter((signer) =>
-      transaction.instructions.some((instruction) => instruction.keys.some((key) => key.isSigner && key.pubkey.equals(signer.publicKey))),
-    ),
-  }));
+  const measureBlockhash = "11111111111111111111111111111111";
+
+  let transactionSteps: TransactionBuildStep[];
+
+  if (firstBuyParam) {
+    const splitLaunch = await client.pool.createConfigAndPoolWithFirstBuy({
+      ...launchBaseParams,
+      firstBuyParam,
+    });
+    transactionSteps = [
+      launchStepForTransaction({
+        transaction: splitLaunch.createConfigTx,
+        label: "Create Meteora DBC config",
+        signerKeypairs,
+      }),
+      launchStepForTransaction({
+        transaction: splitLaunch.createPoolWithFirstBuyTx,
+        label: "Create Meteora DBC pool and first buy",
+        signerKeypairs,
+      }),
+    ];
+  } else {
+    const combinedLaunch = await client.pool.createConfigAndPool(launchBaseParams);
+    const combinedStep = launchStepForTransaction({
+      transaction: combinedLaunch,
+      label: "Launch mission market",
+      signerKeypairs,
+    });
+    const combinedBytes = measureLaunchStepBytes({
+      feePayer: payer,
+      recentBlockhash: measureBlockhash,
+      instructions: combinedStep.instructions,
+      signerKeypairs: combinedStep.signerKeypairs,
+    });
+
+    if (combinedBytes <= MAX_VERSIONED_TRANSACTION_BYTES) {
+      transactionSteps = [combinedStep];
+    } else {
+      const splitLaunch = await client.pool.createConfigAndPoolWithFirstBuy(launchBaseParams);
+      transactionSteps = [
+        launchStepForTransaction({
+          transaction: splitLaunch.createConfigTx,
+          label: "Create Meteora DBC config",
+          signerKeypairs,
+        }),
+        launchStepForTransaction({
+          transaction: splitLaunch.createPoolWithFirstBuyTx,
+          label: "Create Meteora DBC pool",
+          signerKeypairs,
+        }),
+      ];
+    }
+  }
 
   return {
-    instructions: transactions.flatMap((transaction) => transaction.instructions),
+    instructions: transactionSteps.flatMap((step) => step.instructions),
     transactionSteps,
     signerKeypairs,
     accounts: {

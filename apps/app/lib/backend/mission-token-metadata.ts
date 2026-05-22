@@ -42,8 +42,8 @@ function publicAppBaseUrl() {
   return "http://localhost:3000";
 }
 
-export function missionTokenMetadataUri(stored: StoredObject, hash: string) {
-  if (stored.storage === "vercel-blob") return stored.uri;
+export function missionTokenMetadataUri(_stored: StoredObject, hash: string) {
+  // Keep on-chain URIs short so Meteora launch fits in one Solana transaction.
   return `${publicAppBaseUrl()}/api/metadata/${hash}.json`;
 }
 
@@ -72,6 +72,27 @@ export async function publishMissionTokenMetadata(input: {
   };
 }
 
+async function readMissionTokenMetadataFromDatabase(hash: string) {
+  if (!process.env.DATABASE_URL) return null;
+
+  try {
+    const { query } = await import("@/lib/backend/db");
+    const result = await query<{ uri: string }>("select uri from metadata_uploads where hash = $1 limit 1", [hash]);
+    const uri = result.rows[0]?.uri?.trim();
+    if (!uri?.startsWith("http")) return null;
+
+    const response = await fetch(uri);
+    if (!response.ok) return null;
+
+    return {
+      contentType: response.headers.get("content-type") || "application/json",
+      bytes: Buffer.from(await response.arrayBuffer()),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function readMissionTokenMetadataByHash(hash: string) {
   if (!/^[a-f0-9]{64}$/.test(hash)) return null;
 
@@ -89,8 +110,8 @@ export async function readMissionTokenMetadataByHash(hash: string) {
       return { contentType: "application/json", bytes };
     }
   } catch {
-    return null;
+    // Fall through to database-backed blob metadata.
   }
 
-  return null;
+  return readMissionTokenMetadataFromDatabase(hash);
 }
