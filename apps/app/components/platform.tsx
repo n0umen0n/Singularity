@@ -2798,17 +2798,34 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
     );
   }
 
-  const userMissions = profile.tokenBalances.flatMap((entry) => {
+  const createdMissionIds = new Set(profile.createdMissions.map((entry) => entry.missionId));
+  const holdingsMissions = profile.tokenBalances.flatMap((entry) => {
     const mission = entry.mission ?? null;
     return mission ? [{ ...entry, mission }] : [];
   });
+  const holdingsMissionIds = new Set(holdingsMissions.map((entry) => entry.missionId));
+  const creatorOnlyMissions = profile.createdMissions.flatMap((entry) => {
+    const mission = entry.mission ?? null;
+    if (!mission || holdingsMissionIds.has(entry.missionId)) return [];
+    return [
+      {
+        missionId: entry.missionId,
+        symbol: mission.tokenSymbol,
+        balance: 0,
+        total: 0,
+        usd: 0,
+        council: false,
+        mission,
+      },
+    ];
+  });
+  const userMissions = [...holdingsMissions, ...creatorOnlyMissions];
   const createdMissions = SHOW_CREATOR_TRADING_FEES_IN_PROFILE
     ? profile.createdMissions.flatMap((entry) => {
         const mission = entry.mission ?? null;
         return mission ? [{ ...entry, mission }] : [];
       })
     : [];
-  const featuredCreatorMissionId = profile.createdMissions[0]?.missionId;
   const submittedRequests = profile.submittedRequests || [];
   const councilRequests = profile.councilRequests || [];
   const visibleRequests = requestFilter === "submitted" ? submittedRequests : councilRequests;
@@ -3075,7 +3092,7 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
           {userMissions.length ? (
             <div className="mission-grid">
               {userMissions.map((entry) => {
-                const isCreator = entry.missionId === featuredCreatorMissionId;
+                const isCreator = createdMissionIds.has(entry.missionId);
                 const label = isCreator ? "Creator" : entry.council ? "Councillor" : "Investor";
 
                 return (
@@ -3089,7 +3106,7 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
               })}
             </div>
           ) : (
-            <EmptyState title="No missions yet" description="When you buy mission tokens or create a mission, those positions will show up here." />
+            <EmptyState title="No missions yet" description="Missions you create or invest in will show up here." />
           )}
         </GlassCard>
         <GlassCard className="section-card">

@@ -178,9 +178,9 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       setStatus("Wallet login was cancelled or could not be completed.");
     },
   });
-  const wallet = sessionAddress ? (wallets.find((entry) => entry.address === sessionAddress) ?? null) : (wallets[0] ?? null);
   const linkedSolanaAddress = solanaAddressFromPrivyUser(user);
-  const verificationAddress = wallet?.address ?? linkedSolanaAddress;
+  const verificationAddress = sessionAddress ?? linkedSolanaAddress ?? wallets[0]?.address ?? null;
+  const wallet = verificationAddress ? (wallets.find((entry) => entry.address === verificationAddress) ?? null) : (wallets[0] ?? null);
   const address = sessionAddress;
   const ready = privyReady && !restoringSession;
   const authenticated = Boolean(sessionAddress);
