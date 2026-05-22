@@ -1,3 +1,5 @@
+import type { MissionSocials } from "@/lib/mission-socials";
+
 export type RequestStatus = "active" | "accepted" | "rejected" | "expired";
 
 export type Investor = {
@@ -56,6 +58,7 @@ export type Mission = {
   isDemo?: boolean;
   statement: string;
   description: string;
+  socials?: MissionSocials;
   image: string;
   tokenImage: string;
   tokenSymbol: string;

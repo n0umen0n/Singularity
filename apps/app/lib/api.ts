@@ -150,6 +150,7 @@ export function prepareMissionLaunch(input: {
   initialPurchaseUsdc?: number;
   initialMarketCap?: number;
   migrationMarketCap?: number;
+  socials?: import("@/lib/mission-socials").MissionSocials;
 }) {
   return api<{ launchId: string | null; mission: Mission; transaction: PreparedTransaction }>("/api/missions/prepare-launch", {
     method: "POST",

@@ -16,10 +16,12 @@ import {
 } from "@singularity/solana";
 import { BrandWordmark, GlassCard, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
+import { MissionSocialFields, MissionSocialLinks, missionSocialPreview } from "@/components/mission-social-links";
 import * as api from "@/lib/api";
 import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/mock-data";
 import { formatLiquidityUsd, money, number, shortAddress } from "@/lib/format";
 import { useSingularityWallet } from "@/lib/wallet";
+import { MISSION_CREATE_TRADING_FEE_DESCRIPTION, SHOW_CREATOR_TRADING_FEES_IN_PROFILE } from "@/lib/trading-fees";
 
 type CropKind = "mission" | "token" | "avatar";
 
@@ -49,6 +51,7 @@ type CropRequest = {
 
 import { FIELD_LIMITS } from "@/lib/field-limits";
 import { validateMissionLaunchInput } from "@/lib/mission-launch-validation";
+import { emptyMissionSocials, validateMissionSocials } from "@/lib/mission-socials";
 
 const FUNDING_REQUEST_VOTING_PERIOD_MS = 3 * 24 * 60 * 60 * 1000;
 
@@ -597,7 +600,10 @@ function MissionHero({ mission }: { mission: Mission }) {
     <section className={cx("glass-card mission-hero", descriptionExpanded && "mission-hero-description-expanded")}>
       <img className="hero-image" src={mission.image} alt="" decoding="async" loading="eager" fetchPriority="high" />
       <div className="hero-topline">
-        <StatusPill>Missions / {mission.tokenSymbol}</StatusPill>
+        <div className="hero-topline-start">
+          <StatusPill>Missions / {mission.tokenSymbol}</StatusPill>
+          <MissionSocialLinks socials={mission.socials} />
+        </div>
         <div className="hero-topline-badges">
           <StatusPill tone="info">{formatLiquidityUsd(mission.liquidity)} liquidity</StatusPill>
           {mission.isDemo ? <MissionDemoBadge /> : null}
@@ -2087,6 +2093,7 @@ export function LaunchMissionPage() {
   const [statement, setStatement] = useState("");
   const [description, setDescription] = useState("");
   const [initialPurchaseUsdc, setInitialPurchaseUsdc] = useState("0");
+  const [socials, setSocials] = useState(emptyMissionSocials);
   const [missionImage, setMissionImage] = useState(defaultMissionImage);
   const [tokenImage, setTokenImage] = useState(defaultTokenImage);
   const [missionImageFile, setMissionImageFile] = useState<File | null>(null);
@@ -2101,6 +2108,7 @@ export function LaunchMissionPage() {
     statement: statement || "Coordinate the first open-source lunar robotics network",
     tokenSymbol: previewSymbol,
     description: description || "Live preview of how your mission will appear in discovery.",
+    socials: missionSocialPreview(socials),
     image: missionImage,
     tokenImage,
     tokenPrice: DEFAULT_DBC_INITIAL_MARKET_CAP / DEFAULT_DBC_TOTAL_SUPPLY,
@@ -2152,6 +2160,7 @@ export function LaunchMissionPage() {
         tokenSymbol: symbol,
         initialPurchaseUsdc,
       });
+      const validatedSocials = validateMissionSocials(socials);
       setStatus("Preparing mission launch...");
       const uploadedMissionImage = missionImageFile ? (await api.uploadObject({ file: missionImageFile, purpose: "mission-image" })).upload.uri : missionImage;
       const uploadedTokenImage = tokenImageFile ? (await api.uploadObject({ file: tokenImageFile, purpose: "token-image" })).upload.uri : tokenImage;
@@ -2162,6 +2171,7 @@ export function LaunchMissionPage() {
         missionImage: uploadedMissionImage,
         tokenImage: uploadedTokenImage,
         initialPurchaseUsdc: validated.initialPurchaseUsdc,
+        socials: validatedSocials,
       });
       if (result.transaction.status !== "ready") {
         setStatus(result.transaction.message);
@@ -2209,7 +2219,7 @@ export function LaunchMissionPage() {
         <PageHeader
           eyebrow="Create"
           title="Launch a mission market"
-          description="A mission can be anything: a product, research goal, community, protocol, creative project, public good, or ambitious outcome. 50% of USDC trading fees go to the creator, and 50% to Singularity."
+          description={MISSION_CREATE_TRADING_FEE_DESCRIPTION}
         />
         <div className="form-two-col">
           <div>
@@ -2281,6 +2291,7 @@ export function LaunchMissionPage() {
                 <span className="form-label">Initial purchase in USDC (optional)</span>
                 <input className="field" maxLength={FIELD_LIMITS.moneyAmount} placeholder="0" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
               </label>
+              <MissionSocialFields socials={socials} onChange={setSocials} />
               {launchSucceeded ? (
                 <p className="stat-note">Success <InlineSuccess /></p>
               ) : status ? (
@@ -2791,10 +2802,12 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
     const mission = entry.mission ?? null;
     return mission ? [{ ...entry, mission }] : [];
   });
-  const createdMissions = profile.createdMissions.flatMap((entry) => {
-    const mission = entry.mission ?? null;
-    return mission ? [{ ...entry, mission }] : [];
-  });
+  const createdMissions = SHOW_CREATOR_TRADING_FEES_IN_PROFILE
+    ? profile.createdMissions.flatMap((entry) => {
+        const mission = entry.mission ?? null;
+        return mission ? [{ ...entry, mission }] : [];
+      })
+    : [];
   const featuredCreatorMissionId = profile.createdMissions[0]?.missionId;
   const submittedRequests = profile.submittedRequests || [];
   const councilRequests = profile.councilRequests || [];
@@ -3030,29 +3043,31 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
               })}
           </div>
         </GlassCard>
-        <GlassCard className="section-card">
-          <div className="section-heading">
-            <h2>Trading fee distributions</h2>
-          </div>
-          {createdMissions.length ? (
-            <div className="fee-grid">
-              {createdMissions.map((entry) => (
-                <GlassCard className="creator-fee-card" key={entry.missionId}>
-                  <span className="token-avatar">
-                    <img src={entry.mission.tokenImage} alt="" decoding="async" loading="lazy" />
-                  </span>
-                  <div>
-                    <span className="stat-label">{entry.mission.tokenSymbol} distributed fees</span>
-                    <div className="stat-value">{money(entry.tradingFeesEarned)}</div>
-                    <p className="stat-note">Fees are distributed automatically every 24 hours.</p>
-                  </div>
-                </GlassCard>
-              ))}
+        {SHOW_CREATOR_TRADING_FEES_IN_PROFILE ? (
+          <GlassCard className="section-card">
+            <div className="section-heading">
+              <h2>Trading fee distributions</h2>
             </div>
-          ) : (
-            <EmptyState title="No distributed fees yet" description="Create a mission to receive automatic trading-fee distributions every 24 hours." />
-          )}
-        </GlassCard>
+            {createdMissions.length ? (
+              <div className="fee-grid">
+                {createdMissions.map((entry) => (
+                  <GlassCard className="creator-fee-card" key={entry.missionId}>
+                    <span className="token-avatar">
+                      <img src={entry.mission.tokenImage} alt="" decoding="async" loading="lazy" />
+                    </span>
+                    <div>
+                      <span className="stat-label">{entry.mission.tokenSymbol} distributed fees</span>
+                      <div className="stat-value">{money(entry.tradingFeesEarned)}</div>
+                      <p className="stat-note">Fees are distributed automatically every 24 hours.</p>
+                    </div>
+                  </GlassCard>
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No distributed fees yet" description="Create a mission to receive automatic trading-fee distributions every 24 hours." />
+            )}
+          </GlassCard>
+        ) : null}
         <GlassCard className="section-card">
           <div className="section-heading">
             <h2>My missions</h2>

@@ -1,10 +1,44 @@
+import { config as loadDotenv } from "dotenv";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const DEFAULT_STATE_PATH = path.join(REPO_ROOT, ".singularity", "x-outreach-agent-state.json");
 
-type Env = NodeJS.ProcessEnv;
+const STARTUP_SIGNAL_TERMS = [
+  "building",
+  "built",
+  "launch",
+  "launched",
+  "startup",
+  "founder",
+  "bootstrapped",
+  "side project",
+  "my app",
+  "our app",
+  "our platform",
+  "we're building",
+  "we are building",
+  "i'm building",
+  "i am building",
+  "saas",
+  "product hunt",
+  "pre-seed",
+  "fundraising",
+  "raise funds",
+  "seed round",
+];
+
+const CRYPTO_TERMS = [
+  "solana",
+  "token launch",
+  "defi",
+  "web3",
+  "nft",
+  "airdrop",
+  "pump.fun",
+];
 
 type AgentConfig = {
   bearerToken: string;
@@ -14,14 +48,13 @@ type AgentConfig = {
   enableDm: boolean;
   enableQuote: boolean;
   statePath: string;
-  maxRepliesPerPost: number;
-  maxPostsPerRun: number;
-  minScore: number;
+  maxPerRun: number;
+  maxRepliesToScan: number;
+  scanMultiplier: number;
+  minConfidence: number;
   requestDelayMs: number;
-  replyDelayMs: number;
-  siteTimeoutMs: number;
-  missionProvider: "heuristic" | "openai-compatible";
-  missionApiKey?: string;
+  sendDelayMs: number;
+  missionApiKey: string;
   missionApiBaseUrl: string;
   missionModel: string;
 };
@@ -35,17 +68,6 @@ type XPost = {
   author_description?: string;
   created_at?: string;
   conversation_id?: string;
-  referenced_tweets?: Array<{ type: string; id: string }>;
-  entities?: {
-    urls?: Array<{
-      expanded_url?: string;
-      display_url?: string;
-      url?: string;
-      title?: string;
-      description?: string;
-    }>;
-    mentions?: Array<{ username?: string; id?: string }>;
-  };
 };
 
 type XSearchResponse = {
@@ -53,701 +75,381 @@ type XSearchResponse = {
   includes?: {
     users?: Array<{ id: string; username: string; name?: string; description?: string }>;
   };
-  meta?: { next_token?: string; result_count?: number };
-  errors?: unknown[];
+  meta?: { next_token?: string };
 };
 
-type AgentState = {
-  repliedToPostIds: string[];
-  skippedPostIds: string[];
-  interactions: InteractionRecord[];
+type XTweetResponse = {
+  data?: XPost;
+  includes?: {
+    users?: Array<{ id: string; username: string; name?: string }>;
+  };
+};
+
+type FounderLead = {
+  replyId: string;
+  authorId: string;
+  username: string;
+  replyText: string;
+  startupName: string;
+  valueProposition: string;
+  appreciationClause: string;
+  confidence: number;
+  sourcePostId: string;
+  sourcePostText: string;
 };
 
 type InteractionRecord = {
   id: string;
-  leadKey?: string;
+  username: string;
+  authorId: string;
+  replyId: string;
   sourcePostId: string;
-  commentId: string;
-  authorId?: string;
-  authorUsername?: string;
-  commentText: string;
-  authorDescription?: string;
-  projectName?: string;
-  projectWebsiteUrl?: string;
-  mission?: string;
-  missionConfidence?: "specific" | "fallback";
-  dmText?: string;
-  quoteText?: string;
-  replyText?: string;
-  score?: number;
-  reasons?: string[];
-  action?: "dm" | "quote" | "dm_quote" | "reply" | "none";
-  mode: "dry-run" | "posted" | "skipped";
-  status: "would_post" | "posted" | "skipped_not_relevant" | "failed" | "dm_attempted" | "dm_sent" | "quote_posted" | "dm_quote_completed";
-  createdAt: string;
-  xReplyPostId?: string;
-  xQuotePostId?: string;
+  startupName: string;
+  valueProposition: string;
+  confidence: number;
+  message: string;
+  mode: "dry-run" | "live";
+  status: "would_send" | "dm_sent" | "failed" | "skipped";
   dmConversationId?: string;
   dmEventId?: string;
-  dmError?: string;
-  quoteError?: string;
   error?: string;
+  createdAt: string;
 };
 
-type Candidate = {
-  post: XPost;
-  score: number;
-  projectName: string;
-  websiteUrl?: string;
-  mission: string;
-  missionConfidence: "specific" | "fallback";
-  dmText: string;
-  quoteText: string;
-  replyText: string;
-  reasons: string[];
+type AgentState = {
+  messagedUserIds: string[];
+  interactions: InteractionRecord[];
 };
 
-type MissionResult = {
-  text: string;
-  confidence: "specific" | "fallback";
-};
-
-const MISSION_TERMS = [
-  "climate",
-  "education",
-  "health",
-  "research",
-  "open source",
-  "opensource",
-  "oss",
-  "indie",
-  "saas",
-  "startup",
-  "bootstrapped",
-  "bootstrap",
-  "fundraising",
-  "grant",
-  "public goods",
-  "nonprofit",
-  "mission",
-  "product hunt",
-  "maintainer",
-  "sustainability",
-];
-
-const CRYPTO_TERMS = [
-  "solana",
-  "spl",
-  "anchor",
-  "phantom",
-  "jupiter",
-  "metaplex",
-  "pump.fun",
-  "raydium",
-  "helius",
-  "solscan",
-  "bonk",
-  "drift",
-  "orca",
-  "backpack",
-  "defi",
-  "web3",
-  "token launch",
-  "airdrop",
-  "nft",
-];
-
-const FUNDRAISING_WORDS = ["building", "project", "startup", "app", "platform", "mission", "launching", "bootstrapped", "fundraising", "grant"];
-
-async function main() {
-  const config = readConfig(process.env);
-  const state = await loadState(config.statePath);
-
-  console.log(`X reply agent starting with ${config.postIds.length} source post(s). dryRun=${config.dryRun}`);
-
-  let postedThisRun = 0;
-  const inspectedReplies = new Set<string>();
-
-  for (const postId of config.postIds) {
-    if (postedThisRun >= config.maxPostsPerRun) break;
-
-    console.log(`Fetching replies for conversation ${postId}...`);
-    const replies = await fetchConversationReplies(config, postId);
-    console.log(`Found ${replies.length} reply candidate(s).`);
-
-    for (const reply of replies) {
-      if (postedThisRun >= config.maxPostsPerRun) break;
-      if (inspectedReplies.has(reply.id)) continue;
-      inspectedReplies.add(reply.id);
-
-      if (hasPostedInteraction(state, reply.id)) {
-        continue;
-      }
-
-      const candidate = await buildCandidate(config, reply);
-
-      if (!candidate) {
-        state.skippedPostIds.push(reply.id);
-        upsertInteraction(state, {
-          id: makeInteractionId(postId, reply.id, "skipped"),
-          leadKey: makeLeadKey(reply),
-          sourcePostId: postId,
-          commentId: reply.id,
-          authorId: reply.author_id,
-          authorUsername: reply.author_username,
-          commentText: reply.text,
-          authorDescription: reply.author_description,
-          action: "none",
-          mode: "skipped",
-          status: "skipped_not_relevant",
-          createdAt: new Date().toISOString(),
-        });
-        await saveState(config.statePath, state);
-        continue;
-      }
-
-      console.log(`Matched @${candidate.projectName} on reply ${reply.id} with score ${candidate.score}: ${candidate.reasons.join(", ")}`);
-      console.log(`DM: ${candidate.dmText}`);
-      console.log(`Quote: ${candidate.quoteText}`);
-
-      const result = await performOutreach(config, state, postId, candidate);
-      upsertInteraction(state, result.record);
-      await saveState(config.statePath, state);
-
-      if (result.completed) {
-        postedThisRun += 1;
-        await sleep(config.replyDelayMs);
-      }
-    }
+function loadRepoEnv(): void {
+  const preserved = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith("X_") || key.startsWith("REDDIT_")),
+  );
+  loadDotenv({ path: path.join(REPO_ROOT, ".env") });
+  loadDotenv({ path: path.join(REPO_ROOT, ".env.local"), override: true });
+  loadDotenv({ path: path.join(REPO_ROOT, "apps", "app", ".env.local"), override: true });
+  for (const [key, value] of Object.entries(preserved)) {
+    if (value !== undefined) process.env[key] = value;
   }
-
-  console.log(`Done. ${config.dryRun ? "Would have completed" : "Completed"} ${postedThisRun} outreach action(s).`);
 }
 
-function readConfig(env: Env): AgentConfig {
-  const bearerToken = requiredEnv(env, "X_BEARER_TOKEN");
-  const userAccessToken = requiredEnv(env, "X_USER_ACCESS_TOKEN");
-  const postIds = csv(env.X_REPLY_SOURCE_POST_IDS);
+function envBool(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+}
 
-  if (postIds.length === 0) {
-    throw new Error("Set X_REPLY_SOURCE_POST_IDS to one or more comma-separated X post IDs.");
+function positiveInt(input: string | undefined, fallback: number): number {
+  if (!input) return fallback;
+  const parsed = Number.parseInt(input, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveMaxRepliesToScan(
+  maxPerRun: number,
+  scanMultiplier: number,
+  explicitMaxReplies?: string,
+): number {
+  if (explicitMaxReplies?.trim()) {
+    return positiveInt(explicitMaxReplies, maxPerRun * scanMultiplier);
   }
+  return maxPerRun * scanMultiplier;
+}
+
+function validateXAuthTokens(bearerToken: string, userAccessToken: string, enableDm: boolean, dryRun: boolean): void {
+  if (!enableDm || dryRun) return;
+
+  if (bearerToken === userAccessToken) {
+    throw new Error(
+      "X_USER_ACCESS_TOKEN must not be the same as X_BEARER_TOKEN. Use the OAuth 2.0 user access token for DMs, not the app Bearer Token.",
+    );
+  }
+
+  if (userAccessToken.length < 80) {
+    throw new Error(
+      `X_USER_ACCESS_TOKEN looks wrong (${userAccessToken.length} chars). ` +
+        "It is probably your OAuth 2.0 Client Secret or Client ID — not a user access token. " +
+        "In developer.x.com → your app → OAuth 2.0 Keys → click Generate to create a user access token " +
+        "(long string, usually 80+ characters). Put that in X_USER_ACCESS_TOKEN.",
+    );
+  }
+
+  if (bearerToken.startsWith("AAAA") && userAccessToken.startsWith("AAAA") && bearerToken.length > 90) {
+    throw new Error(
+      "X_USER_ACCESS_TOKEN looks like a second Bearer Token. Generate an OAuth 2.0 user access token instead (OAuth 2.0 Keys → Generate).",
+    );
+  }
+}
+
+function isDmAuthError(error: string): boolean {
+  return /unsupported authentication|application-only|oauth 2\.0 application-only/i.test(error);
+}
+
+function requiredEnv(key: string): string {
+  const value = process.env[key]?.trim();
+  if (!value) throw new Error(`Missing required environment variable: ${key}`);
+  return value;
+}
+
+function csv(input: string): string[] {
+  return input
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function parseXPostUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(parsed.hostname)) {
+      throw new Error(`Not an X/Twitter URL: ${url}`);
+    }
+    const match = parsed.pathname.match(/\/status\/(\d+)/i);
+    if (!match) throw new Error(`Could not parse post id from URL: ${url}`);
+    return match[1];
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+    throw error;
+  }
+}
+
+function resolvePostIds(input: string): string[] {
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.includes("x.com") || trimmed.includes("twitter.com")) {
+    return [parseXPostUrl(trimmed)];
+  }
+
+  if (/^\d+$/.test(trimmed)) {
+    return [trimmed];
+  }
+
+  return csv(trimmed);
+}
+
+function readConfig(postInput: string | undefined): AgentConfig {
+  const resolved =
+    postInput?.trim() ||
+    process.env.X_OUTREACH_POST_URL?.trim() ||
+    process.env.X_REPLY_SOURCE_POST_IDS?.trim() ||
+    "";
+
+  const postIds = resolvePostIds(resolved);
+  if (postIds.length === 0) {
+    throw new Error(
+      "Provide an X post URL or ID via CLI argument, X_OUTREACH_POST_URL, or X_REPLY_SOURCE_POST_IDS.",
+    );
+  }
+
+  const statePathRaw = process.env.X_OUTREACH_STATE_PATH ?? process.env.X_REPLY_STATE_PATH ?? DEFAULT_STATE_PATH;
+  const statePath = path.isAbsolute(statePathRaw) ? statePathRaw : path.join(REPO_ROOT, statePathRaw);
+
+  const missionApiKey =
+    process.env.X_OUTREACH_MISSION_API_KEY?.trim() ||
+    process.env.X_REPLY_MISSION_API_KEY?.trim() ||
+    "";
+
+  if (!missionApiKey) {
+    throw new Error("Missing required environment variable: X_OUTREACH_MISSION_API_KEY");
+  }
+
+  const bearerToken = requiredEnv("X_BEARER_TOKEN");
+  const userAccessToken = requiredEnv("X_USER_ACCESS_TOKEN");
+  const enableDm = envBool("X_OUTREACH_ENABLE_DM", true);
+  const dryRun = envBool("X_OUTREACH_DRY_RUN", envBool("X_REPLY_DRY_RUN", true));
+  validateXAuthTokens(bearerToken, userAccessToken, enableDm, dryRun);
 
   return {
     bearerToken,
     userAccessToken,
     postIds,
-    dryRun: (env.X_OUTREACH_DRY_RUN ?? env.X_REPLY_DRY_RUN) !== "false",
-    enableDm: (env.X_OUTREACH_ENABLE_DM ?? "true") !== "false",
-    enableQuote: (env.X_OUTREACH_ENABLE_QUOTE ?? "true") !== "false",
-    statePath: resolveStatePath(env.X_REPLY_STATE_PATH ?? ".singularity/x-reply-agent-state.json"),
-    maxRepliesPerPost: positiveInt(env.X_REPLY_MAX_REPLIES_PER_POST, 100),
-    maxPostsPerRun: positiveInt(env.X_OUTREACH_MAX_PER_RUN ?? env.X_REPLY_MAX_POSTS_PER_RUN, 5),
-    minScore: positiveInt(env.X_REPLY_MIN_SCORE, 4),
-    requestDelayMs: positiveInt(env.X_REPLY_REQUEST_DELAY_MS, 1_000),
-    replyDelayMs: positiveInt(env.X_OUTREACH_POST_DELAY_MS ?? env.X_REPLY_POST_DELAY_MS, 15_000),
-    siteTimeoutMs: positiveInt(env.X_REPLY_SITE_TIMEOUT_MS, 7_000),
-    missionProvider: env.X_REPLY_MISSION_PROVIDER === "openai-compatible" ? "openai-compatible" : "heuristic",
-    missionApiKey: env.X_REPLY_MISSION_API_KEY,
-    missionApiBaseUrl: env.X_REPLY_MISSION_API_BASE_URL ?? "https://api.openai.com/v1",
-    missionModel: env.X_REPLY_MISSION_MODEL ?? "gpt-4o-mini",
+    dryRun,
+    enableDm,
+    enableQuote: envBool("X_OUTREACH_ENABLE_QUOTE", false),
+    statePath,
+    maxPerRun: positiveInt(process.env.X_OUTREACH_MAX_PER_RUN ?? process.env.X_REPLY_MAX_POSTS_PER_RUN, 5),
+    scanMultiplier: positiveInt(process.env.X_OUTREACH_SCAN_MULTIPLIER, 10),
+    maxRepliesToScan: resolveMaxRepliesToScan(
+      positiveInt(process.env.X_OUTREACH_MAX_PER_RUN ?? process.env.X_REPLY_MAX_POSTS_PER_RUN, 5),
+      positiveInt(process.env.X_OUTREACH_SCAN_MULTIPLIER, 10),
+      process.env.X_OUTREACH_MAX_REPLIES ?? process.env.X_REPLY_MAX_REPLIES_PER_POST,
+    ),
+    minConfidence: Number.parseFloat(process.env.X_OUTREACH_MIN_CONFIDENCE ?? "0.55"),
+    requestDelayMs: positiveInt(process.env.X_REPLY_REQUEST_DELAY_MS, 1_000),
+    sendDelayMs: positiveInt(
+      process.env.X_OUTREACH_SEND_DELAY_MS ?? process.env.X_OUTREACH_POST_DELAY_MS ?? process.env.X_REPLY_POST_DELAY_MS,
+      15_000,
+    ),
+    missionApiKey,
+    missionApiBaseUrl:
+      process.env.X_OUTREACH_MISSION_API_BASE_URL ??
+      process.env.X_REPLY_MISSION_API_BASE_URL ??
+      "https://api.openai.com/v1",
+    missionModel: process.env.X_OUTREACH_MISSION_MODEL ?? process.env.X_REPLY_MISSION_MODEL ?? "gpt-4o-mini",
   };
 }
 
-async function fetchConversationReplies(config: AgentConfig, conversationId: string): Promise<XPost[]> {
-  const replies: XPost[] = [];
-  let nextToken: string | undefined;
-
-  while (replies.length < config.maxRepliesPerPost) {
-    const remaining = config.maxRepliesPerPost - replies.length;
-    const params = new URLSearchParams({
-      query: `conversation_id:${conversationId} -is:retweet`,
-      max_results: String(Math.min(100, Math.max(10, remaining))),
-      "tweet.fields": "author_id,conversation_id,created_at,entities,referenced_tweets",
-      expansions: "author_id",
-      "user.fields": "description,name,username,url",
-    });
-
-    if (nextToken) params.set("next_token", nextToken);
-
-    const url = `https://api.x.com/2/tweets/search/recent?${params.toString()}`;
-    const data = await xRequest<XSearchResponse>(config.bearerToken, url, { method: "GET" });
-
-    const usersById = new Map((data.includes?.users ?? []).map((user) => [user.id, user]));
-    const pageReplies = (data.data ?? [])
-      .filter((post) => post.id !== conversationId)
-      .map((post) => {
-        const author = post.author_id ? usersById.get(post.author_id) : undefined;
-        return author
-          ? { ...post, author_username: author.username, author_name: author.name, author_description: author.description }
-          : post;
-      });
-    replies.push(...pageReplies.slice(0, remaining));
-    nextToken = data.meta?.next_token;
-
-    if (!nextToken) break;
-    await sleep(config.requestDelayMs);
-  }
-
-  return replies;
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-async function buildCandidate(config: AgentConfig, post: XPost): Promise<Candidate | null> {
-  const score = scoreReply(post);
-
-  const websiteUrl = getBestWebsiteUrl(post);
-  const website = websiteUrl ? await fetchWebsiteSummary(websiteUrl, config.siteTimeoutMs) : null;
-  const projectName = inferProjectName(post, website);
-
-  if (!projectName) {
-    return null;
-  }
-
-  const mission = await inferMission(config, {
-    projectName,
-    postText: post.text,
-    authorDescription: post.author_description,
-    siteTitle: website?.title,
-    siteDescription: website?.description,
-    siteText: website?.text,
-  });
-
-  const quoteText = formatReply(projectName, mission);
-  const dmText = formatDm(mission);
-
-  return {
-    post,
-    score: score.value,
-    projectName,
-    websiteUrl,
-    mission: mission.text,
-    missionConfidence: mission.confidence,
-    dmText,
-    quoteText,
-    replyText: quoteText,
-    reasons: score.reasons,
-  };
+function looksLikeStartupReply(text: string): boolean {
+  const normalized = normalizeText(text);
+  if (normalized.length < 20) return false;
+  if (CRYPTO_TERMS.some((term) => normalized.includes(term))) return false;
+  if (/https?:\/\/|www\./i.test(text)) return true;
+  return STARTUP_SIGNAL_TERMS.some((term) => normalized.includes(term));
 }
 
-function scoreReply(post: XPost): { value: number; reasons: string[] } {
-  const text = normalize(post.text);
-  const reasons: string[] = [];
-  let value = 0;
+function formatOutreachMessage(appreciationClause: string, startupName: string): string {
+  const clause = appreciationClause.trim().replace(/\.+$/, "");
+  const startup = startupName.trim();
 
-  for (const term of MISSION_TERMS) {
-    if (text.includes(term)) {
-      value += term.includes(" ") ? 3 : 2;
-      reasons.push(`mentions ${term}`);
-    }
-  }
-
-  for (const word of FUNDRAISING_WORDS) {
-    if (text.includes(word)) {
-      value += 1;
-      reasons.push(`mentions ${word}`);
-      break;
-    }
-  }
-
-  if (post.entities?.urls?.some((url) => isLikelyProjectUrl(url.expanded_url ?? url.url ?? ""))) {
-    value += 2;
-    reasons.push("includes project URL");
-  }
-
-  if (/\$[a-z0-9]{2,12}\b/i.test(post.text)) {
-    value -= 2;
-    reasons.push("mentions ticker (crypto signal)");
-  }
-
-  for (const term of CRYPTO_TERMS) {
-    if (text.includes(term)) {
-      value -= term === "solana" ? 2 : 1;
-      reasons.push(`crypto term: ${term}`);
-    }
-  }
-
-  return { value, reasons };
-}
-
-function getBestWebsiteUrl(post: XPost): string | undefined {
-  const urls = post.entities?.urls ?? [];
-  const expandedUrls = urls.map((url) => url.expanded_url ?? url.url).filter((url): url is string => Boolean(url));
-  return expandedUrls.find(isLikelyProjectUrl) ?? expandedUrls[0];
-}
-
-function isLikelyProjectUrl(rawUrl: string): boolean {
-  try {
-    const hostname = new URL(rawUrl).hostname.replace(/^www\./, "");
-    return ![
-      "x.com",
-      "twitter.com",
-      "t.co",
-      "solscan.io",
-      "birdeye.so",
-      "dexscreener.com",
-      "github.com",
-      "docs.google.com",
-      "medium.com",
-      "mirror.xyz",
-    ].includes(hostname);
-  } catch {
-    return false;
-  }
-}
-
-async function fetchWebsiteSummary(rawUrl: string, timeoutMs: number) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const response = await fetch(rawUrl, {
-      signal: controller.signal,
-      headers: {
-        accept: "text/html,application/xhtml+xml",
-        "user-agent": "SingularityReplyAgent/0.1 (+https://singularity.diy)",
-      },
-    });
-    clearTimeout(timeout);
-
-    if (!response.ok) return null;
-
-    const html = await response.text();
-    return {
-      url: rawUrl,
-      title: firstMatch(html, /<title[^>]*>([\s\S]*?)<\/title>/i),
-      description:
-        firstMatch(html, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i) ??
-        firstMatch(html, /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i),
-      text: htmlToText(html).slice(0, 2_000),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function inferProjectName(post: XPost, website: Awaited<ReturnType<typeof fetchWebsiteSummary>>): string | null {
-  const cashtag = post.text.match(/\$([A-Z0-9]{2,12})\b/);
-  if (cashtag) return cashtag[1];
-
-  if (website?.title) {
-    const title = website.title.split(/[|–-]/)[0]?.trim();
-    if (title && title.length <= 40 && !isWeakProjectName(title)) return cleanProjectName(title);
-  }
-
-  const explicitName =
-    post.text.match(/\b(?:building|launching|introducing|meet)\s+([A-Z][A-Za-z0-9._-]{2,30})/)?.[1] ??
-    post.text.match(/\b([A-Z][A-Za-z0-9._-]{2,30})\s+(?:is|builds|lets|helps|enables)\b/)?.[1];
-
-  if (explicitName && !isWeakProjectName(explicitName)) {
-    return cleanProjectName(explicitName);
-  }
-
-  const mention = post.entities?.mentions?.find((item) => item.username && !isWeakProjectName(item.username))?.username;
-  if (mention && !isWeakProjectName(mention)) return cleanProjectName(mention);
-
-  if (post.author_username && !isWeakProjectName(post.author_username)) return cleanProjectName(post.author_username);
-  if (post.author_name && !isWeakProjectName(post.author_name)) return cleanProjectName(post.author_name);
-
-  return "this project";
-}
-
-function isWeakProjectName(input: string): boolean {
-  const normalized = input.toLowerCase().replace(/^@/, "").trim();
-  return ["solana", "solana_devs", "crypto", "web3", "the", "this", "that", "our", "we", "i"].includes(normalized);
-}
-
-async function inferMission(
-  config: AgentConfig,
-  input: { projectName: string; postText: string; authorDescription?: string; siteTitle?: string; siteDescription?: string; siteText?: string },
-): Promise<MissionResult> {
-  if (config.missionProvider === "openai-compatible" && config.missionApiKey) {
-    const mission = await inferMissionWithOpenAiCompatible(config, input).catch(() => null);
-    const cleaned = mission ? normalizeMissionPhrase(cleanMission(mission)) : "";
-    if (isSpecificMission(cleaned, input.projectName)) {
-      return { text: cleaned, confidence: "specific" };
-    }
-  }
-
-  return heuristicMission(input);
-}
-
-async function inferMissionWithOpenAiCompatible(
-  config: AgentConfig,
-  input: { projectName: string; postText: string; authorDescription?: string; siteTitle?: string; siteDescription?: string; siteText?: string },
-): Promise<string | null> {
-  const response = await fetch(`${config.missionApiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${config.missionApiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.missionModel,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Extract a subtle, concrete project mission phrase from noisy social and website text. Return only the phrase, lower-case unless a proper noun is needed, 4 to 9 words, no punctuation. Avoid slogans, exact technical mechanisms, token tickers, X handles, and vague phrases like build something meaningful.",
-        },
-        {
-          role: "user",
-          content: JSON.stringify(input),
-        },
-      ],
-      temperature: 0.2,
-    }),
-  });
-
-  if (!response.ok) return null;
-
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const mission = data.choices?.[0]?.message?.content?.trim();
-  return mission ? mission.replace(/^["']|["']$/g, "").slice(0, 120) : null;
-}
-
-function heuristicMission(input: {
-  projectName: string;
-  postText: string;
-  authorDescription?: string;
-  siteTitle?: string;
-  siteDescription?: string;
-  siteText?: string;
-}): MissionResult {
-  const source = [input.authorDescription, input.siteDescription, input.siteText, input.postText].filter(Boolean).join(" ");
-  const sentence = source
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+/)
-    .find((part) => /\b(build|help|enable|create|connect|bring|make|fund|launch|power|provide|track|verify)\w*\b/i.test(part));
-
-  const cleaned = normalizeMissionPhrase(cleanMission(sentence ?? input.siteDescription ?? input.siteTitle ?? input.postText));
-  if (isSpecificMission(cleaned, input.projectName)) {
-    return { text: cleaned, confidence: "specific" };
-  }
-
-  return { text: fallbackMission(source), confidence: "fallback" };
-}
-
-function isSpecificMission(mission: string, projectName: string): boolean {
-  const words = mission.split(/\s+/).filter(Boolean);
-  const normalized = mission.toLowerCase();
-  const normalizedProject = projectName.toLowerCase();
-
-  if (words.length < 4 || words.length > 12) return false;
-  if (normalized.includes("@")) return false;
-  if (normalized.includes(normalizedProject)) return false;
-  if (/\b(build something meaningful|missing credit layer|own the world|one click|from 1 sol|utility token|what'?s|sir)\b/i.test(mission)) {
-    return false;
-  }
-  if (/^https?:\/\//i.test(mission)) return false;
-
-  return true;
-}
-
-function normalizeMissionPhrase(mission: string): string {
-  const replacements: Array<[RegExp, string]> = [
-    [/^tracking\b/i, "track"],
-    [/^building\b/i, "build"],
-    [/^helping\b/i, "help"],
-    [/^enabling\b/i, "enable"],
-    [/^creating\b/i, "create"],
-    [/^connecting\b/i, "connect"],
-    [/^making\b/i, "make"],
-    [/^funding\b/i, "fund"],
-    [/^launching\b/i, "launch"],
-    [/^powering\b/i, "power"],
-    [/^providing\b/i, "provide"],
-    [/^verifying\b/i, "verify"],
-    [/^understanding\b/i, "understand"],
-    [/^on-chain mortgage loan\b/i, "provide onchain mortgage loans"],
-    [/^on-chain proof surface\b/i, "make onchain proofs clearer"],
-    [/^a field guide to\b/i, "make"],
-    [/^private payroll\b/i, "make payroll more private"],
-  ];
-
-  return replacements.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), mission);
-}
-
-function fallbackMission(input: string): string {
-  const source = input.toLowerCase();
-
-  if (/\b(climate|carbon|sustainability|renewable|energy)\b/.test(source)) return "a stronger climate mission";
-  if (/\b(education|learning|school|student|teach)\b/.test(source)) return "better access to education";
-  if (/\b(health|medical|patient|care|wellness)\b/.test(source)) return "better health outcomes for more people";
-  if (/\b(open source|opensource|oss|maintainer|github)\b/.test(source)) return "sustainable open-source software";
-  if (/\b(research|science|lab|study|data)\b/.test(source)) return "more useful public research";
-  if (/\b(indie|saas|bootstrap|bootstrapped|startup)\b/.test(source)) return "a product people actually need";
-  if (/\b(game|gaming|play|player|collectible)\b/.test(source)) return "a better experience for players";
-  if (/\b(pay|payment|payroll|invoice|checkout|subscription)\b/.test(source)) return "simpler payment flows";
-  if (/\b(wallet|identity|auth|login|key|custody)\b/.test(source)) return "better ownership tools for users";
-  if (/\b(dev|developer|sdk|api|tooling|infrastructure)\b/.test(source)) return "better tools for builders";
-
-  return "something people actually need";
-}
-
-function formatReply(projectName: string, mission: MissionResult): string {
-  if (mission.confidence === "fallback") {
-    return `If the mission is building ${mission.text}, Singularity can help turn it into a public funding market — we handle the crypto layer: https://app.missions.diy`;
-  }
-
-  const prefix = startsWithVerb(mission.text) ? "is to" : "is";
-  return `If the mission ${prefix} ${mission.text}, Singularity can help turn it into a public funding market — we handle the crypto layer: https://app.missions.diy`;
-}
-
-function formatDm(mission: MissionResult): string {
-  const missionText =
-    mission.confidence === "fallback"
-      ? `building ${mission.text}`
-      : `${startsWithVerb(mission.text) ? "to " : ""}${mission.text}`;
-
-  return `Saw what you're building around ${missionText}. If traditional fundraising has been slow, Singularity helps mission-driven projects launch a public funding market — we handle the crypto layer. Worth a quick chat?`;
-}
-
-function startsWithVerb(input: string): boolean {
-  return /^(track|build|help|enable|create|connect|make|fund|launch|power|provide|verify|understand|inspect|decode|grow|improve|simplify)\b/i.test(
-    input,
+  return (
+    `Hey, saw your reply on X. ${clause}. ` +
+    `Are you looking to raise funds for ${startup}? ` +
+    `We're building a platform that gives founders like you access to capital. ` +
+    `For founders it is free to use, we charge investors. :)`
   );
 }
 
-async function performOutreach(
+function heuristicAppreciationClause(rawValueProposition: string): string {
+  const phrase = rawValueProposition.trim().replace(/^to\s+/i, "").replace(/\.+$/, "");
+  if (!phrase) return "I like what you're building";
+
+  if (
+    /^(help|automate|build|enable|create|connect|make|fund|launch|power|provide|verify|track|simplify|reduce|give|offer|deliver)\b/i.test(
+      phrase,
+    )
+  ) {
+    return `I like your value proposition to ${phrase}`;
+  }
+
+  if (/^(a|an|the)\s+/i.test(phrase)) {
+    return `I like your focus on ${phrase.replace(/^(a|an|the)\s+/i, "")}`;
+  }
+
+  if (/^\w+ing\b/i.test(phrase)) {
+    return `I like that you're ${phrase}`;
+  }
+
+  return `I like what you're building around ${phrase}`;
+}
+
+type AppreciationPolish = {
+  appreciation_clause: string;
+  grammatically_sound?: boolean;
+};
+
+async function chatCompletionJson<T>(
   config: AgentConfig,
-  state: AgentState,
-  sourcePostId: string,
-  candidate: Candidate,
-): Promise<{ completed: boolean; record: InteractionRecord }> {
-  const base = makeInteractionRecord(sourcePostId, candidate, config.dryRun ? "dry-run" : "posted");
-
-  if (config.dryRun) {
-    return {
-      completed: true,
-      record: {
-        ...base,
-        action: config.enableDm && config.enableQuote ? "dm_quote" : config.enableDm ? "dm" : "quote",
-        status: "would_post",
+  system: string,
+  user: string,
+): Promise<T | null> {
+  try {
+    const response = await fetch(`${config.missionApiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.missionApiKey}`,
+        "content-type": "application/json",
       },
-    };
+      body: JSON.stringify({
+        model: config.missionModel,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) return null;
+    return JSON.parse(content) as T;
+  } catch {
+    return null;
   }
-
-  const leadAlreadyContacted = hasCompletedLeadInteraction(state, base.leadKey ?? "");
-  if (leadAlreadyContacted) {
-    return {
-      completed: false,
-      record: {
-        ...base,
-        action: "none",
-        status: "failed",
-        error: "Lead already has a completed outreach interaction.",
-      },
-    };
-  }
-
-  let dmConversationId: string | undefined;
-  let dmEventId: string | undefined;
-  let dmError: string | undefined;
-  let xQuotePostId: string | undefined;
-  let quoteError: string | undefined;
-
-  if (config.enableDm && candidate.post.author_id) {
-    try {
-      const dm = await sendDirectMessage(config, candidate.post.author_id, candidate.dmText);
-      dmConversationId = dm.data.dm_conversation_id;
-      dmEventId = dm.data.dm_event_id;
-    } catch (error) {
-      dmError = error instanceof Error ? error.message : String(error);
-      console.warn(`DM failed for ${candidate.post.id}: ${dmError}`);
-    }
-  } else if (config.enableDm) {
-    dmError = "Missing author ID for DM.";
-  }
-
-  if (config.enableQuote) {
-    try {
-      const quote = await createQuotePost(config, candidate.post.id, candidate.quoteText);
-      xQuotePostId = quote.data.id;
-    } catch (error) {
-      quoteError = error instanceof Error ? error.message : String(error);
-      console.warn(`Quote failed for ${candidate.post.id}: ${quoteError}`);
-    }
-  }
-
-  const dmSucceeded = Boolean(dmEventId);
-  const quoteSucceeded = Boolean(xQuotePostId);
-  const completed = dmSucceeded || quoteSucceeded;
-  const action = config.enableDm && config.enableQuote ? "dm_quote" : config.enableDm ? "dm" : config.enableQuote ? "quote" : "none";
-  const status = dmSucceeded && quoteSucceeded ? "dm_quote_completed" : dmSucceeded ? "dm_sent" : quoteSucceeded ? "quote_posted" : "failed";
-
-  if (config.enableDm || config.enableQuote) {
-    return {
-      completed,
-      record: {
-        ...base,
-        action,
-        status,
-        dmConversationId,
-        dmEventId,
-        xQuotePostId,
-        dmError,
-        quoteError,
-        error: completed ? undefined : [dmError, quoteError].filter(Boolean).join(" | ") || "All enabled outreach channels failed.",
-      },
-    };
-  }
-
-  return {
-    completed: false,
-    record: {
-      ...base,
-      action: "none",
-      status: "failed",
-      error: "No outreach channel enabled.",
-    },
-  };
 }
 
-function makeInteractionRecord(sourcePostId: string, candidate: Candidate, mode: InteractionRecord["mode"]): InteractionRecord {
-  return {
-    id: makeInteractionId(sourcePostId, candidate.post.id, mode),
-    leadKey: makeLeadKey(candidate.post),
-    sourcePostId,
-    commentId: candidate.post.id,
-    authorId: candidate.post.author_id,
-    authorUsername: candidate.post.author_username,
-    commentText: candidate.post.text,
-    authorDescription: candidate.post.author_description,
-    projectName: candidate.projectName,
-    projectWebsiteUrl: candidate.websiteUrl,
-    mission: candidate.mission,
-    missionConfidence: candidate.missionConfidence,
-    dmText: candidate.dmText,
-    quoteText: candidate.quoteText,
-    replyText: candidate.quoteText,
-    score: candidate.score,
-    reasons: candidate.reasons,
-    mode,
-    status: mode === "dry-run" ? "would_post" : "failed",
-    createdAt: new Date().toISOString(),
-  };
-}
-
-async function createQuotePost(config: AgentConfig, quoteTweetId: string, text: string): Promise<{ data: { id: string; text: string } }> {
-  return xRequest(config.userAccessToken, "https://api.x.com/2/tweets", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      text,
-      quote_tweet_id: quoteTweetId,
-    }),
-  });
-}
-
-async function sendDirectMessage(
+async function polishAppreciationClause(
   config: AgentConfig,
-  participantId: string,
-  text: string,
-): Promise<{ data: { dm_conversation_id: string; dm_event_id: string } }> {
-  return xRequest(config.userAccessToken, `https://api.x.com/2/dm_conversations/with/${participantId}/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
+  lead: Pick<FounderLead, "valueProposition" | "startupName" | "replyText" | "username">,
+): Promise<string> {
+  const prompt = `
+Write one natural English appreciation clause for a founder outreach DM.
+
+The full message will be:
+"Hey, saw your reply on X. {APPRECIATION_CLAUSE}. Are you looking to raise funds for ${lead.startupName}? ..."
+
+Raw value proposition: "${lead.valueProposition}"
+Startup: "${lead.startupName}"
+Founder: @${lead.username}
+Their reply: "${lead.replyText.slice(0, 500)}"
+
+Return JSON:
+{
+  "appreciation_clause": "I like your value proposition to help indie founders track churn",
+  "grammatically_sound": true
+}
+
+Rules:
+- appreciation_clause MUST be grammatically correct casual English, specific to their venture.
+- Prefer "I like your value proposition to [verb phrase]" ONLY when it reads naturally after "to"
+  (e.g. "to help teams track churn", "to automate compliance for fintech teams").
+- If "value proposition to X" would sound awkward, use instead:
+  "I like that you're ...", "I like your focus on ...", or "I like what you're building for ...".
+- Do NOT include a trailing period in appreciation_clause.
+- Do NOT mention Singularity, fundraising, or investors.
+- Keep appreciation_clause under 20 words.
+- Set grammatically_sound to false only if you cannot produce a natural clause; still provide your best attempt.
+`;
+
+  const result = await chatCompletionJson<AppreciationPolish>(
+    config,
+    "You polish founder outreach copy and return strict JSON.",
+    prompt,
+  );
+
+  const clause = result?.appreciation_clause?.trim().replace(/\.+$/, "");
+  if (clause && clause.length >= 12) {
+    return clause;
+  }
+
+  return heuristicAppreciationClause(lead.valueProposition);
+}
+
+async function loadState(statePath: string): Promise<AgentState> {
+  try {
+    const data = JSON.parse(await readFile(statePath, "utf8")) as Partial<AgentState>;
+    const interactions = Array.isArray(data.interactions) ? data.interactions : [];
+    const messaged = new Set<string>();
+
+    for (const interaction of interactions) {
+      if (interaction.status !== "dm_sent") continue;
+      if (interaction.authorId) messaged.add(interaction.authorId);
+    }
+
+    return { messagedUserIds: [...messaged], interactions };
+  } catch {
+    return { messagedUserIds: [], interactions: [] };
+  }
+}
+
+async function saveState(statePath: string, state: AgentState): Promise<void> {
+  await mkdir(path.dirname(statePath), { recursive: true });
+  state.messagedUserIds = [
+    ...new Set(
+      state.interactions.filter((i) => i.status === "dm_sent" && i.authorId).map((i) => i.authorId),
+    ),
+  ];
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 async function xRequest<T>(token: string, url: string, init: RequestInit): Promise<T> {
@@ -767,127 +469,358 @@ async function xRequest<T>(token: string, url: string, init: RequestInit): Promi
   return (await response.json()) as T;
 }
 
-async function loadState(statePath: string): Promise<AgentState> {
+async function fetchSourcePost(config: AgentConfig, postId: string): Promise<XPost> {
+  const params = new URLSearchParams({
+    "tweet.fields": "author_id,conversation_id,created_at,text",
+    expansions: "author_id",
+    "user.fields": "username,name",
+  });
+
+  const data = await xRequest<XTweetResponse>(
+    config.bearerToken,
+    `https://api.x.com/2/tweets/${postId}?${params.toString()}`,
+    { method: "GET" },
+  );
+
+  if (!data.data) throw new Error(`Could not load source post ${postId}`);
+  const author = data.includes?.users?.[0];
+  return author
+    ? {
+        ...data.data,
+        author_username: author.username,
+        author_name: author.name,
+      }
+    : data.data;
+}
+
+async function* streamConversationReplies(
+  config: AgentConfig,
+  conversationId: string,
+): AsyncGenerator<XPost> {
+  let scanned = 0;
+  let nextToken: string | undefined;
+
+  while (scanned < config.maxRepliesToScan) {
+    const remaining = config.maxRepliesToScan - scanned;
+    const params = new URLSearchParams({
+      query: `conversation_id:${conversationId} -is:retweet`,
+      max_results: String(Math.min(100, Math.max(10, remaining))),
+      "tweet.fields": "author_id,conversation_id,created_at,text",
+      expansions: "author_id",
+      "user.fields": "description,name,username",
+    });
+    if (nextToken) params.set("next_token", nextToken);
+
+    const data = await xRequest<XSearchResponse>(
+      config.bearerToken,
+      `https://api.x.com/2/tweets/search/recent?${params.toString()}`,
+      { method: "GET" },
+    );
+
+    const usersById = new Map((data.includes?.users ?? []).map((user) => [user.id, user]));
+    const pageReplies = (data.data ?? [])
+      .filter((post) => post.id !== conversationId)
+      .map((post) => {
+        const author = post.author_id ? usersById.get(post.author_id) : undefined;
+        return author
+          ? {
+              ...post,
+              author_username: author.username,
+              author_name: author.name,
+              author_description: author.description,
+            }
+          : post;
+      })
+      .slice(0, remaining);
+
+    for (const reply of pageReplies) {
+      scanned += 1;
+      yield reply;
+    }
+
+    nextToken = data.meta?.next_token;
+    if (!nextToken || pageReplies.length === 0) break;
+    await sleep(config.requestDelayMs);
+  }
+}
+
+type FounderAnalysis = {
+  is_startup_founder: boolean;
+  confidence: number;
+  startup_name: string | null;
+  value_proposition: string | null;
+  reason?: string;
+};
+
+async function analyzeReply(
+  config: AgentConfig,
+  reply: XPost,
+  sourcePost: XPost,
+): Promise<FounderAnalysis | null> {
+  const username = reply.author_username ?? "unknown";
+  const prompt = `
+Analyze this X reply in a founder thread.
+
+Source post: "${sourcePost.text}"
+Author: @${username}
+Profile bio: "${reply.author_description ?? ""}"
+Reply: "${reply.text}"
+
+Determine whether the author is talking about their own startup, product, or founder project.
+
+Return JSON:
+{
+  "is_startup_founder": true/false,
+  "confidence": 0.0-1.0,
+  "startup_name": "best guess at startup/product name, or null",
+  "value_proposition": "very short phrase (max 12 words) describing what they do and for whom, e.g. 'help indie founders track churn'",
+  "reason": "one short sentence"
+}
+
+Rules:
+- Only mark true when they appear to be promoting or describing their own venture.
+- Ignore people recommending third-party tools they did not build.
+- Ignore crypto-native token launches unless clearly a mission-driven product startup.
+- value_proposition must be concrete and specific, not generic marketing fluff.
+- startup_name should be short; use the product name if obvious, otherwise infer from context.
+`;
+
+  const result = await chatCompletionJson<FounderAnalysis>(
+    config,
+    "You identify founder-led startups in social posts and return strict JSON.",
+    prompt,
+  );
+
+  if (!result) {
+    console.warn(`OpenAI analysis failed for @${username}`);
+  }
+
+  return result;
+}
+
+function buildLead(
+  reply: XPost,
+  sourcePost: XPost,
+  messagedUserIds: Set<string>,
+  analysis: FounderAnalysis,
+): FounderLead | null {
+  if (!reply.author_id || !reply.author_username) return null;
+  if (messagedUserIds.has(reply.author_id)) return null;
+
+  const body = reply.text?.trim();
+  if (!body) return null;
+  if (!looksLikeStartupReply(body)) return null;
+
+  if (!analysis.is_startup_founder) return null;
+
+  const confidence = Number(analysis.confidence ?? 0);
+  const startupName = (analysis.startup_name ?? "").trim();
+  const valueProposition = (analysis.value_proposition ?? "").trim();
+  if (!startupName || !valueProposition) return null;
+
+  return {
+    replyId: reply.id,
+    authorId: reply.author_id,
+    username: reply.author_username,
+    replyText: body,
+    startupName,
+    valueProposition,
+    appreciationClause: heuristicAppreciationClause(valueProposition),
+    confidence,
+    sourcePostId: sourcePost.id,
+    sourcePostText: sourcePost.text,
+  };
+}
+
+async function sendDirectMessage(
+  config: AgentConfig,
+  participantId: string,
+  text: string,
+): Promise<{ dm_conversation_id: string; dm_event_id: string }> {
+  const result = await xRequest<{ data: { dm_conversation_id: string; dm_event_id: string } }>(
+    config.userAccessToken,
+    `https://api.x.com/2/dm_conversations/with/${participantId}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+  );
+  return result.data;
+}
+
+async function createQuotePost(
+  config: AgentConfig,
+  quoteTweetId: string,
+  text: string,
+): Promise<string> {
+  const result = await xRequest<{ data: { id: string } }>(config.userAccessToken, "https://api.x.com/2/tweets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text, quote_tweet_id: quoteTweetId }),
+  });
+  return result.data.id;
+}
+
+function recordInteraction(
+  state: AgentState,
+  lead: FounderLead,
+  message: string,
+  mode: InteractionRecord["mode"],
+  status: InteractionRecord["status"],
+  extra: Partial<InteractionRecord> = {},
+): void {
+  state.interactions.push({
+    id: `${lead.replyId}:${lead.authorId}`,
+    username: lead.username,
+    authorId: lead.authorId,
+    replyId: lead.replyId,
+    sourcePostId: lead.sourcePostId,
+    startupName: lead.startupName,
+    valueProposition: lead.valueProposition,
+    confidence: lead.confidence,
+    message,
+    mode,
+    status,
+    createdAt: new Date().toISOString(),
+    ...extra,
+  });
+}
+
+async function maybeSendDm(
+  config: AgentConfig,
+  lead: FounderLead,
+  message: string,
+): Promise<{ status: InteractionRecord["status"]; error?: string; dmConversationId?: string; dmEventId?: string }> {
+  if (config.dryRun || !config.enableDm) {
+    return { status: "would_send" };
+  }
+
   try {
-    const data = JSON.parse(await readFile(statePath, "utf8")) as Partial<AgentState>;
+    const dm = await sendDirectMessage(config, lead.authorId, message);
     return {
-      repliedToPostIds: Array.isArray(data.repliedToPostIds) ? data.repliedToPostIds : [],
-      skippedPostIds: Array.isArray(data.skippedPostIds) ? data.skippedPostIds : [],
-      interactions: Array.isArray(data.interactions) ? data.interactions : [],
+      status: "dm_sent",
+      dmConversationId: dm.dm_conversation_id,
+      dmEventId: dm.dm_event_id,
     };
-  } catch {
-    return { repliedToPostIds: [], skippedPostIds: [], interactions: [] };
+  } catch (error) {
+    return {
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
-async function saveState(statePath: string, state: AgentState) {
-  await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
-}
+async function run(config: AgentConfig): Promise<number> {
+  const state = await loadState(config.statePath);
+  const messaged = new Set(state.messagedUserIds);
+  let leadsHandled = 0;
+  let dmsSent = 0;
 
-function hasPostedInteraction(state: AgentState, commentId: string): boolean {
-  return state.interactions.some(
-    (interaction) => interaction.commentId === commentId && ["posted", "dm_sent", "quote_posted", "dm_quote_completed"].includes(interaction.status),
-  );
-}
+  console.log("X founder outreach agent");
+  console.log(`  dry_run=${config.dryRun} enable_dm=${config.enableDm} enable_quote=${config.enableQuote}`);
+  console.log(`  max_per_run=${config.maxPerRun}`);
+  console.log(`  max_replies_to_scan=${config.maxRepliesToScan}`);
+  console.log(`  previously messaged accounts: ${messaged.size}`);
 
-function hasCompletedLeadInteraction(state: AgentState, leadKey: string): boolean {
-  if (!leadKey) return false;
-  return state.interactions.some(
-    (interaction) => interaction.leadKey === leadKey && ["posted", "dm_sent", "quote_posted", "dm_quote_completed"].includes(interaction.status),
-  );
-}
+  for (const postId of config.postIds) {
+    if (leadsHandled >= config.maxPerRun) break;
 
-function upsertInteraction(state: AgentState, interaction: InteractionRecord) {
-  const existingIndex = state.interactions.findIndex((record) => record.id === interaction.id);
+    const sourcePost = await fetchSourcePost(config, postId);
+    console.log(`\nPost ${postId}: ${sourcePost.text.slice(0, 120)}${sourcePost.text.length > 120 ? "…" : ""}`);
 
-  if (existingIndex >= 0) {
-    state.interactions[existingIndex] = interaction;
-    return;
+    let scanned = 0;
+
+    for await (const reply of streamConversationReplies(config, postId)) {
+      scanned += 1;
+      if (leadsHandled >= config.maxPerRun) break;
+      if (!reply.text?.trim() || !looksLikeStartupReply(reply.text)) continue;
+      if (!reply.author_id || messaged.has(reply.author_id)) continue;
+
+      const analysis = await analyzeReply(config, reply, sourcePost);
+      if (!analysis) continue;
+
+      const confidence = Number(analysis.confidence ?? 0);
+      if (confidence < config.minConfidence) continue;
+
+      const lead = buildLead(reply, sourcePost, messaged, analysis);
+      if (!lead) continue;
+
+      lead.appreciationClause = await polishAppreciationClause(config, lead);
+      const message = formatOutreachMessage(lead.appreciationClause, lead.startupName);
+
+      console.log("");
+      console.log(`Lead: @${lead.username} — ${lead.startupName} (${lead.confidence.toFixed(2)})`);
+      console.log(`Value prop: ${lead.valueProposition}`);
+      console.log(`Appreciation: ${lead.appreciationClause}`);
+      console.log(`Message:\n${message}`);
+
+      const dmResult = await maybeSendDm(config, lead, message);
+      const mode: InteractionRecord["mode"] = config.dryRun || !config.enableDm ? "dry-run" : "live";
+
+      recordInteraction(state, lead, message, mode, dmResult.status, {
+        dmConversationId: dmResult.dmConversationId,
+        dmEventId: dmResult.dmEventId,
+        error: dmResult.error,
+      });
+      await saveState(config.statePath, state);
+      leadsHandled += 1;
+
+      if (dmResult.status === "dm_sent") {
+        dmsSent += 1;
+        messaged.add(lead.authorId);
+        if (config.sendDelayMs) await sleep(config.sendDelayMs);
+      } else if (dmResult.status === "failed") {
+        console.log(`Failed @${lead.username}: ${dmResult.error}`);
+        if (dmResult.error && isDmAuthError(dmResult.error)) {
+          throw new Error(
+            `${dmResult.error}\n\n` +
+              "Fix X_USER_ACCESS_TOKEN: use OAuth 2.0 user access token from developer.x.com → OAuth 2.0 Keys → Generate. " +
+              "Do not use Bearer Token, Client ID, or Client Secret.",
+          );
+        }
+      }
+
+      if (config.enableQuote && !config.dryRun) {
+        try {
+          const quoteId = await createQuotePost(config, lead.replyId, message);
+          console.log(`Quote posted: ${quoteId}`);
+        } catch (error) {
+          console.warn(
+            `Quote failed for @${lead.username}: ${error instanceof Error ? error.message : error}`,
+          );
+        }
+      }
+    }
+
+    console.log(
+      `Scanned ${scanned} repl${scanned === 1 ? "y" : "ies"}${leadsHandled >= config.maxPerRun ? " (stopped after reaching max_per_run)" : ""}.`,
+    );
   }
 
-  state.interactions.push(interaction);
-}
-
-function makeInteractionId(sourcePostId: string, commentId: string, mode: InteractionRecord["mode"], action = "outreach"): string {
-  return `${sourcePostId}:${commentId}:${mode}:${action}`;
-}
-
-function makeLeadKey(post: XPost): string {
-  return post.author_id ? `user:${post.author_id}` : `comment:${post.id}`;
-}
-
-function firstMatch(input: string, pattern: RegExp): string | undefined {
-  const match = input.match(pattern)?.[1];
-  return match ? decodeHtml(match.trim()) : undefined;
-}
-
-function htmlToText(html: string): string {
-  return decodeHtml(
-    html
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim(),
+  console.log("");
+  console.log(
+    `Done. ${config.dryRun || !config.enableDm ? `Would contact ${leadsHandled}` : `Sent ${dmsSent}`} founder(s) (${leadsHandled} lead(s) processed). State: ${config.statePath}`,
   );
+  return 0;
 }
 
-function decodeHtml(input: string): string {
-  return input
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
-
-function cleanProjectName(input: string): string {
-  return input.replace(/^@/, "").replace(/[^\w .-]/g, "").trim();
-}
-
-function cleanMission(input: string): string {
-  return input
-    .replace(/\s+/g, " ")
-    .replace(/^["'\s]+|["'\s.?!]+$/g, "")
-    .replace(/\b(we|our team|this project)\b/gi, "they")
-    .slice(0, 110)
-    .trim()
-    .toLowerCase();
-}
-
-function normalize(input: string): string {
-  return input.toLowerCase();
-}
-
-function csv(input?: string): string[] {
-  return (input ?? "")
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function requiredEnv(env: Env, key: string): string {
-  const value = env[key];
-  if (!value) throw new Error(`Missing required env var: ${key}`);
-  return value;
-}
-
-function resolveStatePath(statePath: string): string {
-  return path.isAbsolute(statePath) ? statePath : path.join(REPO_ROOT, statePath);
-}
-
-function positiveInt(input: string | undefined, fallback: number): number {
-  if (!input) return fallback;
-  const parsed = Number.parseInt(input, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function sleep(ms: number) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  loadRepoEnv();
+  const postInput = process.argv[2];
+
+  try {
+    const config = readConfig(postInput);
+    const exitCode = await run(config);
+    process.exit(exitCode);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+}
+
+main();

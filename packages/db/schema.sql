@@ -30,6 +30,7 @@ create table if not exists missions (
   treasury_supply_percent numeric(8, 4) not null default 20,
   performance_json jsonb not null default '{}'::jsonb,
   council_json jsonb not null default '[]'::jsonb,
+  socials jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -47,6 +48,7 @@ create table if not exists pending_mission_launches (
   treasury_supply_percent numeric(8, 4) not null default 20,
   initial_purchase_usdc numeric(40, 6) not null default 0,
   launch_accounts jsonb not null default '{}'::jsonb,
+  socials jsonb not null default '{}'::jsonb,
   status text not null default 'prepared' check (status in ('prepared', 'submitted', 'confirmed', 'failed')),
   signature text,
   created_at timestamptz not null default now(),
@@ -281,3 +283,5 @@ alter table funding_requests add column if not exists epoch_number integer not n
 alter table funding_requests add column if not exists executed_at timestamptz;
 alter table epoch_councils add column if not exists escrow_amounts jsonb not null default '[]'::jsonb;
 alter table funding_request_votes add column if not exists escrow_locked_until timestamptz;
+alter table missions add column if not exists socials jsonb not null default '{}'::jsonb;
+alter table pending_mission_launches add column if not exists socials jsonb not null default '{}'::jsonb;

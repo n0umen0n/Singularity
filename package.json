@@ -12,6 +12,7 @@
     "dev:app": "npm run dev --workspace @singularity/app",
     "dev:landing": "npm run dev --workspace @singularity/landing",
     "dev:x-reply-agent": "npm run dev --workspace @singularity/x-reply-agent",
+    "dev:reddit-outreach-agent": "npm run dev --workspace @singularity/reddit-outreach-agent",
     "build": "turbo build",
     "build:app": "npm run build --workspace @singularity/app",
     "build:landing": "npm run build --workspace @singularity/landing",

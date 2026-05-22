@@ -10,6 +10,7 @@ import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { publishMissionTokenMetadata } from "@/lib/backend/mission-token-metadata";
 import { validateMissionLaunchInput, resolveMissionLaunchConfig } from "@/lib/mission-launch-validation";
+import { normalizeMissionSocials, validateMissionSocials, type MissionSocials } from "@/lib/mission-socials";
 import { query, transaction } from "@/lib/backend/db";
 import {
   fundingRequestPda,
@@ -54,6 +55,7 @@ type MissionRow = {
   treasury_supply_percent: string;
   performance_json: Mission["performance"];
   council_json: Mission["council"];
+  socials: MissionSocials | null;
   token_price_usdc: string | null;
   holders: number | null;
   liquidity_usdc: string | null;
@@ -154,6 +156,7 @@ type PendingMissionLaunchRow = {
   treasury_supply_percent: string;
   initial_purchase_usdc: string;
   launch_accounts: Record<string, string>;
+  socials: MissionSocials | null;
 };
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
@@ -412,6 +415,7 @@ async function escrowedVoteBalancesByMission(missionIds: string[], client?: Quer
 }
 
 async function createdMissionFeeRows(address: string, client?: Queryable) {
+  // Creator fee share and profile UI are controlled in lib/trading-fees.ts.
   const result = await (client || { query }).query<CreatedMissionFeeRow>(
     `
       select
@@ -599,6 +603,7 @@ function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
     missionPda: row.mission_pda,
     statement: row.statement,
     description: row.description,
+    socials: normalizeMissionSocials(row.socials),
     image: row.image_url,
     tokenImage: row.token_image_url,
     tokenSymbol: row.token_symbol,
@@ -1392,8 +1397,10 @@ export async function prepareMissionLaunchInPostgres(input: {
   initialPurchaseUsdc?: number;
   initialMarketCap?: number;
   migrationMarketCap?: number;
+  socials?: MissionSocials;
 }) {
   const { statement, description, tokenSymbol, initialPurchaseUsdc } = validateMissionLaunchInput(input);
+  const socials = validateMissionSocials(input.socials);
 
   const idBase = slugify(statement);
   const id = `${idBase}-${randomBytes(2).toString("hex")}`;
@@ -1433,6 +1440,7 @@ export async function prepareMissionLaunchInPostgres(input: {
     missionPda: launchAccounts.mission || null,
     statement,
     description,
+    socials,
     image: input.missionImage || seed.image,
     tokenImage: input.tokenImage || seed.tokenImage,
     tokenSymbol,
@@ -1462,9 +1470,9 @@ export async function prepareMissionLaunchInPostgres(input: {
         insert into pending_mission_launches (
           id, creator_wallet, metadata_hash, metadata_uri, statement, description,
           image_url, token_image_url, token_symbol, total_supply, treasury_supply_percent,
-          initial_purchase_usdc, launch_accounts
+          initial_purchase_usdc, launch_accounts, socials
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 20, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 20, $11, $12, $13)
       `,
       [
         id,
@@ -1479,6 +1487,7 @@ export async function prepareMissionLaunchInPostgres(input: {
         launchConfig.totalSupply,
         launchConfig.initialPurchaseUsdc,
         JSON.stringify(launchAccounts),
+        JSON.stringify(socials),
       ],
     );
   }
@@ -1519,9 +1528,9 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
           id, mission_pda, creator_wallet, token_mint, dbc_pool, treasury_vault,
           lifecycle_state, metadata_hash, statement, description,
           image_url, token_image_url, token_symbol, total_supply, treasury_supply_percent,
-          performance_json, council_json
+          performance_json, council_json, socials
         )
-        values ($1, $2, $3, $4, $5, $6, 'bonding', $7, $8, $9, $10, $11, $12, $13, $14, $15, '[]'::jsonb)
+        values ($1, $2, $3, $4, $5, $6, 'bonding', $7, $8, $9, $10, $11, $12, $13, $14, $15, '[]'::jsonb, $16)
       `,
       [
         pending.id,
@@ -1539,6 +1548,7 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
         pending.total_supply,
         pending.treasury_supply_percent,
         JSON.stringify(launchPerformance),
+        JSON.stringify(normalizeMissionSocials(pending.socials)),
       ],
     );
     await client.query(

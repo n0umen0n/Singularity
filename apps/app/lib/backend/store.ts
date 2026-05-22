@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { publishMissionTokenMetadata } from "@/lib/backend/mission-token-metadata";
 import { validateMissionLaunchInput, resolveMissionLaunchConfig } from "@/lib/mission-launch-validation";
+import { validateMissionSocials } from "@/lib/mission-socials";
 import { authMessage, verifySolanaSignature } from "@/lib/backend/auth";
 import { emptyWalletBalanceSnapshot, getWalletBalanceSnapshot } from "@/lib/backend/balances";
 import { assertProductionStorage, storageMode } from "@/lib/backend/env";
@@ -361,11 +362,13 @@ export async function prepareMissionLaunch(input: {
   initialPurchaseUsdc?: number;
   initialMarketCap?: number;
   migrationMarketCap?: number;
+  socials?: import("@/lib/mission-socials").MissionSocials;
 }) {
   if (storageMode() === "postgres") return prepareMissionLaunchInPostgres(input);
 
   return updateState(async (state) => {
     const { statement, description, tokenSymbol, initialPurchaseUsdc } = validateMissionLaunchInput(input);
+    const socials = validateMissionSocials(input.socials);
 
     const idBase = slugify(statement);
     const id = state.missions.some((mission) => mission.id === idBase) ? `${idBase}-${randomBytes(2).toString("hex")}` : idBase;
@@ -392,6 +395,7 @@ export async function prepareMissionLaunch(input: {
       id,
       statement,
       description,
+      socials,
       image: input.missionImage || seed.image,
       tokenImage: input.tokenImage || seed.tokenImage,
       tokenSymbol,

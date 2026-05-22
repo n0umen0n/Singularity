@@ -878,6 +878,118 @@ textarea {
   gap: 1rem;
 }
 
+.hero-topline-start {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.mission-social-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.52rem;
+  flex-wrap: wrap;
+}
+
+.mission-social-link {
+  display: inline-grid;
+  width: 2.38rem;
+  height: 2.38rem;
+  border: 1px solid rgba(255, 247, 237, 0.16);
+  border-radius: 999px;
+  place-items: center;
+  color: rgba(255, 247, 237, 0.72);
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow:
+    0 0 0 1px rgba(255, 247, 237, 0.025) inset,
+    0 12px 34px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(18px);
+  transition:
+    border-color 200ms ease,
+    color 200ms ease,
+    background 200ms ease,
+    box-shadow 200ms ease,
+    transform 200ms ease;
+}
+
+.mission-social-link svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+.mission-social-link.website-link svg {
+  width: 1.12rem;
+  height: 1.12rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mission-social-link.github-link svg {
+  width: 1.42rem;
+  height: 1.42rem;
+}
+
+.mission-social-link.telegram-link svg {
+  width: 1.16rem;
+  height: 1.16rem;
+  transform: translate(-0.03rem, 0.02rem);
+}
+
+.mission-social-link:hover,
+.mission-social-link:focus-visible {
+  border-color: rgba(255, 247, 237, 0.32);
+  color: rgba(255, 247, 237, 0.96);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 0 0 1px rgba(255, 247, 237, 0.06) inset,
+    0 0 24px rgba(255, 247, 237, 0.08);
+  transform: translateY(-0.08rem);
+}
+
+.form-disclosure {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.35rem;
+}
+
+.form-disclosure-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0;
+  color: var(--text-primary);
+  font-size: 0.96rem;
+  font-weight: 560;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.form-disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.form-disclosure-chevron {
+  margin-left: auto;
+  color: var(--text-secondary);
+  transition: transform 180ms ease;
+}
+
+.form-disclosure[open] .form-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+.mission-social-fields {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.35rem 0 0.15rem;
+}
+
 .hero-title-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3093,6 +3205,15 @@ textarea {
     left: auto;
     flex-shrink: 0;
     padding: 1.1rem 1.1rem 0;
+  }
+
+  .mission-hero.mission-hero-description-expanded .hero-topline-start {
+    max-width: min(100%, 22rem);
+  }
+
+  .mission-hero.mission-hero-description-expanded .mission-social-links {
+    position: relative;
+    z-index: 4;
   }
 
   .mission-hero.mission-hero-description-expanded .hero-content {

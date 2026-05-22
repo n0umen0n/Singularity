@@ -20,6 +20,7 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import bs58 from "bs58";
+import { splitTradingFeeAmounts } from "@/lib/trading-fees";
 import {
   buildPreparedTransaction,
   buildPreparedTransactionSteps,
@@ -1694,23 +1695,30 @@ async function distributeBackendUsdcFees(input: {
 }) {
   const quoteMintInfo = await getMint(input.connection, input.quoteMint, "confirmed", TOKEN_PROGRAM_ID);
   const distributorTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.distributor.publicKey, false, TOKEN_PROGRAM_ID);
-  const creatorTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.creator, true, TOKEN_PROGRAM_ID);
   const platformTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.platform, true, TOKEN_PROGRAM_ID);
-  const creatorAmount = input.amount / 2n;
-  const platformAmount = input.amount - creatorAmount;
+  const { creatorAmount, platformAmount } = splitTradingFeeAmounts(input.amount);
   const distributionTransaction = new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(input.distributor.publicKey, creatorTokenAccount, input.creator, input.quoteMint, TOKEN_PROGRAM_ID),
     createAssociatedTokenAccountIdempotentInstruction(input.distributor.publicKey, platformTokenAccount, input.platform, input.quoteMint, TOKEN_PROGRAM_ID),
-    createTransferCheckedInstruction(
-      distributorTokenAccount,
-      input.quoteMint,
-      creatorTokenAccount,
-      input.distributor.publicKey,
-      creatorAmount,
-      quoteMintInfo.decimals,
-      [],
-      TOKEN_PROGRAM_ID,
-    ),
+  );
+
+  if (creatorAmount > 0n) {
+    const creatorTokenAccount = getAssociatedTokenAddressSync(input.quoteMint, input.creator, true, TOKEN_PROGRAM_ID);
+    distributionTransaction.add(
+      createAssociatedTokenAccountIdempotentInstruction(input.distributor.publicKey, creatorTokenAccount, input.creator, input.quoteMint, TOKEN_PROGRAM_ID),
+      createTransferCheckedInstruction(
+        distributorTokenAccount,
+        input.quoteMint,
+        creatorTokenAccount,
+        input.distributor.publicKey,
+        creatorAmount,
+        quoteMintInfo.decimals,
+        [],
+        TOKEN_PROGRAM_ID,
+      ),
+    );
+  }
+
+  distributionTransaction.add(
     createTransferCheckedInstruction(
       distributorTokenAccount,
       input.quoteMint,
