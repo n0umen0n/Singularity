@@ -425,6 +425,15 @@
   border-top: 1px solid var(--line);
 }
 
+.learn-ai-prompt details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.learn-ai-prompt details > summary::-webkit-details-marker {
+  display: none;
+}
+
 .learn-ai-prompt-label {
   margin: 0 0 0.65rem;
   color: var(--faint);
@@ -432,6 +441,14 @@
   font-weight: 800;
   letter-spacing: 0.2em;
   text-transform: uppercase;
+}
+
+.learn-ai-prompt details:not([open]) > summary {
+  margin-bottom: 0;
+}
+
+.learn-ai-prompt details[open] > summary {
+  margin-bottom: 0.65rem;
 }
 
 .learn-ai-prompt blockquote {
@@ -814,9 +831,55 @@
     display: none;
   }
 
+  .learn-ai-card {
+    padding: 1rem 1rem 1.1rem;
+  }
+
+  .learn-ai-card .learn-eyebrow {
+    margin-bottom: 0.85rem;
+  }
+
+  .learn-ai-card h2 {
+    font-size: 1.2rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .learn-ai-card > p {
+    font-size: 0.92rem;
+    line-height: 1.6;
+  }
+
+  .learn-ai-glow {
+    width: 12rem;
+    height: 12rem;
+    top: -20%;
+    right: -20%;
+  }
+
   .learn-ai-url-row {
     flex-direction: column;
     align-items: stretch;
+    margin-top: 0.95rem;
+    gap: 0.55rem;
+  }
+
+  .learn-ai-url {
+    flex: 1 1 auto;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.72rem;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  .learn-ai-prompt {
+    margin-top: 0.95rem;
+    padding-top: 0.95rem;
+  }
+
+  .learn-ai-prompt blockquote {
+    padding: 0.7rem 0.8rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
   }
 
   .learn-brand span {

@@ -116,7 +116,7 @@ const techStack = [
 const differentiators = [
   { title: "Any stage", body: "For orgs and startups just getting started or already shipping, with one public path to raise and pay for the work." },
   { title: "We handle the setup", body: "Launch page, fund, investor onboarding. You don't need to learn anything technical." },
-  { title: "No equity needed", body: "Investors trade a mission token. You don't give up equity or ownership." },
+  { title: "No equity needed", body: "Investors trade a mission token. You don't give up equity or ownership. If it does not work out, no strings attached." },
   { title: "Fund built in", body: "20% of the token supply is reserved for the work from day one, not an afterthought." },
   { title: "Raise in public", body: "A public page and a built-in fund, without pitch decks to closed networks." },
   { title: "Visible payouts", body: "Every request and every payment is on the mission page for everyone to see." },
@@ -178,9 +178,11 @@ function LearnPage() {
               <CopyButton text={SINGULARITY_AI_URL} label="Copy link" />
             </div>
             <div className="learn-ai-prompt">
-              <p className="learn-ai-prompt-label">Or copy this ready-made prompt</p>
-              <blockquote>{SINGULARITY_AI_PROMPT}</blockquote>
-              <CopyButton text={SINGULARITY_AI_PROMPT} label="Copy prompt" />
+              <details open>
+                <summary className="learn-ai-prompt-label">Or copy this ready-made prompt</summary>
+                <blockquote>{SINGULARITY_AI_PROMPT}</blockquote>
+                <CopyButton text={SINGULARITY_AI_PROMPT} label="Copy prompt" />
+              </details>
             </div>
           </div>
         </section>
@@ -209,12 +211,14 @@ function LearnPage() {
           <h2>Fundraising shouldn't depend on who you know</h2>
           <div className="learn-prose">
             <p>
-              Whether you're just starting out or already shipping, raising money can still mean pitch decks, closed
-              networks, and long waits, even when the work speaks for itself.
+              Most missions still raise behind closed doors: pitch decks, warm intros, and investor circles you have
+              to fight your way into. You can ship a product, grow users, and still go months without funding because
+              nobody with capital ever saw your work.
             </p>
             <p>
-              Singularity gives you a public path instead. Launch a page, let investors back the mission, and pay people
-              working on your mission from a built-in fund, with every payout visible and approved.
+              Singularity gives you a public path instead. Launch a page anyone can find, let investors back the mission
+              from day one, and pay people working on your mission from a built-in fund, with every payout visible and
+              approved.
             </p>
           </div>
         </section>
@@ -238,7 +242,8 @@ function LearnPage() {
           <h2>No equity needed. A token for your mission</h2>
           <p className="learn-section-intro">
             On Singularity, you don't give up equity. A mission token is created and traded among investors: 80% of
-            the supply on the market, 20% reserved to fund your mission's work.
+            the supply on the market, 20% reserved to fund your mission's work. Risk-free for you: if it does not
+            work out, there are no strings attached. You keep ownership. No debt to repay, no equity to give back.
           </p>
           <div className="learn-tokenomics">
             {tokenomics.map((item) => (
