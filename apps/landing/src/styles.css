@@ -438,14 +438,22 @@ canvas {
   text-wrap: pretty;
 }
 
-.chapter-action {
+.chapter-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.72rem;
+  margin-top: 1.55rem;
+}
+
+.chapter-action,
+.chapter-action-secondary {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0.72rem;
   isolation: isolate;
   overflow: hidden;
-  margin-top: 1.55rem;
   border: 1px solid rgba(255, 247, 237, 0.32);
   border-radius: 999px;
   padding: 0.98rem 1.28rem 0.98rem 1.38rem;
@@ -474,8 +482,59 @@ canvas {
   pointer-events: auto;
 }
 
-.chapter-card[aria-hidden="true"] .chapter-action {
+.chapter-card[aria-hidden="true"] .chapter-action,
+.chapter-card[aria-hidden="true"] .chapter-action-secondary {
   pointer-events: none;
+}
+
+.chapter-action-secondary {
+  border: 1px solid rgba(255, 247, 237, 0.24);
+  border-radius: 999px;
+  padding: 0.98rem 1.28rem 0.98rem 1.38rem;
+  color: #fff7ed;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 237, 0.08), rgba(255, 247, 237, 0.02)),
+    rgba(8, 8, 11, 0.48);
+  box-shadow: 0 0 0 1px rgba(255, 247, 237, 0.04) inset;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  backdrop-filter: blur(18px);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease,
+    transform 200ms ease,
+    background 200ms ease;
+}
+
+.chapter-action-secondary::after {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  opacity: 0.72;
+  transform: rotate(45deg);
+  transition: transform 200ms ease;
+}
+
+.chapter-action-secondary:hover,
+.chapter-action-secondary:focus-visible {
+  border-color: rgba(255, 247, 237, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 247, 237, 0.12), rgba(255, 247, 237, 0.04)),
+    rgba(8, 8, 11, 0.58);
+  box-shadow:
+    0 0 0 1px rgba(255, 247, 237, 0.1) inset,
+    0 12px 36px rgba(118, 108, 255, 0.12);
+  transform: translateY(-0.14rem) scale(1.02);
+}
+
+.chapter-action-secondary:hover::after,
+.chapter-action-secondary:focus-visible::after {
+  transform: translateX(0.14rem) rotate(45deg);
 }
 
 .chapter-action::before {

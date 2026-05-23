@@ -16,6 +16,10 @@ type Chapter = {
   cta?: {
     label: string;
     href: string;
+    secondary?: {
+      label: string;
+      href: string;
+    };
   };
   metric: string;
   poweredByMeteora?: boolean;
@@ -30,6 +34,10 @@ const chapters: Chapter[] = [
     cta: {
       label: "Launch platform",
       href: "https://app.singularity.diy",
+      secondary: {
+        label: "Learn more",
+        href: "/learn",
+      },
     },
     metric: "00",
     poweredByMeteora: true,
@@ -545,9 +553,16 @@ function App() {
                   </ul>
                 ) : null}
                 {chapter.cta ? (
-                  <a className="chapter-action" href={chapter.cta.href}>
-                    {chapter.cta.label}
-                  </a>
+                  <div className="chapter-actions">
+                    <a className="chapter-action" href={chapter.cta.href}>
+                      {chapter.cta.label}
+                    </a>
+                    {chapter.cta.secondary ? (
+                      <a className="chapter-action-secondary" href={chapter.cta.secondary.href}>
+                        {chapter.cta.secondary.label}
+                      </a>
+                    ) : null}
+                  </div>
                 ) : null}
               </article>
             );

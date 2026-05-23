@@ -189,7 +189,11 @@ def load_state(path: Path) -> dict[str, Any]:
 
     messaged: set[str] = set()
     for interaction in data.get("interactions", []):
-        if interaction.get("status") not in {"sent", "existing_chat"}:
+        status = interaction.get("status")
+        mode = interaction.get("mode")
+        if status not in {"sent", "existing_chat"} and not (
+            status == "unverified" and mode == "live"
+        ):
             continue
         username = interaction.get("username")
         if username:
@@ -502,7 +506,9 @@ Rules:
 
         interactions = self.state.setdefault("interactions", [])
         interactions.append(record)
-        if status in {"sent", "existing_chat"}:
+        if status in {"sent", "existing_chat"} or (
+            status == "unverified" and mode == "live"
+        ):
             self.messaged.add(normalize_username(lead.username))
             self.state["messaged_usernames"] = sorted(self.messaged)
         save_state(self.config.state_path, self.state)
@@ -609,6 +615,7 @@ Rules:
                     print(f"Skipped u/{lead.username}: existing chat.")
                 elif status == "unverified":
                     print(f"Unverified u/{lead.username}: {error or detail}")
+                    print(f"Marked u/{lead.username} as contacted to avoid duplicate retries.")
                 elif status == "rate_limited":
                     print(f"Rate limited while messaging u/{lead.username}: {error or detail}")
                     print("Stopping run early because Reddit appears to be blocking sends.")

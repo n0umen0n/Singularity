@@ -84,7 +84,7 @@ Requires Chrome and Selenium. Start with `REDDIT_OUTREACH_MAX_PER_RUN=1`.
 | `REDDIT_OUTREACH_SEND_DELAY_MS` | `15000` | Delay between live sends |
 | `REDDIT_OUTREACH_STATE_PATH` | `.singularity/reddit-outreach-agent-state.json` | Interaction log |
 
-State tracks messaged usernames after a **verified live send** or when an **existing chat** is detected. Dry-run previews and unverified send attempts are logged but do not block a later live run.
+State tracks messaged usernames after a **verified live send**, an **existing chat/outreach match**, or any **live unverified attempt** (to prevent duplicate retries). Dry-run previews are logged but do not block a later live run.
 
 ## Notes
 

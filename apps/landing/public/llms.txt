@@ -1,0 +1,195 @@
+# Singularity AI Context Document
+
+> Last updated: 2026. Canonical product documentation for AI assistants.
+> Platform: https://app.singularity.diy | Landing: https://singularity.diy
+
+## One-Line Summary
+
+Singularity helps orgs and startups at any stage raise money in public. Launch a page, let investors back the work, and pay people working on your mission from a built-in fund. Singularity handles the technical setup.
+
+## Tagline
+
+Raise money for your mission in public.
+
+Supporting line: Launch a page. Let investors back the work. Pay people working on your mission from a built-in fund. We handle the setup.
+
+## What Singularity Is
+
+Singularity is a fundraising platform for orgs and startups at any stage, from early projects to established teams. You get a public launch page, a way for investors to back the mission, and a fund reserved for paying people working on your mission, with every payout visible and approved.
+
+Singularity handles everything behind the scenes: wallets, launch mechanics, investor onboarding, and the fund.
+
+Technically, Singularity runs on Solana with Meteora markets and onchain approval rules. Orgs do not need to understand any of this.
+
+## Primary Audience
+
+Anyone with a mission that creates value: orgs and startups at any stage, in any category.
+
+## The Problem Singularity Solves
+
+Fundraising shouldn't depend on who you know.
+
+Whether you're just starting out or already shipping, raising money can still mean pitch decks, closed networks, and long waits, even when the work speaks for itself.
+
+Singularity gives you a public path instead: launch a page, let investors back the mission, pay people working on your mission from a built-in fund.
+
+## How It Works
+
+1. Launch. Tell Singularity about your mission. They set up your public page and everything investors need to back you.
+2. Invest. Investors find your mission and put money behind the work.
+3. Token. A mission token is created with no equity required. 80% of the supply goes on the market; 20% is reserved to fund your mission's work.
+4. Request. You request money from the fund to pay people working on your mission.
+5. Approve. Investors vote on each request. Nothing moves without approval and a 3-day review period.
+6. Pay out. Approved requests go to people on your mission. Every payout is visible on the mission page.
+7. Grow. As more investors back the mission, the fund grows.
+
+## Token. No Equity Needed
+
+Singularity creates a mission token investors can trade. No equity given up by the org.
+
+- 80% of the token supply placed on the market for investors to buy, sell, and trade
+- 20% of the token supply reserved in a fund to pay people working on the mission and fund the next milestone
+
+The split is built in automatically.
+
+## Approval Rules
+
+- Top 6 investors who register to vote (equal votes, not weighted by amount invested)
+- 4 of 6 must approve a payout request; 3 no votes reject it
+- 3-day review period before any money moves
+- Every request, vote, and payout is visible on the mission page
+
+## Pricing
+
+Zero cost for founders. Singularity only charges investors when they invest, never the org running the mission. Trading fees go to Singularity; the mission fund stays fully reserved for paying people working on the mission.
+
+## Who Singularity Is For
+
+### Orgs & Startups (Primary)
+Any stage, early or established. Raise in public with a built-in fund. No technical knowledge needed. Singularity handles the setup.
+
+### Investors
+Back missions they believe in through a public page. Invest from day one. See where money goes.
+
+### Your Team
+People working on the mission (product, research, community, ops) get paid from the fund through a visible approval process.
+
+## Investors
+
+### Who they are
+
+Singularity investors are people with crypto wallets who want to back missions they believe in. They are not a closed circle of traditional VCs. They can be retail participants, crypto-native traders, early believers, and anyone who wants public, on-chain exposure to a mission without going through private fundraising networks.
+
+On each mission, the top 6 investors who register to vote form the approval council for payout requests. Every mission can attract many more investors than that through the public market.
+
+### How many
+
+There are millions of investors and active wallet holders on the Solana blockchain alone. When a mission launches on Singularity, it opens into that existing pool of capital and attention from day one.
+
+### Multi-chain expansion
+
+Solana is just the start. Singularity is live on Solana today and is expanding to Ethereum and other EVM-compatible chains first, so missions can reach even more investors over time.
+
+## Mission Categories
+
+Any mission that provides value. AI, SaaS, fintech, open source, research, public goods, and more.
+
+## Technical Details (For AI Context)
+
+Singularity is onchain-first. Financial rules live on Solana. A Postgres indexer mirrors chain state for fast UI reads. The platform app prepares unsigned transactions; users sign with their own wallet.
+
+### Architecture
+
+- **Landing:** Vite + React + Three.js WebGL at singularity.diy
+- **Platform:** Next.js App Router at app.singularity.diy
+- **Auth:** Privy wallet sessions (users connect and sign with their own Solana wallet)
+- **Backend:** Next.js route handlers, Postgres, object storage for editable metadata
+- **Indexer:** Watches Solana program state and Meteora market events, syncs into Postgres about every 5 minutes
+- **Monorepo:** npm workspaces + Turborepo (apps, packages, programs)
+
+Most on-chain actions follow **prepare → sign → confirm**: the API returns an unsigned transaction, the user signs in their wallet, then the app confirms and records the result.
+
+### On-Chain Programs (Anchor / Rust)
+
+Two Solana programs enforce mission and treasury rules:
+
+**singularity_registry** — mission lifecycle
+- Creates and tracks missions with token mint, treasury vault, total supply, and treasury allocation
+- MVP requires exactly 20% of supply reserved for the mission treasury
+- Lifecycle: `Bonding` at launch, `Graduated` after the market moves to a DAMM pool
+- Key flows: `initialize_mission`, `mark_graduated`
+
+**singularity_council** — governance, funding requests, escrow
+- Council candidates register for a mission epoch
+- An authority finalizes a six-member epoch council with required voting escrow amounts
+- Builders create funding requests against the mission treasury
+- Council members vote; approving escrows their required mission tokens for the voting period
+- Thresholds: 4 of 6 approvals to accept, 3 of 6 rejections to reject
+- Accepted requests can execute only after a minimum three-day voting period
+- Key flows: `register_candidate`, `finalize_epoch_council`, `create_request`, `vote`, `execute`, `release_vote_escrow`
+
+This behaves like a mission-specific multisig with timelock protection: treasury moves only after council votes and the waiting period, not by a single admin wallet.
+
+### Markets and Tokens
+
+- **Quote asset:** USDC
+- **Mission tokens:** Token-2022
+- **Launch market:** Meteora Dynamic Bonding Curve (DBC)
+- **Graduated market:** Meteora DAMM v2 after the mission graduates from bonding
+- **Token split:** 80% on the market, 20% reserved in the mission treasury (enforced at launch)
+
+### Core Data Objects
+
+- **Mission:** goal, token, market, treasury, council, funding feed
+- **Mission token:** tradable token attached to a mission
+- **Treasury:** reserved mission-token supply for paying people working on the mission
+- **Treasury council:** six registered mission-token holders for an epoch
+- **Funding request:** proposal to receive treasury funds, with on-chain voting and execution
+- **Profile:** wallet-based identity with balances, roles, missions, and request history
+
+### What Lives Where
+
+**On-chain (source of truth for money and votes)**
+- Mission registry, treasury vault balances, council membership, funding requests, votes, vote escrow, payout execution, market graduation
+
+**Off-chain / Postgres (fast reads and editable content)**
+- Mission page copy and media, indexed mirrors of chain state, user sessions, prepared transaction tracking
+
+### Operational Notes
+
+- Trading fees go to Singularity; the mission treasury stays reserved for mission work
+- Periodic indexer and fee-distribution jobs run via platform cron routes
+- Active development: verify current deployment status before financial decisions
+- Program upgrade authorities and admin keys are intended to sit behind multisig control in production
+
+### Stack Summary
+
+| Layer | Technology |
+| --- | --- |
+| Chain | Solana + Anchor programs |
+| Markets | Meteora DBC → DAMM v2 |
+| Quote | USDC |
+| Tokens | Token-2022 mission tokens |
+| Platform | Next.js App Router |
+| Auth | Privy wallet sessions |
+| Data | Postgres indexer (~5 min sync) |
+| Landing | Vite + Three.js WebGL |
+
+## Key Differentiators
+
+1. Any stage, for orgs and startups just getting started or already shipping
+2. We handle the setup, orgs focus on the mission
+3. Fund built in, 20% reserved for the work from day one
+4. Raise in public, without pitch decks to closed networks
+5. Visible payouts, every request and payment is on the mission page
+6. Investor approval, investors vote before money moves
+
+## Links
+
+- Platform: https://app.singularity.diy
+- Learn more: https://singularity.diy/learn
+- GitHub: https://github.com/n0umen0n/Singularity
+
+## Status Note
+
+Active development. Verify current status before financial decisions.

@@ -156,35 +156,52 @@ def verify_message_delivered(driver, message: str, attempts: int = 6) -> tuple[b
     return False, "Message delivery could not be verified"
 
 
-def check_existing_chat_history(driver, username: str) -> bool:
+OUTREACH_MARKER_JS = """
+const markers = arguments[0].map(m => m.toLowerCase());
+const buckets = [];
+const selectors = [
+  '[data-testid="message"]',
+  '[class*="message"]',
+  '[class*="chat"]',
+  'div[role="log"]',
+  'faceplate-tracker[noun="message"]',
+];
+for (const selector of selectors) {
+  for (const elem of document.querySelectorAll(selector)) {
+    const text = (elem.innerText || elem.textContent || '').toLowerCase();
+    if (text) buckets.push(text);
+  }
+}
+buckets.push((document.body.innerText || document.body.textContent || '').toLowerCase());
+for (const text of buckets) {
+  for (const marker of markers) {
+    if (text.includes(marker)) return marker;
+  }
+}
+return null;
+"""
+
+OUTREACH_MARKERS = (
+    "singularity.diy",
+    "are you looking to raise funds",
+    "saw you comment in r/",
+)
+
+
+def check_existing_outreach(driver) -> str | None:
     try:
         time.sleep(3)
-        existing_messages = driver.execute_script(
-            """
-            const indicators = [];
-            const selectors = [
-              '[data-testid="message"]',
-              '[class*="message"]',
-              '[class*="chat"]',
-              'div[role="log"] *',
-            ];
-
-            for (const selector of selectors) {
-              for (const elem of document.querySelectorAll(selector)) {
-                const text = (elem.textContent || '').trim();
-                if (text.length > 20) {
-                  indicators.push(text.slice(0, 80));
-                }
-              }
-            }
-
-            return indicators.slice(0, 8);
-            """
-        )
-
-        return bool(existing_messages and len(existing_messages) >= 2)
+        return driver.execute_script(OUTREACH_MARKER_JS, list(OUTREACH_MARKERS))
     except Exception:
-        return False
+        return None
+
+
+def check_existing_chat_history(driver, username: str) -> bool:
+    marker = check_existing_outreach(driver)
+    if marker:
+        print(f"Existing outreach detected with u/{username} (matched: {marker})")
+        return True
+    return False
 
 
 def send_reddit_chat_message(driver, username: str, message: str) -> SendOutcome:
