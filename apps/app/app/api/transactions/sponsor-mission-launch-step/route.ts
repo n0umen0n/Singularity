@@ -42,16 +42,19 @@ export async function POST(request: Request) {
     }
 
     assertGasSponsorshipAvailable(session.address);
+    const stepIndex = input.stepIndex ?? 0;
     validateSponsoredLaunchTransaction({
       transactionBase64: input.transactionBase64,
       creatorWallet: session.address,
       expectedAccounts: pending.launch_accounts,
+      stepIndex,
     });
 
     const signature = await completeSponsoredLaunchTransaction({
       transactionBase64: input.transactionBase64,
       creatorWallet: session.address,
       expectedAccounts: pending.launch_accounts,
+      stepIndex,
     });
     recordGasSponsorshipUsage(session.address);
 

@@ -49,28 +49,40 @@ export function launchFeePayerAddress() {
   return launchFeePayerKeypair().publicKey.toBase58();
 }
 
-function assertLaunchAccountsMatch(transaction: VersionedTransaction, expectedAccounts: Record<string, unknown>) {
+function transactionAccountKeys(transaction: VersionedTransaction) {
   const accountKeys = transaction.message.getAccountKeys();
-  const requiredKeys = ["meteoraConfig", "tokenMint", "dbcPool"] as const;
-
-  for (const key of requiredKeys) {
-    const expectedAddress = expectedAccounts[key];
-    if (typeof expectedAddress !== "string" || !expectedAddress.trim()) continue;
-
-    let found = false;
-    for (const instruction of transaction.message.compiledInstructions) {
-      for (const accountIndex of instruction.accountKeyIndexes) {
-        if (accountKeys.get(accountIndex)?.toBase58() === expectedAddress) {
-          found = true;
-          break;
-        }
-      }
-      if (found) break;
+  const keysInTx = new Set<string>();
+  for (const instruction of transaction.message.compiledInstructions) {
+    for (const accountIndex of instruction.accountKeyIndexes) {
+      const key = accountKeys.get(accountIndex);
+      if (key) keysInTx.add(key.toBase58());
     }
+  }
+  return keysInTx;
+}
 
-    if (!found) {
-      throw new Error(`Launch transaction does not match the prepared ${key} account. Refresh and try again.`);
-    }
+function assertLaunchAccountsMatch(
+  transaction: VersionedTransaction,
+  expectedAccounts: Record<string, unknown>,
+  stepIndex = 0,
+) {
+  const keysInTx = transactionAccountKeys(transaction);
+  const meteoraConfig = expectedAccounts.meteoraConfig;
+  if (typeof meteoraConfig !== "string" || !keysInTx.has(meteoraConfig)) {
+    throw new Error("Launch transaction does not match the prepared meteoraConfig account. Refresh and try again.");
+  }
+
+  const tokenMint = expectedAccounts.tokenMint;
+  const dbcPool = expectedAccounts.dbcPool;
+  const isPoolStep = (typeof dbcPool === "string" && keysInTx.has(dbcPool)) || stepIndex > 0;
+
+  if (!isPoolStep) return;
+
+  if (typeof tokenMint === "string" && !keysInTx.has(tokenMint)) {
+    throw new Error("Launch transaction does not match the prepared tokenMint account. Refresh and try again.");
+  }
+  if (typeof dbcPool === "string" && !keysInTx.has(dbcPool)) {
+    throw new Error("Launch transaction does not match the prepared dbcPool account. Refresh and try again.");
   }
 }
 
@@ -79,6 +91,7 @@ export function validateSponsoredLaunchTransaction(input: {
   creatorWallet: string;
   feePayerAddress?: string;
   expectedAccounts?: Record<string, unknown>;
+  stepIndex?: number;
 }) {
   validateSponsoredTransaction(input.transactionBase64);
 
@@ -92,7 +105,7 @@ export function validateSponsoredLaunchTransaction(input: {
   }
 
   if (input.expectedAccounts) {
-    assertLaunchAccountsMatch(transaction, input.expectedAccounts);
+    assertLaunchAccountsMatch(transaction, input.expectedAccounts, input.stepIndex ?? 0);
   }
 }
 
@@ -100,6 +113,7 @@ export async function completeSponsoredLaunchTransaction(input: {
   transactionBase64: string;
   creatorWallet: string;
   expectedAccounts?: Record<string, unknown>;
+  stepIndex?: number;
 }) {
   const config = requireProgramConfig(process.env);
   const connection = new Connection(config.rpcUrl, "confirmed");
@@ -111,6 +125,7 @@ export async function completeSponsoredLaunchTransaction(input: {
     creatorWallet: input.creatorWallet,
     feePayerAddress: feePayer.publicKey.toBase58(),
     expectedAccounts: input.expectedAccounts,
+    stepIndex: input.stepIndex,
   });
 
   transaction.sign([feePayer]);
