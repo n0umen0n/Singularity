@@ -114,7 +114,18 @@ export async function completeSponsoredLaunchTransaction(input: {
 
   transaction.sign([feePayer]);
 
-  const signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+  let signature: string;
+  try {
+    signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Launch transaction submission failed.";
+    if (message.toLowerCase().includes("insufficient lamports") || message.toLowerCase().includes("insufficient funds")) {
+      throw new Error(
+        "The launch fee payer wallet does not have enough SOL to cover this mission launch. Fund SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR and try again.",
+      );
+    }
+    throw new Error(message);
+  }
   const confirmation = await connection.confirmTransaction(signature, "confirmed");
   if (confirmation.value.err) {
     throw new Error("The sponsored mission launch transaction failed on-chain.");

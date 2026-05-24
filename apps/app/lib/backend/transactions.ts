@@ -620,6 +620,7 @@ export async function prepareLaunchTransaction(input: {
     const creatorWallet = input.creatorWallet;
     const useSponsoredFees = Boolean(input.sponsorFees && launchFeeSponsorshipConfigured());
     const feePayer = useSponsoredFees ? launchFeePayerAddress() : creatorWallet;
+    const meteoraPayer = useSponsoredFees ? feePayer : creatorWallet;
     const config = requireProgramConfig(process.env);
     const blockhash = await latestBlockhash(config);
     const missionAccount = missionPda(config.registryProgramId, input.missionId);
@@ -635,8 +636,8 @@ export async function prepareLaunchTransaction(input: {
     const restoredSigners = input.launchSignerSecrets?.map((secret) => Keypair.fromSecretKey(bs58.decode(secret)));
     const meteoraLaunch = await prepareMeteoraDbcLaunchInstructions({
       rpcUrl: config.rpcUrl,
-      payer: input.creatorWallet,
-      poolCreator: input.creatorWallet,
+      payer: meteoraPayer,
+      poolCreator: creatorWallet,
       name: input.tokenName || input.missionId,
       symbol: input.tokenSymbol || "MISSION",
       uri: input.metadataUri || `https://metadata.singularity.diy/${input.metadataHash}.json`,

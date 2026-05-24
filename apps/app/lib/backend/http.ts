@@ -74,6 +74,12 @@ function userMessage(error: unknown) {
   if (message.startsWith("SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR")) {
     return message;
   }
+  if (message.includes("launch fee payer wallet does not have enough SOL")) {
+    return message;
+  }
+  if (message.includes("not eligible for gas sponsorship") || message.includes("Daily gas sponsorship limit")) {
+    return message;
+  }
 
   if (isProductionRuntime()) {
     return "The request could not be completed. Refresh the page and try again.";
