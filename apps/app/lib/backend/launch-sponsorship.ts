@@ -9,12 +9,33 @@ export function launchFeeSponsorshipConfigured() {
   return Boolean(process.env.SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR?.trim());
 }
 
+function keypairFromEnvSecret(raw: string) {
+  const secret = raw.trim().replace(/^["']|["']$/g, "");
+  if (secret.startsWith("[")) {
+    try {
+      return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(secret)));
+    } catch {
+      throw new Error(
+        "SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR looks like a JSON keypair but could not be parsed. Paste the base58 secret instead.",
+      );
+    }
+  }
+
+  try {
+    return Keypair.fromSecretKey(bs58.decode(secret));
+  } catch {
+    throw new Error(
+      "SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR must be the base58 secret key from solana-keygen, not the public address or seed phrase.",
+    );
+  }
+}
+
 export function launchFeePayerKeypair() {
   const secret = process.env.SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR?.trim();
   if (!secret) {
     throw new Error("SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR is required to sponsor mission launch fees.");
   }
-  return Keypair.fromSecretKey(bs58.decode(secret));
+  return keypairFromEnvSecret(secret);
 }
 
 export function launchFeePayerAddress() {
