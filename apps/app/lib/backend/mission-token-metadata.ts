@@ -8,6 +8,7 @@ export type MissionTokenMetadata = {
   symbol: string;
   description: string;
   image?: string;
+  external_url?: string;
   properties: {
     category: "mission-token";
     platform: "Singularity";
@@ -15,6 +16,8 @@ export type MissionTokenMetadata = {
 };
 
 export function buildMissionTokenMetadata(input: {
+  missionId: string;
+  statement: string;
   tokenSymbol: string;
   description: string;
   tokenImage?: string;
@@ -22,9 +25,10 @@ export function buildMissionTokenMetadata(input: {
 }): MissionTokenMetadata {
   const image = input.tokenImage?.trim() || input.missionImage?.trim();
   return {
-    name: input.tokenSymbol,
+    name: input.statement.trim(),
     symbol: input.tokenSymbol,
     description: input.description,
+    external_url: `${publicAppBaseUrl()}/missions/${input.missionId}`,
     ...(image ? { image } : {}),
     properties: { category: "mission-token", platform: "Singularity" },
   };
@@ -34,21 +38,53 @@ export function missionTokenMetadataHash(metadata: MissionTokenMetadata) {
   return createHash("sha256").update(JSON.stringify(metadata)).digest("hex");
 }
 
-function publicAppBaseUrl() {
+export function publicAppBaseUrl() {
   const configured = process.env.SINGULARITY_PUBLIC_APP_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim();
   if (configured) return configured.replace(/\/$/, "");
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") {
+    return "https://app.singularity.diy";
+  }
   const vercel = process.env.VERCEL_URL?.trim();
   if (vercel) return `https://${vercel.replace(/\/$/, "")}`;
   return "http://localhost:3000";
 }
 
-export function missionTokenMetadataUri(_stored: StoredObject, hash: string) {
+export function missionTokenOnChainUri(hash: string) {
   // Keep on-chain URIs short so Meteora launch fits in one Solana transaction.
   return `${publicAppBaseUrl()}/api/metadata/${hash}.json`;
 }
 
+async function readBytesFromStorageUri(uri: string) {
+  const trimmed = uri.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes("/api/metadata/")) return null;
+
+  if (trimmed.startsWith("local-object://")) {
+    const key = trimmed.slice("local-object://".length);
+    const root = process.env.SINGULARITY_OBJECT_STORAGE_PATH || path.join(process.cwd(), ".singularity", "objects");
+    try {
+      const bytes = await readFile(path.join(root, key));
+      return { contentType: "application/json", bytes };
+    } catch {
+      return null;
+    }
+  }
+
+  if (!trimmed.startsWith("http")) return null;
+
+  const response = await fetch(trimmed);
+  if (!response.ok) return null;
+
+  return {
+    contentType: response.headers.get("content-type") || "application/json",
+    bytes: Buffer.from(await response.arrayBuffer()),
+  };
+}
+
 export async function publishMissionTokenMetadata(input: {
   creatorWallet: string;
+  missionId: string;
+  statement: string;
   tokenSymbol: string;
   description: string;
   tokenImage?: string;
@@ -67,7 +103,8 @@ export async function publishMissionTokenMetadata(input: {
   return {
     metadata,
     hash,
-    uri: missionTokenMetadataUri(stored, hash),
+    storageUri: stored.uri,
+    onChainUri: missionTokenOnChainUri(hash),
     stored,
   };
 }
@@ -79,15 +116,8 @@ async function readMissionTokenMetadataFromDatabase(hash: string) {
     const { query } = await import("@/lib/backend/db");
     const result = await query<{ uri: string }>("select uri from metadata_uploads where hash = $1 limit 1", [hash]);
     const uri = result.rows[0]?.uri?.trim();
-    if (!uri?.startsWith("http")) return null;
-
-    const response = await fetch(uri);
-    if (!response.ok) return null;
-
-    return {
-      contentType: response.headers.get("content-type") || "application/json",
-      bytes: Buffer.from(await response.arrayBuffer()),
-    };
+    if (!uri) return null;
+    return readBytesFromStorageUri(uri);
   } catch {
     return null;
   }
@@ -114,4 +144,9 @@ export async function readMissionTokenMetadataByHash(hash: string) {
   }
 
   return readMissionTokenMetadataFromDatabase(hash);
+}
+
+/** @deprecated Use missionTokenOnChainUri instead. */
+export function missionTokenMetadataUri(_stored: StoredObject, hash: string) {
+  return missionTokenOnChainUri(hash);
 }

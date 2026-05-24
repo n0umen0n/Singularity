@@ -21,6 +21,7 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { splitTradingFeeAmounts } from "@/lib/trading-fees";
+import { launchFeePayerAddress, launchFeeSponsorshipConfigured } from "@/lib/backend/launch-sponsorship";
 import {
   buildPreparedTransaction,
   buildPreparedTransactionSteps,
@@ -42,6 +43,7 @@ import {
   quoteMeteoraDammV2Trade,
   quoteMeteoraDbcTrade,
   recoverMeteoraDammV2FeePositions,
+  refreshPreparedTransactionBlockhash,
   requireProgramConfig,
   resolveMeteoraDbcLaunchConfig,
   type MeteoraDammV2FeePosition,
@@ -608,12 +610,16 @@ export async function prepareLaunchTransaction(input: {
   initialPurchaseUsdc?: number;
   initialMarketCap?: number;
   migrationMarketCap?: number;
+  launchSignerSecrets?: string[];
+  sponsorFees?: boolean;
 }) {
   const kind = "mission-launch";
 
   try {
     if (!input.creatorWallet) throw new Error("creatorWallet is required to prepare a launch transaction.");
     const creatorWallet = input.creatorWallet;
+    const useSponsoredFees = Boolean(input.sponsorFees && launchFeeSponsorshipConfigured());
+    const feePayer = useSponsoredFees ? launchFeePayerAddress() : creatorWallet;
     const config = requireProgramConfig(process.env);
     const blockhash = await latestBlockhash(config);
     const missionAccount = missionPda(config.registryProgramId, input.missionId);
@@ -626,6 +632,7 @@ export async function prepareLaunchTransaction(input: {
       initialMarketCap: input.initialMarketCap ?? DEFAULT_DBC_INITIAL_MARKET_CAP,
       migrationMarketCap: input.migrationMarketCap ?? DEFAULT_DBC_MIGRATION_MARKET_CAP,
     });
+    const restoredSigners = input.launchSignerSecrets?.map((secret) => Keypair.fromSecretKey(bs58.decode(secret)));
     const meteoraLaunch = await prepareMeteoraDbcLaunchInstructions({
       rpcUrl: config.rpcUrl,
       payer: input.creatorWallet,
@@ -641,22 +648,30 @@ export async function prepareLaunchTransaction(input: {
       initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
       initialMarketCap: launchConfig.initialMarketCap,
       migrationMarketCap: launchConfig.migrationMarketCap,
+      configKeypair: restoredSigners?.[0],
+      baseMintKeypair: restoredSigners?.[1],
     });
-    return buildPreparedTransactionSteps({
-      kind,
-      feePayer: input.creatorWallet,
-      recentBlockhash: blockhash.blockhash,
-      steps: meteoraLaunch.transactionSteps.map((step) => ({
-        ...step,
-        requiredSigners: [creatorWallet, ...(step.signerKeypairs || []).map((signer) => signer.publicKey.toBase58())],
-      })),
-      accounts: {
-        mission: "",
-        treasuryAuthority,
-        feeRouterAuthority,
-        ...meteoraLaunch.accounts,
-      },
-    });
+    const launchSignerSecrets =
+      input.launchSignerSecrets ?? meteoraLaunch.signerKeypairs.map((signer) => bs58.encode(signer.secretKey));
+    return {
+      ...buildPreparedTransactionSteps({
+        kind,
+        feePayer,
+        recentBlockhash: blockhash.blockhash,
+        steps: meteoraLaunch.transactionSteps.map((step) => ({
+          ...step,
+          requiredSigners: [creatorWallet, ...(step.signerKeypairs || []).map((signer) => signer.publicKey.toBase58())],
+        })),
+        accounts: {
+          mission: "",
+          treasuryAuthority,
+          feeRouterAuthority,
+          launchSignerSecrets,
+          ...meteoraLaunch.accounts,
+        },
+      }),
+      sponsorFees: useSponsoredFees,
+    };
   } catch (error) {
     const failed = notConfigured(kind, error);
     return {
@@ -666,6 +681,20 @@ export async function prepareLaunchTransaction(input: {
       instructions: failed.status === "not_configured" ? failed.instructions : [],
     };
   }
+}
+
+export async function refreshLaunchTransactionBlockhash(input: {
+  transactionBase64: string;
+  launchSignerSecrets: string[];
+}) {
+  const config = requireProgramConfig(process.env);
+  const blockhash = await latestBlockhash(config);
+  const signerKeypairs = input.launchSignerSecrets.map((secret) => Keypair.fromSecretKey(bs58.decode(secret)));
+  return refreshPreparedTransactionBlockhash({
+    transactionBase64: input.transactionBase64,
+    recentBlockhash: blockhash.blockhash,
+    signerKeypairs,
+  });
 }
 
 export async function prepareJupiterTradeTransaction(input: {

@@ -2092,7 +2092,6 @@ export function LaunchMissionPage() {
   const [symbol, setSymbol] = useState("");
   const [statement, setStatement] = useState("");
   const [description, setDescription] = useState("");
-  const [initialPurchaseUsdc, setInitialPurchaseUsdc] = useState("0");
   const [socials, setSocials] = useState(emptyMissionSocials);
   const [missionImage, setMissionImage] = useState(defaultMissionImage);
   const [tokenImage, setTokenImage] = useState(defaultTokenImage);
@@ -2158,7 +2157,6 @@ export function LaunchMissionPage() {
         statement,
         description,
         tokenSymbol: symbol,
-        initialPurchaseUsdc,
       });
       const validatedSocials = validateMissionSocials(socials);
       setStatus("Preparing mission launch...");
@@ -2170,8 +2168,8 @@ export function LaunchMissionPage() {
         tokenSymbol: validated.tokenSymbol,
         missionImage: uploadedMissionImage,
         tokenImage: uploadedTokenImage,
-        initialPurchaseUsdc: validated.initialPurchaseUsdc,
         socials: validatedSocials,
+        sponsorFees: wallet.isEmbeddedWallet,
       });
       if (result.transaction.status !== "ready") {
         setStatus(result.transaction.message);
@@ -2182,7 +2180,18 @@ export function LaunchMissionPage() {
         return;
       }
       setStatus("Approve the launch transaction in your wallet...");
-      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      const refreshed = await api.refreshMissionLaunch({
+        launchId: result.launchId,
+        sponsorFees: wallet.isEmbeddedWallet,
+      });
+      if (refreshed.transaction.status !== "ready") {
+        setStatus(refreshed.transaction.message);
+        return;
+      }
+      const signature = await wallet.sendPreparedTransaction({
+        ...refreshed.transaction,
+        launchId: refreshed.launchId,
+      });
       if (!signature) {
         setStatus("Mission launch transaction was not submitted.");
         return;
@@ -2287,10 +2296,6 @@ export function LaunchMissionPage() {
                   openCropper("token", url, file);
                 }}
               />
-              <label>
-                <span className="form-label">Initial purchase in USDC (optional)</span>
-                <input className="field" maxLength={FIELD_LIMITS.moneyAmount} placeholder="0" value={initialPurchaseUsdc} onChange={(event) => setInitialPurchaseUsdc(event.target.value)} />
-              </label>
               <MissionSocialFields socials={socials} onChange={setSocials} />
               {launchSucceeded ? (
                 <p className="stat-note">Success <InlineSuccess /></p>

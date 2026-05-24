@@ -28,6 +28,7 @@ import {
   confirmMissionTreasuryAllocationClaimInPostgres,
   prepareVoteEscrowWithdrawalInPostgres,
   prepareMissionLaunchInPostgres,
+  refreshMissionLaunchTransactionInPostgres,
   quoteMissionTradeFromPostgres,
   refreshMissionMarketDataInPostgres,
   registerCouncilCandidateInPostgres,
@@ -363,6 +364,7 @@ export async function prepareMissionLaunch(input: {
   initialMarketCap?: number;
   migrationMarketCap?: number;
   socials?: import("@/lib/mission-socials").MissionSocials;
+  sponsorFees?: boolean;
 }) {
   if (storageMode() === "postgres") return prepareMissionLaunchInPostgres(input);
 
@@ -375,13 +377,16 @@ export async function prepareMissionLaunch(input: {
     const creatorWallet = input.creatorWallet || state.currentUser.address;
     const publishedMetadata = await publishMissionTokenMetadata({
       creatorWallet,
+      missionId: id,
+      statement,
       tokenSymbol,
       description,
       tokenImage: input.tokenImage,
       missionImage: input.missionImage,
     });
     const hash = publishedMetadata.hash;
-    const metadataUri = publishedMetadata.uri;
+    const metadataUri = publishedMetadata.onChainUri;
+    const metadataStorageUri = publishedMetadata.storageUri;
     const seed = state.missions[0];
     const launchConfig = resolveMissionLaunchConfig({
       initialPurchaseUsdc,
@@ -414,7 +419,7 @@ export async function prepareMissionLaunch(input: {
     state.missions.unshift(mission);
     state.metadataUploads.push({
       hash,
-      uri: metadataUri,
+      uri: metadataStorageUri,
       ownerWallet: creatorWallet,
       contentType: "application/json",
       createdAt: new Date().toISOString(),
@@ -440,6 +445,15 @@ export async function prepareMissionLaunch(input: {
       transaction,
     };
   });
+}
+
+export async function refreshMissionLaunchTransaction(input: {
+  launchId?: string;
+  wallet?: string;
+  sponsorFees?: boolean;
+}) {
+  if (storageMode() === "postgres") return refreshMissionLaunchTransactionInPostgres(input);
+  throw new Error("Mission launch refresh is only available when Postgres storage is enabled.");
 }
 
 export async function confirmMissionLaunch(input: { launchId?: string; signature?: string; wallet?: string }) {

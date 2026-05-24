@@ -130,13 +130,14 @@ export type PreparedSolanaTransaction = {
     transactionBase64: string;
     requiredSigners: string[];
   }>;
-  accounts?: Record<string, string>;
+  accounts?: Record<string, string | string[]>;
   instructions: Array<{
     programId: string;
     accounts: string[];
     dataBase64: string;
   }>;
   requiredSigners: string[];
+  sponsorFees?: boolean;
 };
 
 export type TransactionBuildInput = {
@@ -146,7 +147,7 @@ export type TransactionBuildInput = {
   kind: string;
   requiredSigners?: string[];
   signerKeypairs?: Keypair[];
-  accounts?: Record<string, string>;
+  accounts?: Record<string, string | string[]>;
 };
 
 export type TransactionBuildStep = {
@@ -171,6 +172,8 @@ export type MeteoraDbcLaunchInput = {
   initialPurchaseUsdc?: number;
   initialMarketCap?: number;
   migrationMarketCap?: number;
+  configKeypair?: Keypair;
+  baseMintKeypair?: Keypair;
 };
 
 export type MeteoraDbcLaunchConfig = {
@@ -605,7 +608,7 @@ export function buildPreparedTransactionSteps(input: {
   recentBlockhash: string;
   kind: string;
   steps: TransactionBuildStep[];
-  accounts?: Record<string, string>;
+  accounts?: Record<string, string | string[]>;
 }): PreparedSolanaTransaction {
   if (input.steps.length === 0) throw new Error("At least one transaction step is required.");
 
@@ -646,6 +649,19 @@ export function buildPreparedTransactionSteps(input: {
   };
 }
 
+export function refreshPreparedTransactionBlockhash(input: {
+  transactionBase64: string;
+  recentBlockhash: string;
+  signerKeypairs?: Keypair[];
+}) {
+  const transaction = VersionedTransaction.deserialize(Buffer.from(input.transactionBase64, "base64"));
+  const message = TransactionMessage.decompile(transaction.message);
+  message.recentBlockhash = input.recentBlockhash;
+  const refreshed = new VersionedTransaction(message.compileToV0Message());
+  if (input.signerKeypairs?.length) refreshed.sign(input.signerKeypairs);
+  return Buffer.from(refreshed.serialize()).toString("base64");
+}
+
 export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunchInput) {
   const connection = new Connection(input.rpcUrl, "confirmed");
   const client = new DynamicBondingCurveClient(connection, "confirmed");
@@ -654,8 +670,8 @@ export async function prepareMeteoraDbcLaunchInstructions(input: MeteoraDbcLaunc
   const quoteMint = new PublicKey(input.quoteMint);
   const feeClaimer = new PublicKey(input.feeClaimer);
   const leftoverReceiver = new PublicKey(input.leftoverReceiver);
-  const config = Keypair.generate();
-  const baseMint = Keypair.generate();
+  const config = input.configKeypair ?? Keypair.generate();
+  const baseMint = input.baseMintKeypair ?? Keypair.generate();
   const { launchConfig, treasurySupply, curveConfig } = buildMeteoraDbcCurveConfig({
     totalSupply: input.totalSupply,
     treasurySupplyPercent: input.treasurySupplyPercent,

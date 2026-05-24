@@ -151,8 +151,16 @@ export function prepareMissionLaunch(input: {
   initialMarketCap?: number;
   migrationMarketCap?: number;
   socials?: import("@/lib/mission-socials").MissionSocials;
+  sponsorFees?: boolean;
 }) {
   return api<{ launchId: string | null; mission: Mission; transaction: PreparedTransaction }>("/api/missions/prepare-launch", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function refreshMissionLaunch(input: { launchId: string; sponsorFees?: boolean }) {
+  return api<{ launchId: string; transaction: PreparedTransaction }>("/api/missions/refresh-launch", {
     method: "POST",
     body: JSON.stringify(input),
   });

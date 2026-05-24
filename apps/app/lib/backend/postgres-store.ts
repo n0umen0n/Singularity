@@ -155,7 +155,7 @@ type PendingMissionLaunchRow = {
   total_supply: string;
   treasury_supply_percent: string;
   initial_purchase_usdc: string;
-  launch_accounts: Record<string, string>;
+  launch_accounts: Record<string, unknown>;
   socials: MissionSocials | null;
 };
 
@@ -202,6 +202,11 @@ function slugify(value: string) {
     .slice(0, 48);
 
   return slug || `mission-${randomBytes(3).toString("hex")}`;
+}
+
+function launchAccountString(accounts: Record<string, unknown>, key: string) {
+  const value = accounts[key];
+  return typeof value === "string" ? value : null;
 }
 
 function num(value: string | number | null | undefined) {
@@ -1398,6 +1403,7 @@ export async function prepareMissionLaunchInPostgres(input: {
   initialMarketCap?: number;
   migrationMarketCap?: number;
   socials?: MissionSocials;
+  sponsorFees?: boolean;
 }) {
   const { statement, description, tokenSymbol, initialPurchaseUsdc } = validateMissionLaunchInput(input);
   const socials = validateMissionSocials(input.socials);
@@ -1408,13 +1414,16 @@ export async function prepareMissionLaunchInPostgres(input: {
   const creatorWallet = input.creatorWallet || currentUser.address;
   const publishedMetadata = await publishMissionTokenMetadata({
     creatorWallet,
+    missionId: id,
+    statement,
     tokenSymbol,
     description,
     tokenImage: input.tokenImage,
     missionImage: input.missionImage,
   });
   const metadataHash = publishedMetadata.hash;
-  const metadataUri = publishedMetadata.uri;
+  const metadataUri = publishedMetadata.onChainUri;
+  const metadataStorageUri = publishedMetadata.storageUri;
   const launchConfig = resolveMissionLaunchConfig({
     initialPurchaseUsdc,
     initialMarketCap: input.initialMarketCap,
@@ -1433,20 +1442,24 @@ export async function prepareMissionLaunchInPostgres(input: {
     initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
     initialMarketCap: launchConfig.initialMarketCap,
     migrationMarketCap: launchConfig.migrationMarketCap,
+    sponsorFees: input.sponsorFees,
   });
-  const launchAccounts = "accounts" in launchTransaction ? launchTransaction.accounts || {} : {};
+  const launchAccounts = {
+    ...("accounts" in launchTransaction ? launchTransaction.accounts || {} : {}),
+    ...("sponsorFees" in launchTransaction && launchTransaction.sponsorFees ? { sponsorFees: true } : {}),
+  };
   const mission: Mission = {
     id,
-    missionPda: launchAccounts.mission || null,
+    missionPda: launchAccountString(launchAccounts, "mission"),
     statement,
     description,
     socials,
     image: input.missionImage || seed.image,
     tokenImage: input.tokenImage || seed.tokenImage,
     tokenSymbol,
-    tokenMint: launchAccounts.tokenMint || null,
-    dbcPool: launchAccounts.dbcPool || null,
-    treasuryVault: launchAccounts.treasuryVault || null,
+    tokenMint: launchAccountString(launchAccounts, "tokenMint"),
+    dbcPool: launchAccountString(launchAccounts, "dbcPool"),
+    treasuryVault: launchAccountString(launchAccounts, "treasuryVault"),
     lifecycle: "draft",
     tokenPrice,
     holders: 1,
@@ -1463,7 +1476,7 @@ export async function prepareMissionLaunchInPostgres(input: {
   if (launchTransaction.status === "ready") {
     await query(
       "insert into metadata_uploads (hash, uri, owner_wallet, content_type) values ($1, $2, $3, 'application/json') on conflict (hash) do update set uri = excluded.uri",
-      [metadataHash, metadataUri, creatorWallet],
+      [metadataHash, metadataStorageUri, creatorWallet],
     );
     await query(
       `
@@ -1501,6 +1514,61 @@ export async function prepareMissionLaunchInPostgres(input: {
   };
 }
 
+export async function refreshMissionLaunchTransactionInPostgres(input: {
+  launchId?: string;
+  wallet?: string;
+  sponsorFees?: boolean;
+}) {
+  if (!input.launchId) throw new Error("launchId is required.");
+  const wallet = input.wallet || currentUser.address;
+  const pendingResult = await query<PendingMissionLaunchRow>(
+    "select * from pending_mission_launches where id = $1 and creator_wallet = $2 and status = 'prepared' limit 1",
+    [input.launchId, wallet],
+  );
+  const pending = pendingResult.rows[0];
+  if (!pending) throw new Error("Pending mission launch not found.");
+
+  const accounts = pending.launch_accounts || {};
+  const sponsorFees = input.sponsorFees ?? Boolean((accounts as { sponsorFees?: boolean }).sponsorFees);
+  const launchSignerSecrets = Array.isArray(accounts.launchSignerSecrets)
+    ? accounts.launchSignerSecrets.filter((value): value is string => typeof value === "string")
+    : [];
+  if (launchSignerSecrets.length < 2) {
+    throw new Error("Launch signer secrets are missing for this pending mission.");
+  }
+
+  const launchConfig = resolveMeteoraDbcLaunchConfig({
+    totalSupply: Number(pending.total_supply || DEFAULT_DBC_TOTAL_SUPPLY),
+    initialPurchaseUsdc: Number(pending.initial_purchase_usdc || 0),
+  });
+  const launchTransaction = await prepareLaunchTransaction({
+    creatorWallet: pending.creator_wallet,
+    missionId: pending.id,
+    metadataHash: pending.metadata_hash,
+    metadataUri: pending.metadata_uri,
+    tokenName: pending.token_symbol,
+    tokenSymbol: pending.token_symbol,
+    totalSupply: launchConfig.totalSupply,
+    initialPurchaseUsdc: launchConfig.initialPurchaseUsdc,
+    launchSignerSecrets,
+    sponsorFees,
+  });
+  if (launchTransaction.status !== "ready") {
+    throw new Error(launchTransaction.status === "not_configured" ? launchTransaction.message : "Launch transaction refresh failed.");
+  }
+
+  const launchAccounts = {
+    ...("accounts" in launchTransaction ? launchTransaction.accounts || {} : {}),
+    ...("sponsorFees" in launchTransaction && launchTransaction.sponsorFees ? { sponsorFees: true } : {}),
+  };
+  await query("update pending_mission_launches set launch_accounts = $1 where id = $2 and status = 'prepared'", [
+    JSON.stringify(launchAccounts),
+    pending.id,
+  ]);
+
+  return { launchId: pending.id, transaction: launchTransaction };
+}
+
 export async function confirmMissionLaunchInPostgres(input: { launchId?: string; signature?: string; wallet?: string }) {
   if (!input.launchId) throw new Error("launchId is required.");
   if (!input.signature) throw new Error("signature is required.");
@@ -1534,11 +1602,11 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
       `,
       [
         pending.id,
-        accounts.mission || null,
+        launchAccountString(accounts, "mission"),
         pending.creator_wallet,
-        accounts.tokenMint || null,
-        accounts.dbcPool || null,
-        accounts.treasuryVault || null,
+        launchAccountString(accounts, "tokenMint"),
+        launchAccountString(accounts, "dbcPool"),
+        launchAccountString(accounts, "treasuryVault"),
         pending.metadata_hash,
         pending.statement,
         pending.description,

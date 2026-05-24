@@ -1,9 +1,12 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Connection, SendTransactionError, VersionedTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, SendTransactionError, VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
+import { refreshPreparedTransactionBlockhash } from "@singularity/solana";
 import { getIdentityToken, useLogin, usePrivy } from "@privy-io/react-auth";
-import { useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { useSignAndSendTransaction, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { isEmbeddedPrivyWallet, shouldUseGasSponsorship, shouldUseLaunchFeeSponsorship } from "@/lib/gas-sponsorship";
 
 export type PreparedTransaction =
   | {
@@ -18,6 +21,8 @@ export type PreparedTransaction =
       }>;
       requiredSigners?: string[];
       message?: string;
+      sponsorFees?: boolean;
+      launchId?: string;
     }
   | {
       kind: string;
@@ -29,6 +34,7 @@ type WalletContextValue = {
   ready: boolean;
   authenticated: boolean;
   address: string | null;
+  isEmbeddedWallet: boolean;
   status: string | null;
   signIn: () => Promise<string | null>;
   signOut: () => Promise<void>;
@@ -66,6 +72,37 @@ function bytesFromBase64(value: string) {
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;
+}
+
+function base64FromBytes(bytes: Uint8Array) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+  return btoa(binary);
+}
+
+function privyTransactionErrorMessage(error: unknown) {
+  if (!(error instanceof Error)) return "The sponsored transaction could not be submitted.";
+
+  const details =
+    typeof error === "object" && error && "cause" in error && error.cause instanceof Error
+      ? error.cause.message
+      : error.message;
+
+  if (process.env.NODE_ENV !== "production") {
+    console.error("Privy sponsored transaction failed", { message: error.message, details, error });
+  }
+
+  if (details.includes("User rejected") || details.includes("rejected")) {
+    return "Transaction was cancelled in your wallet.";
+  }
+  if (details.includes("sponsor") || details.includes("gas")) {
+    return "Gas sponsorship is unavailable right now. Add a small amount of SOL to your wallet and try again.";
+  }
+  if (details.includes("too large")) {
+    return "This transaction is too large for the wallet to submit. Try again or contact support.";
+  }
+
+  return details || error.message || "The sponsored transaction could not be submitted.";
 }
 
 function requestErrorMessage(status: number, data: unknown) {
@@ -164,6 +201,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
   const { authenticated: privyAuthenticated, getAccessToken, logout, ready: privyReady, user } = usePrivy();
   const { wallets } = useWallets();
   const { signTransaction } = useSignTransaction();
+  const { signAndSendTransaction } = useSignAndSendTransaction();
   const [sessionAddress, setSessionAddress] = useState<string | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
   const [pendingSessionVerification, setPendingSessionVerification] = useState(false);
@@ -181,6 +219,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
   const linkedSolanaAddress = solanaAddressFromPrivyUser(user);
   const verificationAddress = sessionAddress ?? linkedSolanaAddress ?? wallets[0]?.address ?? null;
   const wallet = verificationAddress ? (wallets.find((entry) => entry.address === verificationAddress) ?? null) : (wallets[0] ?? null);
+  const isEmbeddedWallet = isEmbeddedPrivyWallet(wallet);
   const address = sessionAddress;
   const ready = privyReady && !restoringSession;
   const authenticated = Boolean(sessionAddress);
@@ -287,14 +326,72 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
         throw new Error("The connected wallet does not match your signed-in wallet. Sign out, reconnect the correct wallet, and try again.");
       }
 
+      const useGasSponsorship = shouldUseGasSponsorship({ wallet, kind: transaction.kind });
+      const useLaunchFeeSponsorship = shouldUseLaunchFeeSponsorship({
+        wallet,
+        kind: transaction.kind,
+        sponsorFees: transaction.sponsorFees,
+      });
       const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || process.env.NEXT_PUBLIC_SOLANA_MAINNET_RPC_URL || "https://api.mainnet-beta.solana.com";
       const connection = new Connection(rpcUrl, "confirmed");
       const preparedTransactions = transaction.transactions?.length ? transaction.transactions : [{ transactionBase64: transaction.transactionBase64 }];
       const signatures: string[] = [];
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
 
       for (const [index, prepared] of preparedTransactions.entries()) {
         setStatus(prepared.label || `Approve transaction ${index + 1} of ${preparedTransactions.length}.`);
-        const transactionBytes = bytesFromBase64(prepared.transactionBase64);
+        let transactionBase64 = prepared.transactionBase64;
+        if (transaction.kind !== "mission-launch") {
+          transactionBase64 = refreshPreparedTransactionBlockhash({
+            transactionBase64,
+            recentBlockhash: blockhash,
+          });
+        }
+        const transactionBytes = bytesFromBase64(transactionBase64);
+
+        if (useLaunchFeeSponsorship) {
+          if (!transaction.launchId) {
+            throw new Error("Mission launch fee sponsorship requires a launch id.");
+          }
+
+          const versionedTransaction = VersionedTransaction.deserialize(transactionBytes);
+          const { signature: userSignature } = await wallet.signMessage({
+            message: versionedTransaction.message.serialize(),
+          });
+          versionedTransaction.addSignature(new PublicKey(wallet.address), userSignature);
+
+          const sponsored = await postJson<{ signature: string }>("/api/transactions/sponsor-mission-launch-step", {
+            launchId: transaction.launchId,
+            stepIndex: index,
+            transactionBase64: base64FromBytes(versionedTransaction.serialize()),
+          });
+          signatures.push(sponsored.signature);
+          continue;
+        }
+
+        if (useGasSponsorship) {
+          await postJson("/api/transactions/sponsor-preflight", {
+            kind: transaction.kind,
+            transactionBase64,
+          });
+
+          const sponsored = await signAndSendTransaction({
+            transaction: transactionBytes,
+            wallet,
+            options: { sponsor: true },
+          }).catch((error: unknown) => {
+            throw new Error(privyTransactionErrorMessage(error));
+          });
+
+          const signature = bs58.encode(sponsored.signature);
+          signatures.push(signature);
+          await postJson("/api/transactions/sponsor-record", {
+            kind: transaction.kind,
+            signature,
+          });
+          continue;
+        }
+
         const versionedTransaction = VersionedTransaction.deserialize(transactionBytes);
         const signed = await signTransaction({ transaction: versionedTransaction.serialize(), wallet });
         const signedBytes = "signedTransaction" in signed ? signed.signedTransaction : signed;
@@ -313,7 +410,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       setStatus(signature ? `Transaction submitted: ${signature}` : "Transaction was not submitted.");
       return signature;
     },
-    [sessionAddress, signIn, signTransaction, wallet],
+    [sessionAddress, signIn, signAndSendTransaction, signTransaction, wallet],
   );
 
   const value = useMemo<WalletContextValue>(
@@ -321,12 +418,13 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       ready,
       authenticated,
       address,
+      isEmbeddedWallet,
       status,
       signIn,
       signOut,
       sendPreparedTransaction,
     }),
-    [address, authenticated, ready, sendPreparedTransaction, signIn, signOut, status],
+    [address, authenticated, isEmbeddedWallet, ready, sendPreparedTransaction, signIn, signOut, status],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
@@ -339,6 +437,7 @@ export function DisabledWalletProvider({ children }: { children: React.ReactNode
       ready: true,
       authenticated: false,
       address: null,
+      isEmbeddedWallet: false,
       status,
       signIn: async () => {
         setStatus("NEXT_PUBLIC_PRIVY_APP_ID is required to enable wallet login.");

@@ -15,6 +15,7 @@ RATE_LIMIT_PHRASES = (
     "message limit",
     "too many messages",
     "too many chats",
+    "too many chat requests",
     "temporarily blocked",
     "can't send messages",
     "cannot send messages",
@@ -23,34 +24,28 @@ RATE_LIMIT_PHRASES = (
     "reached your limit",
     "chat request limit",
     "unable to send message",
-    "try again later",
-    "whoa there",
-    "slow down",
+    "unable to start a chat",
 )
 
 SEND_BLOCKER_JS = """
 const phrases = arguments[0].map(p => p.toLowerCase());
-const buckets = [];
 const alertSelectors = [
   '[role="alert"]',
+  '[role="dialog"]',
   '[class*="toast"]',
   '[class*="banner"]',
   '[class*="error"]',
   '[class*="limit"]',
+  '[class*="modal"]',
 ];
 for (const selector of alertSelectors) {
   for (const elem of document.querySelectorAll(selector)) {
     if (!elem.offsetParent) continue;
     const text = (elem.innerText || elem.textContent || '').toLowerCase().trim();
-    if (text) buckets.push(text);
-  }
-}
-if (!buckets.length) {
-  buckets.push((document.body.innerText || document.body.textContent || '').toLowerCase());
-}
-for (const text of buckets) {
-  for (const phrase of phrases) {
-    if (text.includes(phrase)) return phrase;
+    if (!text) continue;
+    for (const phrase of phrases) {
+      if (text.includes(phrase)) return phrase;
+    }
   }
 }
 return null;
