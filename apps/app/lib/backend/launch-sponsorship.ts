@@ -22,8 +22,17 @@ function keypairFromEnvSecret(raw: string) {
   }
 
   try {
-    return Keypair.fromSecretKey(bs58.decode(secret));
-  } catch {
+    const bytes = bs58.decode(secret);
+    if (bytes.length !== 64) {
+      throw new Error(
+        "SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR must be the full base58 secret key from solana-keygen, not the public address.",
+      );
+    }
+    return Keypair.fromSecretKey(bytes);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR")) {
+      throw error;
+    }
     throw new Error(
       "SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR must be the base58 secret key from solana-keygen, not the public address or seed phrase.",
     );

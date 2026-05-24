@@ -71,6 +71,9 @@ function userMessage(error: unknown) {
   if (lowerMessage.includes("duplicate key") && lowerDetail.includes("funding_request_votes")) {
     return "You have already voted on this funding request. Each council wallet can approve or reject a request only once.";
   }
+  if (message.startsWith("SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR")) {
+    return message;
+  }
 
   if (isProductionRuntime()) {
     return "The request could not be completed. Refresh the page and try again.";
