@@ -3,8 +3,6 @@ import bs58 from "bs58";
 import { requireProgramConfig } from "@singularity/solana";
 import { validateSponsoredTransaction } from "@/lib/backend/gas-sponsorship";
 
-const SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
-
 export function launchFeeSponsorshipConfigured() {
   return Boolean(process.env.SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR?.trim());
 }
@@ -51,18 +49,27 @@ export function launchFeePayerAddress() {
   return launchFeePayerKeypair().publicKey.toBase58();
 }
 
-function assertFeePayerNotDebited(transaction: VersionedTransaction, feePayerAddress: string) {
+function assertLaunchAccountsMatch(transaction: VersionedTransaction, expectedAccounts: Record<string, unknown>) {
   const accountKeys = transaction.message.getAccountKeys();
+  const requiredKeys = ["meteoraConfig", "tokenMint", "dbcPool"] as const;
 
-  for (const instruction of transaction.message.compiledInstructions) {
-    const programId = accountKeys.get(instruction.programIdIndex);
-    if (!programId || programId.toBase58() !== SYSTEM_PROGRAM_ID) continue;
-    if (instruction.data.length === 0 || instruction.data[0] !== 2) continue;
+  for (const key of requiredKeys) {
+    const expectedAddress = expectedAccounts[key];
+    if (typeof expectedAddress !== "string" || !expectedAddress.trim()) continue;
 
-    const senderIndex = instruction.accountKeyIndexes[0];
-    const senderAddress = accountKeys.get(senderIndex);
-    if (senderAddress?.toBase58() === feePayerAddress) {
-      throw new Error("This launch transaction is not eligible for fee sponsorship.");
+    let found = false;
+    for (const instruction of transaction.message.compiledInstructions) {
+      for (const accountIndex of instruction.accountKeyIndexes) {
+        if (accountKeys.get(accountIndex)?.toBase58() === expectedAddress) {
+          found = true;
+          break;
+        }
+      }
+      if (found) break;
+    }
+
+    if (!found) {
+      throw new Error(`Launch transaction does not match the prepared ${key} account. Refresh and try again.`);
     }
   }
 }
@@ -71,6 +78,7 @@ export function validateSponsoredLaunchTransaction(input: {
   transactionBase64: string;
   creatorWallet: string;
   feePayerAddress?: string;
+  expectedAccounts?: Record<string, unknown>;
 }) {
   validateSponsoredTransaction(input.transactionBase64);
 
@@ -106,12 +114,15 @@ export function validateSponsoredLaunchTransaction(input: {
     }
   }
 
-  assertFeePayerNotDebited(transaction, feePayerAddress);
+  if (input.expectedAccounts) {
+    assertLaunchAccountsMatch(transaction, input.expectedAccounts);
+  }
 }
 
 export async function completeSponsoredLaunchTransaction(input: {
   transactionBase64: string;
   creatorWallet: string;
+  expectedAccounts?: Record<string, unknown>;
 }) {
   const config = requireProgramConfig(process.env);
   const connection = new Connection(config.rpcUrl, "confirmed");
@@ -122,6 +133,7 @@ export async function completeSponsoredLaunchTransaction(input: {
     transactionBase64: input.transactionBase64,
     creatorWallet: input.creatorWallet,
     feePayerAddress: feePayer.publicKey.toBase58(),
+    expectedAccounts: input.expectedAccounts,
   });
 
   transaction.sign([feePayer]);

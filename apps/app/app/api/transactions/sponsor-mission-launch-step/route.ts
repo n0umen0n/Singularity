@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 
 type PendingLaunchRow = {
   creator_wallet: string;
-  launch_accounts: { sponsorFees?: boolean } | null;
+  launch_accounts: Record<string, unknown> | null;
 };
 
 export async function POST(request: Request) {
@@ -45,11 +45,13 @@ export async function POST(request: Request) {
     validateSponsoredLaunchTransaction({
       transactionBase64: input.transactionBase64,
       creatorWallet: session.address,
+      expectedAccounts: pending.launch_accounts,
     });
 
     const signature = await completeSponsoredLaunchTransaction({
       transactionBase64: input.transactionBase64,
       creatorWallet: session.address,
+      expectedAccounts: pending.launch_accounts,
     });
     recordGasSponsorshipUsage(session.address);
 
@@ -59,6 +61,9 @@ export async function POST(request: Request) {
       stepIndex: input.stepIndex ?? 0,
     });
   } catch (error) {
+    if (error instanceof Error) {
+      console.error("sponsor-mission-launch-step failed", error.message);
+    }
     return fail(error, error instanceof Error && error.message === "Authentication is required." ? 401 : 400);
   }
 }

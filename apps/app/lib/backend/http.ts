@@ -80,6 +80,9 @@ function userMessage(error: unknown) {
   if (message.includes("not eligible for gas sponsorship") || message.includes("Daily gas sponsorship limit")) {
     return message;
   }
+  if (message.includes("Launch transaction") || message.includes("Pending mission launch") || message.includes("Mission launch")) {
+    return message;
+  }
 
   if (isProductionRuntime()) {
     return "The request could not be completed. Refresh the page and try again.";
