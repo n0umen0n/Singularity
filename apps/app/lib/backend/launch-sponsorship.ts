@@ -1,4 +1,4 @@
-import { Connection, Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { Connection, Keypair, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { requireProgramConfig } from "@singularity/solana";
 import { validateSponsoredTransaction } from "@/lib/backend/gas-sponsorship";
@@ -89,29 +89,6 @@ export function validateSponsoredLaunchTransaction(input: {
 
   if (!feePayer || feePayer.toBase58() !== feePayerAddress) {
     throw new Error("Launch transaction fee payer does not match the configured sponsor wallet.");
-  }
-
-  const requiredSignerCount = transaction.message.header.numRequiredSignatures;
-  const requiredSigners = new Set<string>();
-  for (let index = 0; index < requiredSignerCount; index += 1) {
-    const signer = accountKeys.get(index);
-    if (signer) requiredSigners.add(signer.toBase58());
-  }
-
-  if (!requiredSigners.has(input.creatorWallet)) {
-    let referencesCreator = false;
-    for (const instruction of transaction.message.compiledInstructions) {
-      for (const accountIndex of instruction.accountKeyIndexes) {
-        if (accountKeys.get(accountIndex)?.toBase58() === input.creatorWallet) {
-          referencesCreator = true;
-          break;
-        }
-      }
-      if (referencesCreator) break;
-    }
-    if (!referencesCreator) {
-      throw new Error("Launch transaction must reference the creator wallet.");
-    }
   }
 
   if (input.expectedAccounts) {
