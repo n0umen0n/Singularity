@@ -661,7 +661,12 @@ export async function prepareLaunchTransaction(input: {
         recentBlockhash: blockhash.blockhash,
         steps: meteoraLaunch.transactionSteps.map((step) => ({
           ...step,
-          requiredSigners: [creatorWallet, ...(step.signerKeypairs || []).map((signer) => signer.publicKey.toBase58())],
+          requiredSigners: Array.from(
+            new Set([
+              feePayer,
+              ...(step.signerKeypairs || []).map((signer) => signer.publicKey.toBase58()),
+            ]),
+          ),
         })),
         accounts: {
           mission: "",

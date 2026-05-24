@@ -91,7 +91,19 @@ export function validateSponsoredLaunchTransaction(input: {
   }
 
   if (!requiredSigners.has(input.creatorWallet)) {
-    throw new Error("Launch transaction must include the creator wallet as a signer.");
+    let referencesCreator = false;
+    for (const instruction of transaction.message.compiledInstructions) {
+      for (const accountIndex of instruction.accountKeyIndexes) {
+        if (accountKeys.get(accountIndex)?.toBase58() === input.creatorWallet) {
+          referencesCreator = true;
+          break;
+        }
+      }
+      if (referencesCreator) break;
+    }
+    if (!referencesCreator) {
+      throw new Error("Launch transaction must reference the creator wallet.");
+    }
   }
 
   assertFeePayerNotDebited(transaction, feePayerAddress);

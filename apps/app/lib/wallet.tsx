@@ -197,6 +197,15 @@ async function formatSendTransactionError(error: unknown, connection: Connection
   return new Error("The transaction could not be submitted. Please check your wallet and try again.");
 }
 
+function isRequiredTransactionSigner(transaction: VersionedTransaction, address: string) {
+  const accountKeys = transaction.message.getAccountKeys();
+  const requiredSignerCount = transaction.message.header.numRequiredSignatures;
+  for (let index = 0; index < requiredSignerCount; index += 1) {
+    if (accountKeys.get(index)?.toBase58() === address) return true;
+  }
+  return false;
+}
+
 export function SingularityWalletProvider({ children }: { children: React.ReactNode }) {
   const { authenticated: privyAuthenticated, getAccessToken, logout, ready: privyReady, user } = usePrivy();
   const { wallets } = useWallets();
@@ -355,10 +364,15 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
           }
 
           const versionedTransaction = VersionedTransaction.deserialize(transactionBytes);
-          const { signature: userSignature } = await wallet.signMessage({
-            message: versionedTransaction.message.serialize(),
-          });
-          versionedTransaction.addSignature(new PublicKey(wallet.address), userSignature);
+          if (isRequiredTransactionSigner(versionedTransaction, wallet.address)) {
+            setStatus(prepared.label || "Approve the launch transaction in your wallet...");
+            const { signature: userSignature } = await wallet.signMessage({
+              message: versionedTransaction.message.serialize(),
+            });
+            versionedTransaction.addSignature(new PublicKey(wallet.address), userSignature);
+          } else {
+            setStatus(prepared.label || "Submitting sponsored launch transaction...");
+          }
 
           const sponsored = await postJson<{ signature: string }>("/api/transactions/sponsor-mission-launch-step", {
             launchId: transaction.launchId,
