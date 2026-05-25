@@ -52,6 +52,14 @@ Singularity creates a mission token investors can trade. No equity given up by t
 
 The split is built in automatically.
 
+## What Investors Expect
+
+When you launch, investors buy your mission token, not equity in your company. They are betting that your work will make that token more valuable over time.
+
+Every funding request should spell out that connection. Show investors how your product, revenue, or growth will support the token. The clearer the link, the easier it is for them to approve your request.
+
+Example: "For the next year, I will use 10% of profits to buy our mission token from the open market."
+
 ## Approval Rules
 
 - Top 6 investors who register to vote (equal votes, not weighted by amount invested)

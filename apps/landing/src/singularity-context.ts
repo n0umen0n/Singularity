@@ -46,6 +46,12 @@ Singularity creates a mission token investors can trade. No equity given up by t
 - 80% of the token supply placed on the market for investors to buy, sell, and trade
 - 20% of the token supply reserved in a fund to pay people working on the mission
 
+## What Investors Expect
+
+When you launch, investors buy your mission token, not equity. Every funding request should explain how your product, revenue, or growth will support the token.
+
+Example: "For the next year, I will use 10% of profits to buy our mission token from the open market."
+
 ## Pricing
 
 Zero cost for founders. Singularity only charges investors when they invest, never the org running the mission.

@@ -261,6 +261,27 @@ function LearnPage() {
         </section>
 
         <section className="learn-section">
+          <p className="learn-eyebrow">What investors expect</p>
+          <h2>Connect your product to the token</h2>
+          <div className="learn-prose">
+            <p>
+              When you launch, investors buy your mission token, not equity in your company. They are betting that
+              your work will make that token more valuable over time.
+            </p>
+            <p>
+              Every funding request should spell out that connection. Show investors how your product, revenue, or
+              growth will support the token. The clearer the link, the easier it is for them to approve your request.
+            </p>
+          </div>
+          <div className="learn-quote">
+            <p>
+              Example: "For the next year, I will use 10% of profits to buy our mission token from the open
+              market."
+            </p>
+          </div>
+        </section>
+
+        <section className="learn-section">
           <p className="learn-eyebrow">Approval</p>
           <h2>Investors vote before money moves</h2>
           <div className="learn-governance-grid">
