@@ -1,6 +1,7 @@
-import { Connection, Keypair, VersionedTransaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { requireProgramConfig } from "@singularity/solana";
+import { candidateRegistrationPda, missionRegistrationPda } from "@/lib/backend/council-pdas";
 import { validateSponsoredTransaction } from "@/lib/backend/gas-sponsorship";
 
 export function launchFeeSponsorshipConfigured() {
@@ -128,23 +129,88 @@ export async function completeSponsoredLaunchTransaction(input: {
     stepIndex: input.stepIndex,
   });
 
+  return submitSponsoredTransaction(connection, transaction, feePayer);
+}
+
+export function validateSponsoredCouncilCandidateRegistrationTransaction(input: {
+  transactionBase64: string;
+  ownerWallet: string;
+  missionId: string;
+  feePayerAddress?: string;
+}) {
+  validateSponsoredTransaction(input.transactionBase64);
+
+  const feePayerAddress = input.feePayerAddress || launchFeePayerAddress();
+  const config = requireProgramConfig(process.env);
+  const transaction = VersionedTransaction.deserialize(Buffer.from(input.transactionBase64, "base64"));
+  const accountKeys = transaction.message.getAccountKeys();
+  const feePayer = accountKeys.get(0);
+  const keysInTx = transactionAccountKeys(transaction);
+
+  if (!feePayer || feePayer.toBase58() !== feePayerAddress) {
+    throw new Error("Council registration transaction fee payer does not match the configured sponsor wallet.");
+  }
+
+  const expectedMission = missionRegistrationPda({
+    registryProgramId: config.registryProgramId,
+    missionId: input.missionId,
+  });
+  const expectedCandidate = candidateRegistrationPda({
+    councilProgramId: config.councilProgramId,
+    registryProgramId: config.registryProgramId,
+    missionId: input.missionId,
+    owner: input.ownerWallet,
+  });
+
+  if (!keysInTx.has(input.ownerWallet)) {
+    throw new Error("Council registration transaction does not include the candidate owner wallet.");
+  }
+  if (!keysInTx.has(expectedMission)) {
+    throw new Error("Council registration transaction does not match the prepared mission account.");
+  }
+  if (!keysInTx.has(expectedCandidate)) {
+    throw new Error("Council registration transaction does not match the prepared candidate account.");
+  }
+}
+
+export async function completeSponsoredCouncilCandidateRegistrationTransaction(input: {
+  transactionBase64: string;
+  ownerWallet: string;
+  missionId: string;
+}) {
+  const config = requireProgramConfig(process.env);
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const feePayer = launchFeePayerKeypair();
+  const transaction = VersionedTransaction.deserialize(Buffer.from(input.transactionBase64, "base64"));
+
+  validateSponsoredCouncilCandidateRegistrationTransaction({
+    transactionBase64: input.transactionBase64,
+    ownerWallet: input.ownerWallet,
+    missionId: input.missionId,
+    feePayerAddress: feePayer.publicKey.toBase58(),
+  });
+
+  return submitSponsoredTransaction(connection, transaction, feePayer);
+}
+
+async function submitSponsoredTransaction(connection: Connection, transaction: VersionedTransaction, feePayer: Keypair) {
   transaction.sign([feePayer]);
 
   let signature: string;
   try {
     signature = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Launch transaction submission failed.";
+    const message = error instanceof Error ? error.message : "Sponsored transaction submission failed.";
     if (message.toLowerCase().includes("insufficient lamports") || message.toLowerCase().includes("insufficient funds")) {
       throw new Error(
-        "The launch fee payer wallet does not have enough SOL to cover this mission launch. Fund SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR and try again.",
+        "The launch fee payer wallet does not have enough SOL to cover this transaction. Fund SINGULARITY_LAUNCH_FEE_PAYER_KEYPAIR and try again.",
       );
     }
     throw new Error(message);
   }
   const confirmation = await connection.confirmTransaction(signature, "confirmed");
   if (confirmation.value.err) {
-    throw new Error("The sponsored mission launch transaction failed on-chain.");
+    throw new Error("The sponsored transaction failed on-chain.");
   }
 
   return signature;

@@ -981,8 +981,10 @@ function CouncilSection({ mission, onMissionChange }: { mission: Mission; onMiss
     try {
       setStatus(null);
       setRegistrationSucceeded(false);
-      const result = await api.registerCouncilCandidate(mission.id);
-      const signature = await wallet.sendPreparedTransaction(result.transaction);
+      const result = await api.registerCouncilCandidate(mission.id, { sponsorFees: wallet.isEmbeddedWallet });
+      const signature = await wallet.sendPreparedTransaction(
+        result.transaction.status === "ready" ? { ...result.transaction, missionId: mission.id } : result.transaction,
+      );
       if (signature) {
         await api.confirmCouncilCandidateRegistration(mission.id, { signature });
         setRegisteredCandidateAddress(wallet.address);

@@ -285,14 +285,15 @@ pub mod singularity_council {
 
 #[derive(Accounts)]
 pub struct RegisterCandidate<'info> {
-    #[account(mut)]
     pub owner: Signer<'info>,
+    #[account(mut)]
+    pub sponsor: Signer<'info>,
     /// CHECK: this program only needs the mission key, but it must be a registry-owned mission account.
     #[account(owner = REGISTRY_PROGRAM_ID)]
     pub mission: UncheckedAccount<'info>,
     #[account(
         init,
-        payer = owner,
+        payer = sponsor,
         space = 8 + Candidate::INIT_SPACE,
         seeds = [b"candidate", mission.key().as_ref(), owner.key().as_ref()],
         bump

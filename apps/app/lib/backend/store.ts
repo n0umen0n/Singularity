@@ -813,7 +813,12 @@ export async function verifyAuth(input: { address?: string; nonce?: string; sign
   });
 }
 
-export async function registerCouncilCandidate(input: { missionId?: string; wallet?: string; tokenAccounts?: string[] }) {
+export async function registerCouncilCandidate(input: {
+  missionId?: string;
+  wallet?: string;
+  tokenAccounts?: string[];
+  sponsorFees?: boolean;
+}) {
   if (storageMode() === "postgres") return registerCouncilCandidateInPostgres(input);
 
   if (!input.missionId) throw new Error("missionId is required.");
@@ -837,7 +842,11 @@ export async function registerCouncilCandidate(input: { missionId?: string; wall
       missionId: mission.id,
       wallet,
       tokenAccounts: input.tokenAccounts || [],
-      transaction: await prepareCandidateRegistrationTransaction({ wallet, missionId: mission.id }),
+      transaction: await prepareCandidateRegistrationTransaction({
+        wallet,
+        missionId: mission.id,
+        sponsorFees: input.sponsorFees,
+      }),
     };
   });
 }

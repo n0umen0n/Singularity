@@ -104,11 +104,12 @@ function candidatePda(mission, owner) {
   return pdaFromSeeds(COUNCIL_PROGRAM_ID, [Buffer.from("candidate"), mission.toBuffer(), owner.toBuffer()]);
 }
 
-function buildRegisterCandidateInstruction({ owner, mission, candidate }) {
+function buildRegisterCandidateInstruction({ owner, sponsor, mission, candidate }) {
   return new TransactionInstruction({
     programId: new PublicKey(COUNCIL_PROGRAM_ID),
     keys: [
-      { pubkey: new PublicKey(owner), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(owner), isSigner: true, isWritable: false },
+      { pubkey: new PublicKey(sponsor), isSigner: true, isWritable: true },
       { pubkey: new PublicKey(mission), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(candidate), isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -276,6 +277,7 @@ async function registerPhase(env) {
     }
     const ix = buildRegisterCandidateInstruction({
       owner: voter.publicKey.toBase58(),
+      sponsor: voter.publicKey.toBase58(),
       mission: mission.toBase58(),
       candidate: candidate.toBase58(),
     });

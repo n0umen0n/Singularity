@@ -209,6 +209,12 @@ function launchAccountString(accounts: Record<string, unknown>, key: string) {
   return typeof value === "string" ? value : null;
 }
 
+function missionPdaForLaunch(missionId: string, accounts: Record<string, unknown>) {
+  const missionPda = launchAccountString(accounts, "mission");
+  if (missionPda) return missionPda;
+  return pda(process.env.SINGULARITY_REGISTRY_PROGRAM_ID || DEFAULT_REGISTRY_PROGRAM_ID, "mission", missionId).toBase58();
+}
+
 function num(value: string | number | null | undefined) {
   return Number(value ?? 0);
 }
@@ -1602,7 +1608,7 @@ export async function confirmMissionLaunchInPostgres(input: { launchId?: string;
       `,
       [
         pending.id,
-        launchAccountString(accounts, "mission"),
+        missionPdaForLaunch(pending.id, accounts),
         pending.creator_wallet,
         launchAccountString(accounts, "tokenMint"),
         launchAccountString(accounts, "dbcPool"),
@@ -2635,7 +2641,12 @@ export async function verifyAuthInPostgres(input: { address?: string; nonce?: st
   };
 }
 
-export async function registerCouncilCandidateInPostgres(input: { missionId?: string; wallet?: string; tokenAccounts?: string[] }) {
+export async function registerCouncilCandidateInPostgres(input: {
+  missionId?: string;
+  wallet?: string;
+  tokenAccounts?: string[];
+  sponsorFees?: boolean;
+}) {
   if (!input.missionId) throw new Error("missionId is required.");
   const wallet = input.wallet || currentUser.address;
 
@@ -2643,7 +2654,11 @@ export async function registerCouncilCandidateInPostgres(input: { missionId?: st
     missionId: input.missionId,
     wallet,
     tokenAccounts: input.tokenAccounts || [],
-    transaction: await prepareCandidateRegistrationTransaction({ wallet, missionId: input.missionId }),
+    transaction: await prepareCandidateRegistrationTransaction({
+      wallet,
+      missionId: input.missionId,
+      sponsorFees: input.sponsorFees,
+    }),
   };
 }
 

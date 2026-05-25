@@ -6,7 +6,7 @@ import bs58 from "bs58";
 import { refreshPreparedTransactionBlockhash } from "@singularity/solana";
 import { getIdentityToken, useLogin, usePrivy } from "@privy-io/react-auth";
 import { useSignAndSendTransaction, useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
-import { isEmbeddedPrivyWallet, shouldUseGasSponsorship, shouldUseLaunchFeeSponsorship } from "@/lib/gas-sponsorship";
+import { isEmbeddedPrivyWallet, shouldUseGasSponsorship, shouldUseServerFeeSponsorship } from "@/lib/gas-sponsorship";
 
 export type PreparedTransaction =
   | {
@@ -23,6 +23,7 @@ export type PreparedTransaction =
       message?: string;
       sponsorFees?: boolean;
       launchId?: string;
+      missionId?: string;
     }
   | {
       kind: string;
@@ -336,7 +337,7 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
       }
 
       const useGasSponsorship = shouldUseGasSponsorship({ wallet, kind: transaction.kind });
-      const useLaunchFeeSponsorship = shouldUseLaunchFeeSponsorship({
+      const useServerFeeSponsorship = shouldUseServerFeeSponsorship({
         wallet,
         kind: transaction.kind,
         sponsorFees: transaction.sponsorFees,
@@ -358,29 +359,51 @@ export function SingularityWalletProvider({ children }: { children: React.ReactN
         }
         const transactionBytes = bytesFromBase64(transactionBase64);
 
-        if (useLaunchFeeSponsorship) {
-          if (!transaction.launchId) {
-            throw new Error("Mission launch fee sponsorship requires a launch id.");
+        if (useServerFeeSponsorship) {
+          const versionedTransaction = VersionedTransaction.deserialize(transactionBytes);
+
+          if (transaction.kind === "mission-launch") {
+            if (!transaction.launchId) {
+              throw new Error("Mission launch fee sponsorship requires a launch id.");
+            }
+
+            if (isRequiredTransactionSigner(versionedTransaction, wallet.address)) {
+              setStatus(prepared.label || "Approve the launch transaction in your wallet...");
+              const { signature: userSignature } = await wallet.signMessage({
+                message: versionedTransaction.message.serialize(),
+              });
+              versionedTransaction.addSignature(new PublicKey(wallet.address), userSignature);
+            } else {
+              setStatus(prepared.label || "Submitting sponsored launch transaction...");
+            }
+
+            const sponsored = await postJson<{ signature: string }>("/api/transactions/sponsor-mission-launch-step", {
+              launchId: transaction.launchId,
+              stepIndex: index,
+              transactionBase64: base64FromBytes(versionedTransaction.serialize()),
+            });
+            signatures.push(sponsored.signature);
+            continue;
           }
 
-          const versionedTransaction = VersionedTransaction.deserialize(transactionBytes);
-          if (isRequiredTransactionSigner(versionedTransaction, wallet.address)) {
-            setStatus(prepared.label || "Approve the launch transaction in your wallet...");
+          if (transaction.kind === "council-candidate-register") {
+            if (!transaction.missionId) {
+              throw new Error("Council registration fee sponsorship requires a mission id.");
+            }
+
+            setStatus(prepared.label || "Approve council registration in your wallet...");
             const { signature: userSignature } = await wallet.signMessage({
               message: versionedTransaction.message.serialize(),
             });
             versionedTransaction.addSignature(new PublicKey(wallet.address), userSignature);
-          } else {
-            setStatus(prepared.label || "Submitting sponsored launch transaction...");
-          }
 
-          const sponsored = await postJson<{ signature: string }>("/api/transactions/sponsor-mission-launch-step", {
-            launchId: transaction.launchId,
-            stepIndex: index,
-            transactionBase64: base64FromBytes(versionedTransaction.serialize()),
-          });
-          signatures.push(sponsored.signature);
-          continue;
+            const sponsored = await postJson<{ signature: string }>("/api/transactions/sponsor-council-candidate-register", {
+              missionId: transaction.missionId,
+              transactionBase64: base64FromBytes(versionedTransaction.serialize()),
+            });
+            signatures.push(sponsored.signature);
+            continue;
+          }
         }
 
         if (useGasSponsorship) {

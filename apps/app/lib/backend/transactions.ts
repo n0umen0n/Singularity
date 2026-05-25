@@ -223,10 +223,6 @@ function candidatePda(councilProgramId: string, mission: string, owner: string) 
   return address.toBase58();
 }
 
-export function candidateRegistrationPda(input: { councilProgramId: string; registryProgramId: string; missionId: string; owner: string }) {
-  return candidatePda(input.councilProgramId, missionPda(input.registryProgramId, input.missionId), input.owner);
-}
-
 function treasuryAuthorityPda(programId: string, mission: string) {
   const [address] = PublicKey.findProgramAddressSync(
     [Buffer.from("treasury_authority"), new PublicKey(mission).toBuffer()],
@@ -434,11 +430,18 @@ function registryMarkGraduatedInstruction(input: {
   });
 }
 
-function registerCandidateInstruction(input: { programId: string; owner: string; mission: string; candidate: string }) {
+function registerCandidateInstruction(input: {
+  programId: string;
+  owner: string;
+  sponsor: string;
+  mission: string;
+  candidate: string;
+}) {
   return new TransactionInstruction({
     programId: new PublicKey(input.programId),
     keys: [
-      { pubkey: new PublicKey(input.owner), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(input.owner), isSigner: true, isWritable: false },
+      { pubkey: new PublicKey(input.sponsor), isSigner: true, isWritable: true },
       { pubkey: new PublicKey(input.mission), isSigner: false, isWritable: false },
       { pubkey: new PublicKey(input.candidate), isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -669,7 +672,7 @@ export async function prepareLaunchTransaction(input: {
           ),
         })),
         accounts: {
-          mission: "",
+          mission: missionAccount,
           treasuryAuthority,
           feeRouterAuthority,
           launchSignerSecrets,
@@ -1254,7 +1257,11 @@ export async function prepareCouncilExecuteTransaction(input: {
   }
 }
 
-export async function prepareCandidateRegistrationTransaction(input: { wallet?: string; missionId: string }) {
+export async function prepareCandidateRegistrationTransaction(input: {
+  wallet?: string;
+  missionId: string;
+  sponsorFees?: boolean;
+}) {
   const kind = "council-candidate-register";
 
   try {
@@ -1265,22 +1272,26 @@ export async function prepareCandidateRegistrationTransaction(input: { wallet?: 
     const connection = new Connection(config.rpcUrl, "confirmed");
     const owner = new PublicKey(input.wallet);
     const existingCandidate = await connection.getAccountInfo(new PublicKey(candidate));
+    const useSponsoredFees = Boolean(input.sponsorFees && launchFeeSponsorshipConfigured());
+    const sponsor = useSponsoredFees ? launchFeePayerAddress() : input.wallet;
 
-    const candidateAccountSize = 81;
-    const [walletLamports, rentLamports] = await Promise.all([
-      connection.getBalance(owner, "confirmed"),
-      connection.getMinimumBalanceForRentExemption(candidateAccountSize),
-    ]);
-    const requiredLamports = rentLamports + 10_000;
-    if (walletLamports < requiredLamports) {
-      const requiredSol = (requiredLamports / 1_000_000_000).toFixed(4);
-      const currentSol = (walletLamports / 1_000_000_000).toFixed(4);
-      return {
-        kind,
-        status: "not_configured" as const,
-        message: `Your wallet has ${currentSol} SOL but needs at least ${requiredSol} SOL to register (on-chain account rent + fees). Send SOL to ${input.wallet} and try again.`,
-        instructions: [],
-      };
+    if (!useSponsoredFees) {
+      const candidateAccountSize = 81;
+      const [walletLamports, rentLamports] = await Promise.all([
+        connection.getBalance(owner, "confirmed"),
+        connection.getMinimumBalanceForRentExemption(candidateAccountSize),
+      ]);
+      const requiredLamports = rentLamports + 10_000;
+      if (walletLamports < requiredLamports) {
+        const requiredSol = (requiredLamports / 1_000_000_000).toFixed(4);
+        const currentSol = (walletLamports / 1_000_000_000).toFixed(4);
+        return {
+          kind,
+          status: "not_configured" as const,
+          message: `Your wallet has ${currentSol} SOL but needs at least ${requiredSol} SOL to register (on-chain account rent + fees). Send SOL to ${input.wallet} and try again.`,
+          instructions: [],
+        };
+      }
     }
 
     if (existingCandidate) {
@@ -1296,21 +1307,27 @@ export async function prepareCandidateRegistrationTransaction(input: { wallet?: 
     const instruction = registerCandidateInstruction({
       programId: config.councilProgramId,
       owner: input.wallet,
+      sponsor,
       mission,
       candidate,
     });
 
-    return buildPreparedTransaction({
-      kind,
-      feePayer: input.wallet,
-      recentBlockhash: blockhash.blockhash,
-      instructions: [instruction],
-      requiredSigners: [input.wallet],
-      accounts: {
-        mission,
-        candidate,
-      },
-    });
+    return {
+      ...buildPreparedTransaction({
+        kind,
+        feePayer: sponsor,
+        recentBlockhash: blockhash.blockhash,
+        instructions: [instruction],
+        requiredSigners: useSponsoredFees ? [input.wallet, sponsor] : [input.wallet],
+        accounts: {
+          mission,
+          candidate,
+          owner: input.wallet,
+          sponsor,
+        },
+      }),
+      sponsorFees: useSponsoredFees,
+    };
   } catch (error) {
     return notConfigured(kind, error);
   }

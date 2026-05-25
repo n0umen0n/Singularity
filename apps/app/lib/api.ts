@@ -281,10 +281,10 @@ export function releaseFundingRequestVoteEscrow(requestId: string) {
   );
 }
 
-export function registerCouncilCandidate(missionId: string) {
+export function registerCouncilCandidate(missionId: string, input?: { sponsorFees?: boolean }) {
   return api<{ transaction: PreparedTransaction }>(`/api/council-candidates/register`, {
     method: "POST",
-    body: JSON.stringify({ missionId }),
+    body: JSON.stringify({ missionId, sponsorFees: input?.sponsorFees }),
   });
 }
 

@@ -1,7 +1,6 @@
 import type { ConnectedStandardSolanaWallet } from "@privy-io/react-auth/solana";
 
 export const SPONSORABLE_TX_KINDS = new Set([
-  "council-candidate-register",
   "council-checkpoint",
   "funding-request-create",
   "funding-request-vote",
@@ -9,8 +8,10 @@ export const SPONSORABLE_TX_KINDS = new Set([
   "funding-request-vote-escrow-release",
 ]);
 
-// Mission launch uses server-relay fee sponsorship (signMessage + fee payer co-sign) because
-// Privy's client sponsor:true flow rewrites the fee payer and invalidates Meteora co-signatures.
+// Mission launch and council registration use server-relay fee sponsorship (signMessage + fee payer co-sign)
+// because Privy's client sponsor:true flow rewrites the fee payer and invalidates Meteora co-signatures.
+export const SERVER_FEE_SPONSORABLE_TX_KINDS = new Set(["mission-launch", "council-candidate-register"]);
+
 export const CLIENT_SPONSORABLE_TX_KINDS = SPONSORABLE_TX_KINDS;
 
 export function isGasSponsorshipEnabled() {
@@ -44,7 +45,7 @@ export function shouldUseGasSponsorship(input: {
   );
 }
 
-export function shouldUseLaunchFeeSponsorship(input: {
+export function shouldUseServerFeeSponsorship(input: {
   wallet: ConnectedStandardSolanaWallet | null | undefined;
   kind?: string | null;
   sponsorFees?: boolean | null;
@@ -52,7 +53,15 @@ export function shouldUseLaunchFeeSponsorship(input: {
   return (
     isGasSponsorshipEnabled() &&
     isEmbeddedPrivyWallet(input.wallet) &&
-    input.kind === "mission-launch" &&
+    Boolean(input.kind && SERVER_FEE_SPONSORABLE_TX_KINDS.has(input.kind)) &&
     Boolean(input.sponsorFees)
   );
+}
+
+export function shouldUseLaunchFeeSponsorship(input: {
+  wallet: ConnectedStandardSolanaWallet | null | undefined;
+  kind?: string | null;
+  sponsorFees?: boolean | null;
+}) {
+  return shouldUseServerFeeSponsorship(input);
 }
