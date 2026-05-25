@@ -139,35 +139,36 @@ def detect_send_blocker(driver) -> str | None:
     return None
 
 
-def verify_message_delivered(driver, message: str, attempts: int = 6) -> tuple[bool, str | None]:
+def verify_message_delivered(
+    driver, message: str, attempts: int = 8
+) -> tuple[Literal["sent", "rate_limited", "unverified"], str | None]:
     snippet = _verification_snippet(message)
     for attempt in range(attempts):
-        time.sleep(2)
+        time.sleep(2.5)
 
         blocker = detect_send_blocker(driver)
         if blocker:
-            return False, f"Reddit blocker detected: {blocker}"
+            return "rate_limited", f"Reddit blocker detected: {blocker}"
 
         try:
             visible = driver.execute_script(MESSAGE_VISIBLE_JS, snippet)
             if visible:
-                return True, f"Confirmed message snippet in chat: {snippet!r}"
+                return "sent", f"Confirmed message snippet in chat: {snippet!r}"
         except Exception:
             pass
 
         try:
             leftover = driver.execute_script(INPUT_STILL_HAS_TEXT_JS)
             if leftover and snippet.lower() in leftover.lower():
-                return False, "Message still in input field after send"
-            if leftover is None and attempt >= 2:
-                return True, "Input cleared after send; no blocker detected"
+                return "unverified", "Message still in input field after send"
         except Exception:
             pass
 
-        if attempt == attempts - 1:
-            return False, f"Message snippet not found in chat after send: {snippet!r}"
+    blocker = detect_send_blocker(driver)
+    if blocker:
+        return "rate_limited", f"Reddit blocker detected after send: {blocker}"
 
-    return False, "Message delivery could not be verified"
+    return "unverified", f"Message snippet not found in chat after send: {snippet!r}"
 
 
 OUTREACH_MARKER_JS = """
@@ -281,15 +282,13 @@ def send_reddit_chat_message(driver, username: str, message: str) -> SendOutcome
         human_like_typing(actions, message)
         actions.send_keys(Keys.ENTER).perform()
 
-        verified, detail = verify_message_delivered(driver, message)
-        if verified:
+        status, detail = verify_message_delivered(driver, message)
+        if status == "sent":
             print(f"Verified send to u/{username}. {detail}")
             return SendOutcome("sent", detail=detail)
-
-        blocker = detect_send_blocker(driver)
-        if blocker:
-            print(f"Send blocked for u/{username}: {blocker}")
-            return SendOutcome("rate_limited", f"Reddit blocker: {blocker}", detail)
+        if status == "rate_limited":
+            print(f"Rate limited while messaging u/{username}: {detail}")
+            return SendOutcome("rate_limited", detail)
 
         print(f"Send unverified for u/{username}: {detail}")
         return SendOutcome("unverified", detail)
