@@ -36,7 +36,7 @@ Whether you're just starting out or already shipping, raising money can still me
 3. Token. Mission token created, no equity required. 80% on the market, 20% reserved for the mission's work.
 4. Request. Request funds to pay your team.
 5. Approve. Investors vote (4 of 6, 3-day review).
-6. Pay out. Visible payouts to people on the mission.
+6. Pay out. Approved funds go to you; you distribute to people on the mission. Every payout is visible on the mission page.
 7. Grow. Fund grows as more investors back the mission.
 
 ## Token. No Equity Needed

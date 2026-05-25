@@ -52,7 +52,7 @@ const flowSteps = [
   { step: "03", title: "Token", body: "Singularity creates a mission token with no equity required. 80% of the supply goes on the market; 20% is reserved to fund your mission's work." },
   { step: "04", title: "Request", body: "You request money from the fund to pay people working on your mission." },
   { step: "05", title: "Approve", body: "Investors vote on each request. Nothing moves without approval and a 3-day review period." },
-  { step: "06", title: "Pay out", body: "Approved requests go to people on your mission. Every payout is visible on your mission page." },
+  { step: "06", title: "Pay out", body: "Once approved, funds go to you. You distribute them to people on your mission, and every payout is visible on your mission page." },
   { step: "07", title: "Grow", body: "As more investors back the mission, the fund and community grow with it." },
 ];
 

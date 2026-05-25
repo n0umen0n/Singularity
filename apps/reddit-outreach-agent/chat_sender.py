@@ -16,6 +16,9 @@ RATE_LIMIT_PHRASES = (
     "too many messages",
     "too many chats",
     "too many chat requests",
+    "you've created a lot of chats",
+    "created a lot of chats",
+    "let's take a break",
     "temporarily blocked",
     "can't send messages",
     "cannot send messages",
@@ -25,6 +28,12 @@ RATE_LIMIT_PHRASES = (
     "chat request limit",
     "unable to send message",
     "unable to start a chat",
+)
+
+# Exact Reddit chat-cap copy; safe to match in page text without false positives.
+REDDIT_CHAT_CAP_BODY_PHRASES = (
+    "you've created a lot of chats",
+    "let's take a break",
 )
 
 SEND_BLOCKER_JS = """
@@ -115,9 +124,19 @@ def _verification_snippet(message: str) -> str:
 
 def detect_send_blocker(driver) -> str | None:
     try:
-        return driver.execute_script(SEND_BLOCKER_JS, list(RATE_LIMIT_PHRASES))
+        matched = driver.execute_script(SEND_BLOCKER_JS, list(RATE_LIMIT_PHRASES))
+        if matched:
+            return matched
+
+        body_text = driver.execute_script(
+            "return (document.body.innerText || document.body.textContent || '').toLowerCase();"
+        )
+        for phrase in REDDIT_CHAT_CAP_BODY_PHRASES:
+            if phrase in body_text:
+                return phrase
     except Exception:
         return None
+    return None
 
 
 def verify_message_delivered(driver, message: str, attempts: int = 6) -> tuple[bool, str | None]:
