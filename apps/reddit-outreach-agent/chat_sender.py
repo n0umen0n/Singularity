@@ -32,33 +32,76 @@ RATE_LIMIT_PHRASES = (
 
 # Exact Reddit chat-cap copy; safe to match in page text without false positives.
 REDDIT_CHAT_CAP_BODY_PHRASES = (
+    "wow, you've created a lot of chats",
     "you've created a lot of chats",
+    "created a lot of chats",
     "let's take a break",
 )
 
+DEEP_TEXT_JS = """
+function collectText(node, out) {
+  if (!node) return;
+  if (node.shadowRoot) collectText(node.shadowRoot, out);
+  if (node.nodeType === Node.TEXT_NODE && node.textContent) {
+    out.push(node.textContent);
+  }
+  for (const child of node.childNodes || []) collectText(child, out);
+}
+const parts = [];
+collectText(document.documentElement, parts);
+return parts.join(' ').toLowerCase();
+"""
+
 SEND_BLOCKER_JS = """
 const phrases = arguments[0].map(p => p.toLowerCase());
+const capPhrases = arguments[1].map(p => p.toLowerCase());
+
+function matchPhrases(text, list) {
+  if (!text) return null;
+  const normalized = text.toLowerCase();
+  for (const phrase of list) {
+    if (normalized.includes(phrase)) return phrase;
+  }
+  return null;
+}
+
+function collectText(node, out) {
+  if (!node) return;
+  if (node.shadowRoot) collectText(node.shadowRoot, out);
+  if (node.nodeType === Node.TEXT_NODE && node.textContent) {
+    out.push(node.textContent);
+  }
+  for (const child of node.childNodes || []) collectText(child, out);
+}
+
+const deepParts = [];
+collectText(document.documentElement, deepParts);
+const deepText = deepParts.join(' ');
+const capMatch = matchPhrases(deepText, capPhrases);
+if (capMatch) return capMatch;
+
 const alertSelectors = [
   '[role="alert"]',
   '[role="dialog"]',
   '[class*="toast"]',
   '[class*="banner"]',
+  '[class*="Banner"]',
   '[class*="error"]',
   '[class*="limit"]',
   '[class*="modal"]',
+  '[class*="notice"]',
 ];
 for (const selector of alertSelectors) {
   for (const elem of document.querySelectorAll(selector)) {
-    if (!elem.offsetParent) continue;
     const text = (elem.innerText || elem.textContent || '').toLowerCase().trim();
-    if (!text) continue;
-    for (const phrase of phrases) {
-      if (text.includes(phrase)) return phrase;
-    }
+    const matched = matchPhrases(text, phrases);
+    if (matched) return matched;
   }
 }
 return null;
 """
+
+CHAT_LIMIT_CHECK_URL = "https://www.reddit.com/chat/"
 
 MESSAGE_VISIBLE_JS = """
 const snippet = arguments[0].toLowerCase();
@@ -124,19 +167,31 @@ def _verification_snippet(message: str) -> str:
 
 def detect_send_blocker(driver) -> str | None:
     try:
-        matched = driver.execute_script(SEND_BLOCKER_JS, list(RATE_LIMIT_PHRASES))
+        matched = driver.execute_script(
+            SEND_BLOCKER_JS,
+            list(RATE_LIMIT_PHRASES),
+            list(REDDIT_CHAT_CAP_BODY_PHRASES),
+        )
         if matched:
             return matched
 
-        body_text = driver.execute_script(
-            "return (document.body.innerText || document.body.textContent || '').toLowerCase();"
-        )
+        deep_text = driver.execute_script(DEEP_TEXT_JS)
         for phrase in REDDIT_CHAT_CAP_BODY_PHRASES:
-            if phrase in body_text:
+            if phrase in deep_text:
                 return phrase
     except Exception:
         return None
     return None
+
+
+def check_reddit_chat_limit_global(driver) -> str | None:
+    """Open Reddit chat home where the global cap banner is shown."""
+    try:
+        driver.get(CHAT_LIMIT_CHECK_URL)
+        time.sleep(3)
+        return detect_send_blocker(driver)
+    except Exception:
+        return None
 
 
 def verify_message_delivered(
@@ -169,6 +224,19 @@ def verify_message_delivered(
         return "rate_limited", f"Reddit blocker detected after send: {blocker}"
 
     return "unverified", f"Message snippet not found in chat after send: {snippet!r}"
+
+
+def classify_unverified_send(driver) -> tuple[Literal["rate_limited", "unverified"], str | None]:
+    """Re-check unverified sends; Reddit's chat cap often hides from normal page text."""
+    blocker = detect_send_blocker(driver)
+    if blocker:
+        return "rate_limited", f"Reddit blocker detected after unverified send: {blocker}"
+
+    blocker = check_reddit_chat_limit_global(driver)
+    if blocker:
+        return "rate_limited", f"Reddit chat limit detected on /chat: {blocker}"
+
+    return "unverified", None
 
 
 OUTREACH_MARKER_JS = """
@@ -287,6 +355,12 @@ def send_reddit_chat_message(driver, username: str, message: str) -> SendOutcome
             print(f"Verified send to u/{username}. {detail}")
             return SendOutcome("sent", detail=detail)
         if status == "rate_limited":
+            print(f"Rate limited while messaging u/{username}: {detail}")
+            return SendOutcome("rate_limited", detail)
+
+        rechecked_status, rechecked_detail = classify_unverified_send(driver)
+        if rechecked_status == "rate_limited":
+            detail = rechecked_detail or detail
             print(f"Rate limited while messaging u/{username}: {detail}")
             return SendOutcome("rate_limited", detail)
 

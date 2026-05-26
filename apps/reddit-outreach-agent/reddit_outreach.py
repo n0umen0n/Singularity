@@ -593,6 +593,15 @@ Rules:
             driver.quit()
             return None
 
+        from chat_sender import check_reddit_chat_limit_global
+
+        limit = check_reddit_chat_limit_global(driver)
+        if limit:
+            print(f"Reddit chat limit already active: {limit}")
+            print("Stopping before outreach — wait for the limit to reset.")
+            driver.quit()
+            return None
+
         return driver
 
     def run(self) -> int:
@@ -620,6 +629,11 @@ Rules:
         driver = self.setup_send_driver()
         if not self.config.dry_run and self.config.enable_send and driver is None:
             return 1
+
+        consecutive_unverified = 0
+        max_consecutive_unverified = int(
+            os.getenv("REDDIT_OUTREACH_MAX_CONSECUTIVE_UNVERIFIED", "5")
+        )
 
         try:
             for comment in comments:
@@ -656,13 +670,34 @@ Rules:
                     verified_sent += 1
                 elif status == "sent":
                     verified_sent += 1
+                    consecutive_unverified = 0
                     if self.config.send_delay_ms:
                         time.sleep(self.config.send_delay_ms / 1000)
                 elif status == "existing_chat":
                     print(f"Skipped u/{lead.username}: existing chat.")
                 elif status == "unverified":
+                    consecutive_unverified += 1
                     print(f"Unverified u/{lead.username}: {error or detail}")
                     print(f"Marked u/{lead.username} as contacted to avoid duplicate retries.")
+                    if consecutive_unverified >= max_consecutive_unverified:
+                        from chat_sender import check_reddit_chat_limit_global
+
+                        limit = check_reddit_chat_limit_global(driver)
+                        if limit:
+                            print(
+                                f"Rate limited after {consecutive_unverified} consecutive "
+                                f"unverified sends: {limit}"
+                            )
+                            print("Stopping run early because Reddit appears to be blocking sends.")
+                            break
+                        if os.getenv(
+                            "REDDIT_OUTREACH_STOP_ON_UNVERIFIED_STREAK", ""
+                        ).lower() in ("1", "true", "yes"):
+                            print(
+                                f"Stopping after {consecutive_unverified} consecutive unverified "
+                                "sends (REDDIT_OUTREACH_STOP_ON_UNVERIFIED_STREAK enabled)."
+                            )
+                            break
                 elif status == "rate_limited":
                     print(f"Rate limited while messaging u/{lead.username}: {error or detail}")
                     print("Stopping run early because Reddit appears to be blocking sends.")
