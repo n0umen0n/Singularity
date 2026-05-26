@@ -22,6 +22,7 @@ import * as api from "@/lib/api";
 import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/mock-data";
 import { formatLiquidityUsd, money, number, shortAddress } from "@/lib/format";
 import { useSingularityWallet } from "@/lib/wallet";
+import { getMissionCreatorDisplayWallet } from "@/lib/mission-creator-overrides";
 import { MISSION_CREATE_TRADING_FEE_DESCRIPTION, SHOW_CREATOR_TRADING_FEES_IN_PROFILE } from "@/lib/trading-fees";
 
 type CropKind = "mission" | "token" | "avatar";
@@ -782,7 +783,7 @@ function PerformanceCard({ mission }: { mission: Mission }) {
 }
 
 function MissionCreatorSection({ mission }: { mission: Mission }) {
-  const creatorWallet = mission.creatorWallet?.trim();
+  const creatorWallet = getMissionCreatorDisplayWallet(mission);
   const [profile, setProfile] = useState<api.Profile | null>(null);
   const [loading, setLoading] = useState(Boolean(creatorWallet));
 
