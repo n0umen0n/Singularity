@@ -54,6 +54,7 @@ export type PerformancePoint = {
 export type Mission = {
   id: string;
   missionPda?: string | null;
+  creatorWallet?: string | null;
   /** Seeded via DB scripts rather than a live on-chain launch. */
   isDemo?: boolean;
   statement: string;
@@ -180,9 +181,12 @@ function requests(missionId: string, symbol: string): FundingRequest[] {
   ];
 }
 
+const fixtureCreatorWallet = "9fN7aK3bqR2sSingularity4uQe8Dx7P1Lm5Za";
+
 export const missions: Mission[] = [
   {
     id: "mars-gardens",
+    creatorWallet: fixtureCreatorWallet,
     statement: "Terraform resilient food systems for off-world cities",
     description:
       "A mission market funding modular greenhouse robotics, seed research, and open-source climate loops for Mars-ready agriculture.",
@@ -202,6 +206,7 @@ export const missions: Mission[] = [
   },
   {
     id: "ocean-memory",
+    creatorWallet: "SoOceanCreator111111111111111111111111111111",
     statement: "Map the living ocean before it disappears",
     description:
       "Capital for autonomous reef sensors, preservation datasets, and open climate intelligence owned by the communities collecting it.",
@@ -221,6 +226,7 @@ export const missions: Mission[] = [
   },
   {
     id: "open-cure",
+    creatorWallet: "SoCureCreator1111111111111111111111111111111",
     statement: "Fund open therapeutics for rare diseases",
     description:
       "A transparent funding market for patient-led research, clinical translation, and shared therapeutic IP primitives.",
@@ -240,6 +246,7 @@ export const missions: Mission[] = [
   },
   {
     id: "city-solar",
+    creatorWallet: fixtureCreatorWallet,
     statement: "Turn apartment rooftops into neighborhood power plants",
     description:
       "Coordinating installers, residents, and software to finance solar collectives block by block.",

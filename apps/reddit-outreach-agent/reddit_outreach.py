@@ -21,6 +21,7 @@ from openai import OpenAI
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE_PATH = REPO_ROOT / ".singularity" / "reddit-outreach-agent-state.json"
+DEFAULT_USED_THREADS_PATH = REPO_ROOT / ".singularity" / "reddit-outreach-used-threads.json"
 
 STARTUP_SIGNAL_TERMS = (
     "building",
@@ -207,6 +208,52 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2)
+
+
+def sync_used_threads(state: dict[str, Any], threads_path: Path | None = None) -> Path:
+    path = threads_path or DEFAULT_USED_THREADS_PATH
+    threads: dict[str, dict[str, Any]] = {}
+
+    for interaction in state.get("interactions", []):
+        url = (interaction.get("post_url") or "").strip()
+        if not url:
+            continue
+        if url not in threads:
+            threads[url] = {
+                "post_url": url,
+                "post_title": interaction.get("post_title", ""),
+                "subreddit": interaction.get("subreddit", ""),
+                "first_contacted_at": interaction.get("created_at"),
+                "last_contacted_at": interaction.get("created_at"),
+                "interaction_count": 0,
+                "sent_count": 0,
+                "unverified_count": 0,
+            }
+        record = threads[url]
+        record["interaction_count"] += 1
+        status = interaction.get("status")
+        if status == "sent":
+            record["sent_count"] += 1
+        elif status == "unverified":
+            record["unverified_count"] += 1
+        ts = interaction.get("created_at", "")
+        if ts and (not record["first_contacted_at"] or ts < record["first_contacted_at"]):
+            record["first_contacted_at"] = ts
+        if ts and (not record["last_contacted_at"] or ts > record["last_contacted_at"]):
+            record["last_contacted_at"] = ts
+
+    thread_list = sorted(
+        threads.values(), key=lambda item: item.get("last_contacted_at") or "", reverse=True
+    )
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "thread_count": len(thread_list),
+        "threads": thread_list,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    return path
 
 
 def normalize_text(text: str) -> str:
@@ -644,6 +691,8 @@ Rules:
             print(f"  Rate limited stops: {stats.get('rate_limited', 0)}")
             print(f"  Target this run: {self.config.max_per_run}")
             print(f"  State: {self.config.state_path}")
+        threads_path = sync_used_threads(self.state)
+        print(f"  Used threads: {threads_path}")
         return 0
 
 

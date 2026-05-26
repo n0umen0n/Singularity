@@ -16,6 +16,7 @@ import {
 } from "@singularity/solana";
 import { BrandWordmark, GlassCard, StatusPill, cx } from "@singularity/ui";
 import { FlipCard } from "@/components/animate-ui/flip-card";
+import { HeroPixelCard } from "@/components/animate-ui/pixel-card";
 import { MissionSocialFields, MissionSocialLinks, missionSocialPreview } from "@/components/mission-social-links";
 import * as api from "@/lib/api";
 import type { FundingRequest, Investor, Mission, RequestStatus } from "@/lib/mock-data";
@@ -581,6 +582,7 @@ export function MissionDetailPage({ missionId, initialMission }: { missionId: st
         </aside>
         <div className="detail-lower">
           <PerformanceCard mission={mission} />
+          <MissionCreatorSection mission={mission} />
           <CouncilSection mission={mission} onMissionChange={setMission} />
           <FundingRequests mission={mission} onMissionChange={setMission} />
         </div>
@@ -774,6 +776,107 @@ function PerformanceCard({ mission }: { mission: Mission }) {
           <span>{growthLabel}</span>
           <small>{isPositiveReturn ? "growth" : "change"}</small>
         </div>
+      </div>
+    </GlassCard>
+  );
+}
+
+function MissionCreatorSection({ mission }: { mission: Mission }) {
+  const creatorWallet = mission.creatorWallet?.trim();
+  const [profile, setProfile] = useState<api.Profile | null>(null);
+  const [loading, setLoading] = useState(Boolean(creatorWallet));
+
+  useEffect(() => {
+    if (!creatorWallet) {
+      setProfile(null);
+      setLoading(false);
+      return;
+    }
+
+    let alive = true;
+    setLoading(true);
+    api
+      .getProfile(creatorWallet, { summary: true })
+      .then(({ profile: nextProfile }) => {
+        if (alive) setProfile(nextProfile);
+      })
+      .catch(() => {
+        if (alive) setProfile(null);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [creatorWallet]);
+
+  if (!creatorWallet) return null;
+
+  const profileHref = `/profile/${encodeURIComponent(creatorWallet)}`;
+  const displayName = profile?.name.trim() ? profile.name : shortAddress(creatorWallet);
+  const description = profile?.description?.trim() || "No description added yet.";
+  const avatar = profile?.avatar?.trim() || dicebearPersonaAvatar(creatorWallet);
+  const socials = profile?.socials ?? [];
+
+  return (
+    <GlassCard className="section-card mission-creator-card">
+      <div className="section-heading">
+        <h2>Mission Creator</h2>
+      </div>
+      <div className={cx("mission-creator-body", loading && "mission-creator-loading")}>
+        <HeroPixelCard>
+          <div className="mission-creator-panel profile-hero">
+            <div className="profile-avatar-column">
+              <Link className="mission-creator-avatar-link" href={profileHref} aria-label={`Open ${displayName}'s profile`}>
+                <span className="mission-creator-avatar" aria-hidden={loading}>
+                  {loading ? null : <img src={avatar} alt="" decoding="async" loading="lazy" />}
+                </span>
+              </Link>
+            </div>
+            <div className="profile-main">
+              {loading ? (
+                <div className="mission-creator-skeleton" aria-hidden="true">
+                  <span />
+                  <span />
+                </div>
+              ) : (
+                <>
+                  <Link className="mission-creator-profile-link" href={profileHref}>
+                    <h2 style={{ margin: 0 }}>{displayName}</h2>
+                    <p className={cx("stat-note", !profile?.description?.trim() && "placeholder-copy")}>{description}</p>
+                  </Link>
+                  <div className="profile-socials" aria-label="Creator social links">
+                    {socials[0] ? (
+                      <a className="profile-social-link" href={socialHref("x", socials[0])} target="_blank" rel="noreferrer">
+                        <XLogo />
+                        <span>{socialLabel(socials[0], "X")}</span>
+                      </a>
+                    ) : null}
+                    {socials[1] ? (
+                      <a className="profile-social-link" href={socialHref("telegram", socials[1])} target="_blank" rel="noreferrer">
+                        <TelegramLogo />
+                        <span>{socialLabel(socials[1], "Telegram")}</span>
+                      </a>
+                    ) : null}
+                    {socials[2] ? (
+                      <a className="profile-social-link" href={socialHref("github", socials[2])} target="_blank" rel="noreferrer">
+                        <GithubLogo />
+                        <span>{socialLabel(socials[2], "Github")}</span>
+                      </a>
+                    ) : null}
+                  </div>
+                </>
+              )}
+            </div>
+            <Link className="mission-creator-arrow-link" href={profileHref} aria-label={`Open ${displayName}'s profile`}>
+              <span className="mission-creator-arrow" aria-hidden="true">
+                <ArrowRight size={18} />
+              </span>
+            </Link>
+          </div>
+        </HeroPixelCard>
       </div>
     </GlassCard>
   );
@@ -2923,23 +3026,24 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
               : "Balances, mission positions, treasury council roles, and funding requests for this wallet."
           }
         />
-        <GlassCard className={cx("profile-hero", isEditingOwnProfile && "profile-hero-editing")}>
-          <div className="profile-avatar-column">
-            <span className="avatar profile-avatar">
-              {(isEditingOwnProfile ? draft.avatar : profile.avatar) ? (
-                <img src={isEditingOwnProfile ? draft.avatar : profile.avatar} alt="" decoding="async" loading="eager" />
-              ) : (
-                <img src={dicebearPersonaAvatar(profile.address)} alt="" decoding="async" loading="eager" />
-              )}
-            </span>
-            {isEditingOwnProfile ? (
-              <label className="button profile-upload-button">
-                <Upload size={15} />
-                {uploading ? "Uploading..." : "Upload image"}
-                <input type="file" accept="image/*" onChange={openAvatarCropper} />
-              </label>
-            ) : null}
-          </div>
+        <HeroPixelCard>
+          <div className={cx("mission-creator-panel", "profile-hero", isEditingOwnProfile && "profile-hero-editing")}>
+            <div className="profile-avatar-column">
+              <span className="mission-creator-avatar">
+                {(isEditingOwnProfile ? draft.avatar : profile.avatar) ? (
+                  <img src={isEditingOwnProfile ? draft.avatar : profile.avatar} alt="" decoding="async" loading="eager" />
+                ) : (
+                  <img src={dicebearPersonaAvatar(profile.address)} alt="" decoding="async" loading="eager" />
+                )}
+              </span>
+              {isEditingOwnProfile ? (
+                <label className="button profile-upload-button">
+                  <Upload size={15} />
+                  {uploading ? "Uploading..." : "Upload image"}
+                  <input type="file" accept="image/*" onChange={openAvatarCropper} />
+                </label>
+              ) : null}
+            </div>
           <div className="profile-main">
             {isEditingOwnProfile ? (
               <div className="profile-edit-form">
@@ -3016,7 +3120,8 @@ export function ProfilePage({ address, initialProfile }: { address?: string; ini
               <button className="button" onClick={() => void wallet.signOut()}>Disconnect</button>
             </div>
           ) : null}
-        </GlassCard>
+          </div>
+        </HeroPixelCard>
         {modalRoot && cropRequest
           ? createPortal(
               <ImageCropper

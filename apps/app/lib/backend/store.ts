@@ -398,6 +398,7 @@ export async function prepareMissionLaunch(input: {
     const mission: Mission = {
       ...seed,
       id,
+      creatorWallet,
       statement,
       description,
       socials,

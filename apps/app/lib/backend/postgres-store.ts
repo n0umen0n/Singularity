@@ -610,6 +610,7 @@ async function hydrateFundingRequestExecutionState(rows: FundingRequestRow[], cl
 function rowToMission(row: MissionRow, requests: FundingRequest[]): Mission {
   return {
     id: row.id,
+    creatorWallet: row.creator_wallet,
     isDemo: isDemoMissionCreator(row.creator_wallet),
     missionPda: row.mission_pda,
     statement: row.statement,
